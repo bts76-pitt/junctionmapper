@@ -1,5 +1,7 @@
 import numpy as np
+import pytest
 
+from junctionmapper.errors import ConfigError
 from junctionmapper.measure.threshold import mask_above
 
 
@@ -28,3 +30,15 @@ def test_the_input_is_not_modified():
     image = np.array([[10, 60]], dtype=np.float32)
     mask_above(image, 50)
     assert image.tolist() == [[10.0, 60.0]]
+
+
+def test_nan_pixels_count_as_below_the_threshold():
+    out = mask_above(np.array([[np.nan, 60.0]], dtype=np.float32), 50)
+    assert out.tolist() == [[0.0, 60.0]]
+
+
+def test_a_nan_threshold_is_rejected():
+    """It would zero the whole image and report every metric as zero, which is
+    indistinguishable from a field that genuinely has no signal."""
+    with pytest.raises(ConfigError, match="NaN"):
+        mask_above(np.array([[10.0, 60.0]], dtype=np.float32), float("nan"))
