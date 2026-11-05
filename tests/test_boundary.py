@@ -73,3 +73,35 @@ def test_trace_covers_every_boundary_pixel():
     mask = labels == 1
     edge = mask & ~ndimage.binary_erosion(mask, ndimage.generate_binary_structure(2, 1))
     assert {tuple(p) for p in np.argwhere(edge)} <= {tuple(p) for p in b}
+
+
+def _assert_closed_walk(labels, b, label=1):
+    assert b.ndim == 2 and b.shape[1] == 2
+    assert np.all(labels[b[:, 0], b[:, 1]] == label)
+    wrap = np.vstack([b, b[:1]])
+    d = np.abs(np.diff(wrap, axis=0)).max(axis=1)
+    assert np.all(d == 1)
+
+
+def test_diagonal_band_traces():
+    L = np.zeros((12, 14), int)
+    for r in range(2, 9):
+        L[r, 2 + (r - 2): 5 + (r - 2)] = 1
+    _assert_closed_walk(L, trace_boundary(L, 1))
+
+
+def test_start_pixel_with_only_east_and_southeast_neighbours():
+    L = np.zeros((10, 10), int)
+    L[2, 2:4] = 1                       # top row: start (2,2) has E; below is offset right
+    L[3, 3:7] = 1; L[4, 3:7] = 1
+    b = trace_boundary(L, 1)
+    _assert_closed_walk(L, b)
+
+
+def test_start_pixel_with_southwest_neighbour():
+    L = np.zeros((10, 10), int)
+    L[2, 4:6] = 1                       # start (2,4); rows below extend left
+    L[3, 2:6] = 1; L[4, 2:5] = 1
+    b = trace_boundary(L, 1)
+    _assert_closed_walk(L, b)
+    assert {tuple(p) for p in b} >= {(2, 4), (3, 2), (4, 2)}
