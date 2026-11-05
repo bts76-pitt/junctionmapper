@@ -5,10 +5,29 @@ from junctionmapper.errors import ConfigError
 
 
 def _farthest_pair(pts: np.ndarray) -> tuple:
-    """Indices (i < j) of the two mutually most distant points; O(N^2), first max wins."""
-    d2 = ((pts[:, None, :] - pts[None, :, :]) ** 2).sum(axis=2)
-    i, j = np.unravel_index(int(np.argmax(d2)), d2.shape)
-    return (int(min(i, j)), int(max(i, j)))
+    """Indices (i < j) of the two mutually most distant points; O(N^2).
+
+    Squared distances tie often, so the pair is chosen canonically to make the result
+    independent of where the boundary array starts: among all pairs at the maximum
+    distance, take the one whose coordinates sorted as ((r1, c1), (r2, c2)) with
+    (r1, c1) <= (r2, c2) are lexicographically smallest. Indices are then the first
+    occurrence of each coordinate (a necked pixel can occur twice), ordered i < j.
+    """
+    dr = pts[:, 0, None] - pts[None, :, 0]
+    dc = pts[:, 1, None] - pts[None, :, 1]
+    d2 = dr * dr + dc * dc
+    ii, jj = np.nonzero(np.triu(d2 == d2.max(), 1))
+    best = None
+    for a, b in zip(ii, jj):
+        pa, pb = tuple(pts[a]), tuple(pts[b])
+        key = (pa, pb) if pa <= pb else (pb, pa)
+        if best is None or key < best:
+            best = key
+    first = {}
+    for k, p in enumerate(map(tuple, pts)):
+        first.setdefault(p, k)
+    i, j = first[best[0]], first[best[1]]
+    return (min(i, j), max(i, j))
 
 
 def _split(pts: np.ndarray, lo: int, hi: int, epsilon: float, keep: set) -> None:
