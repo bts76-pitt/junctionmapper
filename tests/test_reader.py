@@ -1,12 +1,18 @@
 from pathlib import Path
 
+import bioio_base.exceptions
 import numpy as np
 import pytest
 import tifffile
 import zarr
 
 from junctionmapper.config import ChannelSpec, Role, RunConfig
-from junctionmapper.errors import CalibrationError, ChannelError, JunctionMapperError
+from junctionmapper.errors import (
+    CalibrationError,
+    ChannelError,
+    FormatError,
+    JunctionMapperError,
+)
 from junctionmapper.io.reader import read_fields
 
 NAMES = ["DAPI", "NaK", "Ecad"]
@@ -152,9 +158,11 @@ def test_channel_name_on_plain_tiff_raises_channel_error(tmp_plain_tiff):
         list(read_fields(tmp_plain_tiff, make_cfg()))
 
 
-def test_reader_errors_share_the_common_base():
-    assert issubclass(CalibrationError, JunctionMapperError)
-    assert issubclass(ChannelError, JunctionMapperError)
+def test_reader_errors_are_catchable_as_the_common_base(tmp_plain_tiff):
+    cfg = make_cfg(jm1=1, jm2=2, nucleus=0, pixel_size_um=None)
+    with pytest.raises(JunctionMapperError) as exc:
+        list(read_fields(tmp_plain_tiff, cfg))
+    assert isinstance(exc.value, CalibrationError)
 
 
 def test_anisotropic_xy_pixels_raise_naming_both_values(tmp_path):
@@ -193,3 +201,119 @@ def test_reads_ome_zarr_and_maps_channels_by_name(tmp_path):
     assert f.planes[Role.JM1].mean() == 2
     assert f.planes[Role.NUCLEUS].mean() == 1
     assert f.pixel_size_um == pytest.approx(0.5)
+
+
+def test_nanometer_zarr_is_converted_to_um(tmp_path):
+    path = _write_zarr(tmp_path / "nm.ome.zarr", unit="nanometer", scale=500)
+    assert next(read_fields(path, make_cfg())).pixel_size_um == pytest.approx(0.5)
+
+
+def test_millimeter_zarr_is_converted_to_um(tmp_path):
+    path = _write_zarr(tmp_path / "mm.ome.zarr", unit="millimeter", scale=0.0005)
+    assert next(read_fields(path, make_cfg())).pixel_size_um == pytest.approx(0.5)
+
+
+def test_unsupported_zarr_unit_raises(tmp_path):
+    path = _write_zarr(tmp_path / "px.ome.zarr", unit="parsec", scale=1)
+    with pytest.raises(CalibrationError, match="parsec"):
+        list(read_fields(path, make_cfg()))
+
+
+def test_nanometer_ome_tiff_is_converted_to_um(tmp_path):
+    path = tmp_path / "nm.ome.tif"
+    meta = {
+        "axes": "CYX", "Channel": {"Name": NAMES},
+        "PhysicalSizeX": 500, "PhysicalSizeY": 500,
+        "PhysicalSizeXUnit": "nm", "PhysicalSizeYUnit": "nm",
+    }
+    tifffile.imwrite(path, planes_with_distinct_values(), ome=True, metadata=meta)
+    assert next(read_fields(path, make_cfg())).pixel_size_um == pytest.approx(0.5)
+
+
+def _write_two_scene_ome(path: Path, sizes=(0.5, 0.25), names=(NAMES, NAMES)) -> Path:
+    with tifffile.TiffWriter(path, ome=True) as w:
+        for size, scene_names in zip(sizes, names):
+            data = planes_with_distinct_values()
+            w.write(
+                data,
+                metadata={
+                    "axes": "CYX", "Channel": {"Name": scene_names},
+                    "PhysicalSizeX": size, "PhysicalSizeY": size,
+                },
+            )
+    return path
+
+
+def test_scenes_iterate_as_independent_fields_with_own_calibration(tmp_path):
+    path = _write_two_scene_ome(tmp_path / "scenes.ome.tif")
+    fields = list(read_fields(path, make_cfg()))
+    assert len(fields) == 2
+    assert [f.pixel_size_um for f in fields] == [pytest.approx(0.5), pytest.approx(0.25)]
+    assert len({f.field_id for f in fields}) == 2
+
+
+def test_scenes_resolve_channel_names_per_scene(tmp_path):
+    # Scene 1 orders its channels differently, so "NaK" is index 1 in scene 0 and 0 in scene 1.
+    path = _write_two_scene_ome(
+        tmp_path / "names.ome.tif", names=(NAMES, ["NaK", "DAPI", "Ecad"])
+    )
+    f0, f1 = list(read_fields(path, make_cfg()))
+    # planes are filled with index + 1 in both scenes; only the name->index mapping differs
+    assert f0.planes[Role.JM1].mean() == 2
+    assert f1.planes[Role.JM1].mean() == 1
+
+
+def test_field_id_scene_component_is_sanitised(tmp_path):
+    path = _write_two_scene_ome(tmp_path / "s.ome.tif")
+    for f in read_fields(path, make_cfg()):
+        assert ":" not in f.field_id
+    # direct check of the sanitiser on a hostile scene name
+    from junctionmapper.io.reader import _SAFE_ID_CHARS
+
+    assert _SAFE_ID_CHARS.sub("_", "a/b:c d") == "a_b_c_d"
+
+
+def test_duplicated_tiff_axes_raise_format_error(tmp_path):
+    path = tmp_path / "dup.tif"
+    tifffile.imwrite(path, np.zeros((2, 3, 8, 8), np.uint16), metadata={"axes": "SQYX"})
+    with pytest.raises(FormatError, match="SQYX"):
+        list(read_fields(path, make_cfg(jm1=0, jm2=1, nucleus=0)))
+
+
+def test_uninterpretable_tiff_axes_raise_format_error(tmp_path):
+    path = tmp_path / "bad.tif"
+    tifffile.imwrite(path, np.zeros((2, 8, 8), np.uint16), metadata={"axes": "IYX"})
+    with pytest.raises(FormatError):
+        list(read_fields(path, make_cfg(jm1=0, jm2=1, nucleus=0)))
+
+
+def test_only_one_xy_pixel_size_raises_naming_missing_axis():
+    from types import SimpleNamespace
+
+    from junctionmapper.io.reader import _metadata_pixel_size
+
+    img = SimpleNamespace(physical_pixel_sizes=SimpleNamespace(X=0.5, Y=None, Z=None))
+    with pytest.raises(CalibrationError, match="Y is missing"):
+        _metadata_pixel_size(img)
+
+
+def test_unreadable_non_tiff_reraises_unsupported_format(tmp_path):
+    path = tmp_path / "junk.xyz"
+    path.write_bytes(np.random.default_rng(0).bytes(256))
+    with pytest.raises(bioio_base.exceptions.UnsupportedFileFormatError):
+        list(read_fields(path, make_cfg()))
+
+
+def _write_zarr(path: Path, unit: str, scale: float) -> Path:
+    group = zarr.open_group(path, mode="w", zarr_format=2)
+    group.create_array("0", data=planes_with_distinct_values(), chunks=(1, 64, 64))
+    axes = [{"name": "c", "type": "channel"}] + [
+        {"name": n, "type": "space", "unit": unit} for n in "yx"
+    ]
+    group.attrs["multiscales"] = [
+        {"version": "0.4", "name": "img", "axes": axes,
+         "datasets": [{"path": "0", "coordinateTransformations": [
+             {"type": "scale", "scale": [1, scale, scale]}]}]}
+    ]
+    group.attrs["omero"] = {"channels": [{"label": n} for n in NAMES]}
+    return path

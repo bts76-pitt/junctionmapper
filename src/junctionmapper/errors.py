@@ -15,3 +15,7 @@ class CalibrationError(JunctionMapperError):
 
 class ChannelError(JunctionMapperError):
     """A configured channel cannot be resolved against the image."""
+
+
+class FormatError(JunctionMapperError):
+    """The file's structure (e.g. TIFF axes) cannot be interpreted."""
