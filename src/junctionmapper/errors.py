@@ -19,3 +19,7 @@ class ChannelError(JunctionMapperError):
 
 class FormatError(JunctionMapperError):
     """The file's structure (e.g. TIFF axes) cannot be interpreted."""
+
+
+class BoundaryError(JunctionMapperError):
+    """A label cannot be traced to a single closed boundary."""
