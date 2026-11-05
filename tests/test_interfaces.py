@@ -248,3 +248,45 @@ def test_assess_cell_dp_failure_marks_degenerate(monkeypatch):
 def test_assess_cell_bad_epsilon_still_raises():
     with pytest.raises(ConfigError):
         assess_cell(two_cells_sharing_a_vertical_edge(), 1, epsilon=0)
+
+
+def test_label_zero_is_rejected_as_background():
+    labels = np.zeros((10, 10), int)
+    labels[2:8, 2:8] = 1
+    with pytest.raises(ConfigError, match="background"):
+        assess_cell(labels, 0, epsilon=1.5)
+
+
+def test_engulfed_cell_does_not_report_corner_methods_disagree():
+    """Zero TCJ corners means the neighbour identity never changes, so the two methods
+    are not measuring the same thing and the comparison carries no signal. Previously a
+    cell wholly enclosed by one neighbour raised the flag (DP 4 vs TCJ 0) even though
+    its single whole-boundary interface is extracted correctly."""
+    labels = np.zeros((30, 30), int)
+    labels[3:27, 3:27] = 2
+    labels[10:20, 10:20] = 1
+    flags = assess_cell(labels, 1, epsilon=1.5)
+    assert flags.n_corners_tcj == 0 and flags.n_corners_dp == 4
+    assert flags.corner_methods_disagree is False
+    assert flags.isolated is False
+    assert flags.all_contacts_filtered is False  # the contact is the whole boundary
+
+
+def test_a_cell_whose_only_contact_is_filtered_away_is_flagged():
+    """The cell has a neighbour, but its single-pixel contact is below the TCJ min_run,
+    so TCJ yields no interface. Without the flag the cell contributes nothing to the
+    results with nothing in the output to say why."""
+    labels = np.zeros((20, 20), int)
+    labels[2:8, 2:8] = 1
+    labels[12:18, 12:18] = 2
+    labels[9, 9] = 2  # lone pixel reaching toward cell 1
+    flags = assess_cell(labels, 1, epsilon=1.5)
+    assert flags.isolated is False
+    assert flags.n_corners_tcj == 0
+    assert flags.all_contacts_filtered is True
+    assert extract_interfaces(labels, 1, method="tcj") == []
+
+
+def test_a_cell_with_a_real_shared_edge_is_not_flagged_as_filtered():
+    labels = two_cells_sharing_a_vertical_edge()
+    assert assess_cell(labels, 1, epsilon=1.5).all_contacts_filtered is False
