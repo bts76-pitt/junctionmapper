@@ -39,8 +39,6 @@ class RunConfig(BaseModel):
         missing = [r for r in (Role.JM1, Role.NUCLEUS) if r not in roles]
         if missing:
             raise ValueError(f"required channel roles missing: {missing}")
-        if self.dilation_um is not None and not self.pixel_size_um:
-            raise ValueError("dilation_um requires a positive pixel_size_um")
         return self
 
     def role_for(self, r: Role) -> ChannelSpec:
@@ -52,7 +50,15 @@ class RunConfig(BaseModel):
     def marker_for(self, r: Role) -> str:
         return self.role_for(r).marker
 
-    def resolved_dilation_px(self) -> int:
-        if self.dilation_um is not None:
-            return max(1, round(self.dilation_um / self.pixel_size_um))
-        return max(1, self.dilation_px)
+    def resolved_dilation_px(self, pixel_size_um: float | None = None) -> int:
+        """Dilation band width in pixels.
+
+        ``pixel_size_um`` (the field's actual pixel size) wins over the config
+        fallback ``self.pixel_size_um`` when converting ``dilation_um``.
+        """
+        if self.dilation_um is None:
+            return max(1, self.dilation_px)
+        size = pixel_size_um if pixel_size_um is not None else self.pixel_size_um
+        if not size or size <= 0:
+            raise ValueError("dilation_um requires a positive pixel size")
+        return max(1, round(self.dilation_um / size))

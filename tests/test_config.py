@@ -82,6 +82,18 @@ def test_resolved_dilation_has_minimum_of_one():
     assert cfg.resolved_dilation_px() == 1
 
 
-def test_dilation_um_requires_pixel_size():
-    with pytest.raises(ValidationError):
-        RunConfig(channels=_minimal_channels(), pixel_size_um=None, dilation_um=1.5)
+def test_config_with_dilation_um_and_no_pixel_size_is_valid():
+    cfg = RunConfig(channels=_minimal_channels(), pixel_size_um=None, dilation_um=1.5)
+    assert cfg.resolved_dilation_px(pixel_size_um=0.5) == 3
+
+
+def test_pixel_size_argument_overrides_config_fallback():
+    cfg = RunConfig(channels=_minimal_channels(), pixel_size_um=0.5, dilation_um=1.5)
+    assert cfg.resolved_dilation_px() == 3
+    assert cfg.resolved_dilation_px(pixel_size_um=0.25) == 6
+
+
+def test_dilation_um_without_any_pixel_size_raises_at_call_time():
+    cfg = RunConfig(channels=_minimal_channels(), pixel_size_um=None, dilation_um=1.5)
+    with pytest.raises(ValueError):
+        cfg.resolved_dilation_px()
