@@ -26,20 +26,27 @@ def synthetic_field(roles=(Role.JM1, Role.NUCLEUS), shape=(16, 20)) -> Field:
     )
 
 
-def stub_cellpose(monkeypatch, *, version="4.0.1", diams=None):
+def stub_cellpose(monkeypatch, *, version="4.0.1", diams=None, device=None):
     """Install fake cellpose (+ cellpose.models); return a record of calls."""
     rec = {"init": [], "eval": []}
 
     class FakeModel:
         def __init__(self, **kwargs):
             rec["init"].append(kwargs)
+            if device is not None:
+                self.device = device
 
         def eval(self, plane, **kwargs):
             name = NAME_OF_FILL[float(plane.flat[0])]
             rec["eval"].append({"plane": name, "shape": plane.shape, **kwargs})
-            masks = np.zeros(plane.shape, dtype=np.uint16)
-            masks[2:6, 2:6] = 1
-            masks[8:12, 8:12] = 2
+            if name == "JM1":
+                masks = np.zeros(plane.shape, dtype=np.uint16)
+                masks[2:6, 2:6] = 1
+                masks[8:12, 8:12] = 2
+            else:
+                masks = np.zeros(plane.shape, dtype=np.int32)
+                masks[1:3, 14:19] = 5
+                masks[13:15, 1:9] = 7
             if diams is None:
                 return masks, [], []
             return masks, [], [], diams
@@ -63,9 +70,7 @@ def stub_torch(monkeypatch, *, cuda: bool):
 
 
 def record_eval_calls(monkeypatch):
-    stub_cellpose(monkeypatch)
-    rec = stub_cellpose(monkeypatch)
-    return rec["eval"]
+    return stub_cellpose(monkeypatch)["eval"]
 
 
 def stub_no_gpu(monkeypatch):
@@ -121,13 +126,18 @@ def test_thresholds_and_model_passed_to_cellpose(monkeypatch):
         assert call["cellprob_threshold"] == -1.0
 
 
-def test_returns_label_arrays_unmodified(monkeypatch):
+def test_cells_are_jm1_labels_and_nuclei_are_nucleus_labels(monkeypatch):
     stub_cellpose(monkeypatch)
     seg = segment_field(synthetic_field(shape=(16, 20)), SegmentationParams())
-    for arr in (seg.cells, seg.nuclei):
-        assert arr.shape == (16, 20)
-        assert np.issubdtype(arr.dtype, np.integer)
-        assert set(np.unique(arr)) == {0, 1, 2}
+    exp_cells = np.zeros((16, 20), dtype=np.uint16)
+    exp_cells[2:6, 2:6] = 1
+    exp_cells[8:12, 8:12] = 2
+    exp_nuc = np.zeros((16, 20), dtype=np.int32)
+    exp_nuc[1:3, 14:19] = 5
+    exp_nuc[13:15, 1:9] = 7
+    np.testing.assert_array_equal(seg.cells, exp_cells)
+    np.testing.assert_array_equal(seg.nuclei, exp_nuc)
+    assert seg.cells.dtype == np.uint16 and seg.nuclei.dtype == np.int32
 
 
 def test_diameter_none_without_report_is_recorded_as_none(monkeypatch):
@@ -148,6 +158,7 @@ def test_missing_nucleus_gives_zero_array_and_is_skipped(monkeypatch):
     seg = segment_field(synthetic_field(roles=(Role.JM1,)), SegmentationParams())
     assert [c["plane"] for c in rec["eval"]] == ["JM1"]
     assert seg.nuclei.shape == seg.cells.shape and not seg.nuclei.any()
+    assert seg.nuclei.dtype == seg.cells.dtype == np.uint16
     assert seg.params_used["roles_segmented"] == ["JM1"]
 
 
@@ -184,4 +195,53 @@ def test_module_imports_without_cellpose():
 
     import junctionmapper.segment.cellpose as mod
 
+    sys.modules.pop("cellpose", None)
     importlib.reload(mod)
+    assert "cellpose" not in sys.modules  # import must be lazy, not at module scope
+
+
+def test_non_default_model_reaches_cellpose_and_params_used(monkeypatch):
+    rec = stub_cellpose(monkeypatch)
+    used = segment_field(synthetic_field(), SegmentationParams(model="my_custom")).params_used
+    assert rec["init"][0]["pretrained_model"] == "my_custom"
+    assert used["model"] == "my_custom"
+
+
+def test_device_and_versions_recorded_nonempty(monkeypatch):
+    stub_cellpose(monkeypatch, version="4.0.1")
+    stub_torch(monkeypatch, cuda=False)
+    used = segment_field(synthetic_field(), SegmentationParams()).params_used
+    assert used["device"] == "cpu" and used["device_source"] == "wrapper_selection"
+    assert used["torch_version"] == "2.5.0"
+    assert used["cellpose_version"]
+    assert used["field_id"] == "x_s0_t0_z0"
+
+
+def test_device_records_selected_backend_when_gpu_used(monkeypatch):
+    stub_cellpose(monkeypatch)
+    stub_torch(monkeypatch, cuda=True)
+    used = segment_field(synthetic_field(), SegmentationParams(gpu=True)).params_used
+    assert used["device"] == "cuda" and used["device_source"] == "wrapper_selection"
+
+
+def test_cpu_never_reported_as_accelerator_when_gpu_not_requested(monkeypatch):
+    stub_cellpose(monkeypatch)
+    stub_torch(monkeypatch, cuda=True)
+    used = segment_field(synthetic_field(), SegmentationParams(gpu=False)).params_used
+    assert used["device"] == "cpu"
+
+
+def test_model_reported_device_is_recorded_and_overrides_gpu_choice(monkeypatch):
+    stub_cellpose(monkeypatch, device=types.SimpleNamespace(type="cpu"))
+    stub_torch(monkeypatch, cuda=True)
+    used = segment_field(synthetic_field(), SegmentationParams(gpu=True)).params_used
+    assert used["gpu"] is False  # model fell back despite torch saying cuda
+    assert used["device_source"] == "model"
+    assert "cpu" in used["device"]
+
+
+def test_model_reported_cuda_device_sets_gpu_true(monkeypatch):
+    stub_cellpose(monkeypatch, device=types.SimpleNamespace(type="cuda"))
+    stub_torch(monkeypatch, cuda=False)
+    used = segment_field(synthetic_field(), SegmentationParams(gpu=True)).params_used
+    assert used["gpu"] is True and used["device_source"] == "model"

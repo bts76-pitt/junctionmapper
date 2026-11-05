@@ -15,6 +15,12 @@ not guaranteed bit-exact run to run). ``params_used`` records the versions and
 the device actually used so a run can be re-created as closely as possible, but
 bit-identical labels are not guaranteed.
 
+Limitations: one ``diameter`` and one pair of thresholds is applied to both the
+cell and nucleus planes (nuclei may want different values; a per-role field can be
+added to ``SegmentationParams`` later). The ``CellposeModel(...)`` / ``.eval(...)``
+signatures are pinned by stubs only, and cpsam may ignore ``diameter``; run one
+smoke test against real cellpose before release.
+
 Cellpose and torch are optional (the ``segmentation`` extra) and are imported
 inside :func:`segment_field` so the rest of the library imports without them.
 """
@@ -70,19 +76,21 @@ def _cellpose_version(cellpose) -> str:
         return str(getattr(cellpose, "__version__", "unknown"))
 
 
-def _torch_info() -> tuple[bool, str | None]:
-    """Return (accelerator available, torch version) without requiring torch."""
+def _torch_info() -> tuple[str, str | None]:
+    """Return (best backend: "cuda" | "mps" | "cpu", torch version) without requiring torch."""
     try:
         import torch
     except ImportError:
-        return False, None
-    available = bool(torch.cuda.is_available())
-    if not available:
-        try:
-            available = bool(torch.backends.mps.is_available())
-        except AttributeError:
-            pass
-    return available, str(getattr(torch, "__version__", "unknown"))
+        return "cpu", None
+    version = str(getattr(torch, "__version__", "unknown"))
+    if torch.cuda.is_available():
+        return "cuda", version
+    try:
+        if torch.backends.mps.is_available():
+            return "mps", version
+    except AttributeError:
+        pass
+    return "cpu", version
 
 
 def _as_float(value: Any) -> float | None:
@@ -105,8 +113,9 @@ def segment_field(field: Field, params: SegmentationParams) -> Segmentation:
 
     cellpose, models = _import_cellpose()
 
-    accel, torch_version = _torch_info()
-    use_gpu = bool(params.gpu) and accel  # fall back to CPU, never fail, when absent
+    backend, torch_version = _torch_info()
+    use_gpu = bool(params.gpu) and backend != "cpu"  # fall back to CPU, never fail
+    selected = backend if use_gpu else "cpu"
     model = models.CellposeModel(gpu=use_gpu, pretrained_model=params.model)
 
     # If the model reports its device, trust that over our prediction.
@@ -149,7 +158,10 @@ def segment_field(field: Field, params: SegmentationParams) -> Segmentation:
         "cellprob_threshold": params.cellprob_threshold,
         "gpu_requested": bool(params.gpu),
         "gpu": bool(use_gpu),
-        "device": str(device) if device is not None else ("accelerator" if use_gpu else "cpu"),
+        # Model's own report when it has one; otherwise the backend this wrapper
+        # selected (not confirmed by the model).
+        "device": str(device) if device is not None else selected,
+        "device_source": "model" if device is not None else "wrapper_selection",
         "cellpose_version": _cellpose_version(cellpose),
         "torch_version": torch_version,
         "roles_segmented": [r.name for r in _SEGMENTED_ROLES if r in labels],
