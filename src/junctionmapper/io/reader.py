@@ -101,8 +101,19 @@ def _build_field(
     return Field(planes, pixel_size, markers, path, field_id)
 
 
+_ISOTROPY_RTOL = 1e-6
+
+
 def _metadata_pixel_size(sizes) -> float | None:
-    for value in (sizes.X, sizes.Y):
+    x, y = sizes.X, sizes.Y
+    if x and y:
+        if abs(x - y) > _ISOTROPY_RTOL * max(x, y):
+            raise CalibrationError(
+                f"image metadata gives anisotropic XY pixels (X={x} um, Y={y} um); "
+                "the analysis assumes isotropic XY pixels"
+            )
+        return float(x)
+    for value in (x, y):
         if value:
             return float(value)
     return None

@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import tifffile
+import zarr
 
 from junctionmapper.config import ChannelSpec, Role, RunConfig
 from junctionmapper.errors import CalibrationError, ChannelError, JunctionMapperError
@@ -21,10 +22,16 @@ def make_cfg(jm1="NaK", jm2="Ecad", nucleus="DAPI", pixel_size_um=0.325) -> RunC
     return RunConfig(channels=channels, pixel_size_um=pixel_size_um)
 
 
-def write_ome(path: Path, data: np.ndarray, axes: str, size_um: float | None = 0.5) -> Path:
+def write_ome(
+    path: Path,
+    data: np.ndarray,
+    axes: str,
+    size_um: float | None = 0.5,
+    size_y_um: float | None = None,
+) -> Path:
     meta = {"axes": axes, "Channel": {"Name": NAMES}}
     if size_um is not None:
-        meta |= {"PhysicalSizeX": size_um, "PhysicalSizeY": size_um}
+        meta |= {"PhysicalSizeX": size_um, "PhysicalSizeY": size_y_um or size_um}
     tifffile.imwrite(path, data, ome=True, metadata=meta)
     return path
 
@@ -148,3 +155,41 @@ def test_channel_name_on_plain_tiff_raises_channel_error(tmp_plain_tiff):
 def test_reader_errors_share_the_common_base():
     assert issubclass(CalibrationError, JunctionMapperError)
     assert issubclass(ChannelError, JunctionMapperError)
+
+
+def test_anisotropic_xy_pixels_raise_naming_both_values(tmp_path):
+    path = write_ome(
+        tmp_path / "aniso.ome.tif", planes_with_distinct_values(), "CYX", size_um=0.5, size_y_um=0.7
+    )
+    with pytest.raises(CalibrationError, match="isotropic") as exc:
+        list(read_fields(path, make_cfg()))
+    assert "0.5" in str(exc.value) and "0.7" in str(exc.value)
+
+
+def test_equal_xy_pixels_are_accepted(tmp_path):
+    path = write_ome(tmp_path / "iso.ome.tif", planes_with_distinct_values(), "CYX", size_um=0.4)
+    assert next(read_fields(path, make_cfg())).pixel_size_um == pytest.approx(0.4)
+
+
+def test_reads_ome_zarr_and_maps_channels_by_name(tmp_path):
+    path = tmp_path / "img.ome.zarr"
+    group = zarr.open_group(path, mode="w", zarr_format=2)
+    group.create_array("0", data=planes_with_distinct_values(), chunks=(1, 64, 64))
+    axes = [{"name": "c", "type": "channel"}] + [
+        {"name": n, "type": "space", "unit": "micrometer"} for n in "yx"
+    ]
+    scale = {"type": "scale", "scale": [1, 0.5, 0.5]}
+    group.attrs["multiscales"] = [
+        {"version": "0.4", "name": "img", "axes": axes,
+         "datasets": [{"path": "0", "coordinateTransformations": [scale]}]}
+    ]
+    group.attrs["omero"] = {"channels": [{"label": n} for n in NAMES]}
+
+    fields = list(read_fields(path, make_cfg()))
+    assert len(fields) == 1
+    f = fields[0]
+    assert f.planes[Role.JM1].shape == (64, 64)
+    assert f.markers[Role.JM1] == "Na/K-ATPase"
+    assert f.planes[Role.JM1].mean() == 2
+    assert f.planes[Role.NUCLEUS].mean() == 1
+    assert f.pixel_size_um == pytest.approx(0.5)
