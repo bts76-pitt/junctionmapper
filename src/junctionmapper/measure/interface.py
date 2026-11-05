@@ -198,3 +198,110 @@ def band_metrics(band, marker_image, t) -> BandMetrics:
         intensity_per_area=ratio(intensity, interface_area),
         cluster_density=ratio(intensity, marker_area),
     )
+
+
+# --- Marker-bearing contour metrics (parameters 3, 8, 9 and Coverage Index) ---
+#
+# DELIBERATE DIVERGENCE FROM THE JAVA ORIGINAL -- do not "fix" back.
+#
+# Java ``Cell_Membrane_Corner.getECadherinPoints`` (JM1) decides whether a step
+# between consecutive above-threshold pixels is "connected" with
+#     next.x == last.x-1 || next.x == last.x+1 ||
+#     next.y == last.y-1 || next.y == last.y+1
+# i.e. an OR: "x differs by exactly 1, or y differs by exactly 1". A step of
+# (dy, dx) = (1, 30) is therefore counted as connected, so Fragmented Junction
+# Contour measures across exactly the gaps it exists to exclude. Java ``getMeasurementPoints`` (JM2) uses the correct AND
+# (both coordinates within +/-1) but advances ``last`` at EVERY contour pixel,
+# so the step from an unstained pixel into a fragment is counted: JM2
+# over-counts by one entry step per fragment.
+#
+# Here both markers use one symmetric rule: connectivity is AND (both
+# coordinates differ by at most 1, so 8-adjacency) and ``last`` advances only
+# at above-threshold pixels. Junction Contour and Junction straight-line length
+# match the Java JM1 definitions exactly (gap-spanning sum; first-to-last
+# above-threshold distance).
+#
+# "Above threshold" is ``mask_above(marker_image, t) > 0`` (Java threshold image).
+
+
+def _marker_walk(pixels, marker_image, t) -> np.ndarray:
+    """Above-threshold pixels of the walk, in walk order, as (K, 2) float64.
+
+    Repeated pixels are kept (they are part of the walk). Raises ConfigError
+    for a bad ``pixels`` shape, a non-2-D image, NaN ``t`` or pixels outside
+    the image.
+    """
+    arr = np.asarray(pixels)
+    if arr.size == 0:
+        return np.empty((0, 2))
+    path = _as_path(arr)
+    image = np.asarray(marker_image)
+    if image.ndim != 2:
+        raise ConfigError(f"marker_image must be 2-D; got shape {image.shape}")
+    above = mask_above(image, t) > 0
+    rows, cols = above.shape
+    r, c = arr[:, 0].astype(np.intp), arr[:, 1].astype(np.intp)
+    if r.min() < 0 or c.min() < 0 or r.max() >= rows or c.max() >= cols:
+        raise ConfigError(f"interface pixels fall outside the image shape {above.shape}")
+    return path[above[r, c]]
+
+
+def fragmented_contour(pixels, marker_image, t) -> float:
+    """Fragmented Junction Contour (parameter 3), in pixels.
+
+    Sum of Euclidean steps (1 orthogonal, sqrt(2) diagonal) between consecutive
+    above-threshold pixels of the walk, counting a step only when both
+    coordinates differ by at most 1. Gaps are never bridged. 0.0 when fewer
+    than two pixels are above threshold. See the module note above for the
+    divergence from the Java (OR rule, JM2 entry step).
+    """
+    pts = _marker_walk(pixels, marker_image, t)
+    if len(pts) < 2:
+        return 0.0
+    d = np.diff(pts, axis=0)
+    connected = np.abs(d).max(axis=1) <= 1
+    return math.fsum(np.hypot(d[connected, 0], d[connected, 1]))
+
+
+def junction_contour(pixels, marker_image, t) -> float:
+    """Junction Contour (parameter 8), in pixels.
+
+    Sum of Euclidean steps between consecutive above-threshold pixels,
+    spanning gaps (matches Java ``eCadherinDistanceToNeighbour``). 0.0 when
+    fewer than two pixels are above threshold.
+    """
+    pts = _marker_walk(pixels, marker_image, t)
+    if len(pts) < 2:
+        return 0.0
+    d = np.diff(pts, axis=0)
+    return math.fsum(np.hypot(d[:, 0], d[:, 1]))
+
+
+def junction_straight_line(pixels, marker_image, t) -> float:
+    """Straight-line Junction Length (parameter 9), in pixels.
+
+    Euclidean distance from the first to the last above-threshold pixel of the
+    walk (matches Java ``eCadherinEuclidianDistance``). 0.0 when fewer than two
+    pixels are above threshold.
+    """
+    pts = _marker_walk(pixels, marker_image, t)
+    if len(pts) < 2:
+        return 0.0
+    d = pts[-1] - pts[0]
+    return float(math.hypot(d[0], d[1]))
+
+
+def coverage_index(pixels, marker_image, t) -> float:
+    """Coverage Index = fragmented_contour / interface_contour (dimensionless).
+
+    0.0 when the interface has length but no marker step exists (fewer than
+    two above-threshold pixels). NaN when ``interface_contour`` is 0 (empty or
+    single-pixel interface), where the ratio is undefined. Bounded by 1 (the
+    connected chords are shortcuts of the walk, by the triangle inequality), up
+    to last-ulp rounding; deliberately not clamped.
+    """
+    contour = interface_contour(pixels)
+    frag = fragmented_contour(pixels, marker_image, t)
+    if contour == 0.0:
+        return float("nan")
+    return frag / contour
