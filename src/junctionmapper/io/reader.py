@@ -51,7 +51,7 @@ def _read_bioio(path: Path, cfg: RunConfig) -> Iterator[Field]:
         # Names, channel indices and calibration are per scene: scenes may differ.
         names = [str(n) for n in img.channel_names]
         indices = _resolve_channels(cfg, names)
-        pixel_size = _resolve_pixel_size(_metadata_pixel_size(img), cfg)
+        pixel_size = _resolve_pixel_size(img, cfg)
         safe_scene = _SAFE_ID_CHARS.sub("_", str(scene))
         for t in range(img.dims.T):
             for z in range(img.dims.Z):
@@ -120,6 +120,10 @@ _UM_PER_UNIT = {
 }
 
 
+class _UnsupportedUnit(CalibrationError):
+    """The metadata declares a unit we cannot convert. An explicit config value may override it."""
+
+
 def _to_um(unit, axis: str) -> float:
     """Factor converting a length in ``unit`` to micrometres; None means the format default (um)."""
     if unit is None:
@@ -127,7 +131,7 @@ def _to_um(unit, axis: str) -> float:
     key = str(getattr(unit, "value", unit)).strip().lower()
     key = key.removeprefix("unitslength.")
     if key not in _UM_PER_UNIT:
-        raise CalibrationError(
+        raise _UnsupportedUnit(
             f"image metadata gives {axis} pixel size in unsupported unit {unit!r}; "
             "cannot convert to micrometres"
         )
@@ -172,7 +176,17 @@ def _metadata_pixel_size(img) -> float | None:
     return float(x)
 
 
-def _resolve_pixel_size(metadata_um: float | None, cfg: RunConfig) -> float:
+def _resolve_pixel_size(img, cfg: RunConfig) -> float:
+    """Metadata wins over config, except that a unit we cannot convert yields to an
+    explicit ``cfg.pixel_size_um`` — otherwise such a file would be unanalysable."""
+    try:
+        metadata_um = None if img is None else _metadata_pixel_size(img)
+    except _UnsupportedUnit as exc:
+        if cfg.pixel_size_um is not None:
+            return cfg.pixel_size_um
+        raise CalibrationError(
+            f"{exc}; set pixel_size_um in the run configuration to override it"
+        ) from None
     if metadata_um is not None:
         return metadata_um
     if cfg.pixel_size_um is not None:

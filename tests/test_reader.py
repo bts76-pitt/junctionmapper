@@ -213,10 +213,18 @@ def test_millimeter_zarr_is_converted_to_um(tmp_path):
     assert next(read_fields(path, make_cfg())).pixel_size_um == pytest.approx(0.5)
 
 
-def test_unsupported_zarr_unit_raises(tmp_path):
+def test_unsupported_unit_raises_when_nothing_is_configured(tmp_path):
     path = _write_zarr(tmp_path / "px.ome.zarr", unit="parsec", scale=1)
-    with pytest.raises(CalibrationError, match="parsec"):
-        list(read_fields(path, make_cfg()))
+    with pytest.raises(CalibrationError, match="parsec") as exc:
+        list(read_fields(path, make_cfg(pixel_size_um=None)))
+    assert "set pixel_size_um" in str(exc.value)
+
+
+def test_configured_pixel_size_overrides_an_unconvertible_unit(tmp_path):
+    """Metadata normally wins, but a unit we cannot convert must not make the file
+    unanalysable when the operator has supplied a calibration explicitly."""
+    path = _write_zarr(tmp_path / "px.ome.zarr", unit="parsec", scale=1)
+    assert next(read_fields(path, make_cfg(pixel_size_um=0.325))).pixel_size_um == 0.325
 
 
 def test_nanometer_ome_tiff_is_converted_to_um(tmp_path):
@@ -275,7 +283,13 @@ def test_field_id_scene_component_is_sanitised(tmp_path):
 
 def test_duplicated_tiff_axes_raise_format_error(tmp_path):
     path = tmp_path / "dup.tif"
-    tifffile.imwrite(path, np.zeros((2, 3, 8, 8), np.uint16), metadata={"axes": "SQYX"})
+    tifffile.imwrite(
+        path,
+        np.zeros((2, 3, 8, 8), np.uint16),
+        photometric="minisblack",
+        planarconfig="separate",
+        metadata={"axes": "SQYX"},
+    )
     with pytest.raises(FormatError, match="SQYX"):
         list(read_fields(path, make_cfg(jm1=0, jm2=1, nucleus=0)))
 
