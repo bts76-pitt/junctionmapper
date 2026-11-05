@@ -14,3 +14,17 @@ def test_is_not_a_binary_mask():
 
 def test_threshold_is_exclusive():
     assert mask_above(np.array([[50]], dtype=np.float32), 50).tolist() == [[0.0]]
+
+
+def test_integer_dtype_is_preserved():
+    """Downstream code sums these values; an unexpected float/bool cast would
+    change the intensity metrics without changing any shape."""
+    out = mask_above(np.array([[10, 60]], dtype=np.uint16), 50)
+    assert out.dtype == np.uint16
+    assert out.tolist() == [[0, 60]]
+
+
+def test_the_input_is_not_modified():
+    image = np.array([[10, 60]], dtype=np.float32)
+    mask_above(image, 50)
+    assert image.tolist() == [[10.0, 60.0]]
