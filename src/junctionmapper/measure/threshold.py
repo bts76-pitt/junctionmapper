@@ -5,8 +5,6 @@ collapsing it to a boolean mask. Downstream code uses the same array both as a
 mask (``> 0``) and as the intensity source, so the values must be preserved.
 """
 
-import math
-
 import numpy as np
 
 from junctionmapper.errors import ConfigError
@@ -22,7 +20,9 @@ def mask_above(image: np.ndarray, t: float) -> np.ndarray:
     A NaN threshold would zero the whole image and report every metric as zero,
     so it is rejected rather than propagated.
     """
-    if isinstance(t, float) and math.isnan(t):
+    # np.isnan rather than math.isnan(float): isinstance(t, float) is False for
+    # np.float32, so a float32 NaN would have slipped through and zeroed the image.
+    if np.isscalar(t) and not isinstance(t, (bool, np.bool_)) and np.isnan(t):
         raise ConfigError("threshold is NaN; every pixel would be zeroed")
     out = np.zeros_like(image)
     keep = image > t

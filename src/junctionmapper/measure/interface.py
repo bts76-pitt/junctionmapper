@@ -96,10 +96,13 @@ def dilated_band(pixels, shape, cycles: int) -> np.ndarray:
     undilated run. A band near the image edge is truncated at the edge.
 
     Divergence from the Java original (deliberate, do not "fix" back): the
-    Java ``getDilatedImage`` never dilates into the outermost 1-px frame of
-    the image, so cells close to the border get a narrower band than the
-    documented formula gives. That is an implementation border artefact, not
-    the published algorithm, so uniform dilation is used here.
+    Java ``getDilatedImage`` suppresses a newly dilated pixel whenever any of
+    its 3x3 neighbours falls outside ``[1, w-2] x [1, h-2]``, so dilation is
+    dead at indices 0, 1, w-2 and w-1 -- a 2-px dead zone that compounds with
+    each iteration. Cells within a couple of pixels of the border therefore
+    get a narrower band there than the documented formula gives. That is an
+    implementation border artefact, not the published algorithm, so uniform
+    dilation is used here.
 
     Raises ConfigError for a bad ``pixels`` shape, a negative or non-integer
     ``cycles``, or pixels outside ``shape``.
@@ -113,7 +116,10 @@ def dilated_band(pixels, shape, cycles: int) -> np.ndarray:
         raise ConfigError(
             f"interface pixels must have shape (N, 2) of (row, col); got {arr.shape}"
         )
-    rows, cols = shape
+    try:
+        rows, cols = shape
+    except (TypeError, ValueError):
+        raise ConfigError(f"shape must be a (rows, cols) pair; got {shape!r}") from None
     mask = np.zeros((rows, cols), dtype=bool)
     if len(arr):
         r, c = arr[:, 0].astype(np.intp), arr[:, 1].astype(np.intp)

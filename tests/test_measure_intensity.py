@@ -164,3 +164,17 @@ def test_integer_images_sum_without_overflow():
 def test_nan_threshold_raises():
     with pytest.raises(ConfigError):
         band_metrics(line_band(), np.zeros((20, 20), np.float32), t=float("nan"))
+
+
+def test_two_cycles_gives_a_five_by_five_square_not_a_diamond():
+    """Area, not just width. A 4-connected element iterated twice also spans 5 px in
+    the centre column, so only the area distinguishes the two: 25 against 13."""
+    band = dilated_band(np.array([[6, 6]]), (20, 20), cycles=2)
+    assert band.sum() == 25
+    assert dilated_band(np.array([[6, 6]]), (20, 20), cycles=3).sum() == 49
+
+
+def test_two_cycles_on_a_line_has_the_square_element_area():
+    pixels = np.array([[5, c] for c in range(2, 11)])  # kept off the border: no clipping
+    assert dilated_band(pixels, (20, 20), cycles=1).sum() == 3 * 11
+    assert dilated_band(pixels, (20, 20), cycles=2).sum() == 5 * 13

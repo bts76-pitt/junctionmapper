@@ -42,3 +42,10 @@ def test_a_nan_threshold_is_rejected():
     indistinguishable from a field that genuinely has no signal."""
     with pytest.raises(ConfigError, match="NaN"):
         mask_above(np.array([[10.0, 60.0]], dtype=np.float32), float("nan"))
+
+
+def test_a_float32_nan_threshold_is_also_rejected():
+    """isinstance(t, float) is False for np.float32, so a float32 NaN once slipped
+    through the guard and silently zeroed the whole image."""
+    with pytest.raises(ConfigError, match="NaN"):
+        mask_above(np.array([[10.0, 60.0]], dtype=np.float32), np.float32("nan"))
