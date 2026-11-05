@@ -210,7 +210,8 @@ def band_metrics(band, marker_image, t) -> BandMetrics:
 #     next.y == last.y-1 || next.y == last.y+1
 # i.e. an OR: "x differs by exactly 1, or y differs by exactly 1". A step of
 # (dy, dx) = (1, 30) is therefore counted as connected, so Fragmented Junction
-# Contour measures across exactly the gaps it exists to exclude. Java ``getMeasurementPoints`` (JM2) uses the correct AND
+# Contour measures across exactly the gaps it exists to exclude.
+# Java ``getMeasurementPoints`` (JM2) uses the correct AND
 # (both coordinates within +/-1) but advances ``last`` at EVERY contour pixel,
 # so the step from an unstained pixel into a fragment is counted: JM2
 # over-counts by one entry step per fragment.

@@ -133,7 +133,9 @@ def test_coverage_never_exceeds_one_on_random_walks():
         path = np.cumsum(steps, axis=0) + 40
         img = (rng.random((80, 80)) > 0.4).astype(np.float32)
         c = coverage_index(path, img, t=0.5)
-        assert 0.0 <= c <= 1.0 + 1e-12 or math.isnan(c)
+        # Exact, not approximate: fsum is correctly rounded and the connected chords
+        # are disjoint sub-intervals of the walk, so no tolerance is needed.
+        assert 0.0 <= c <= 1.0 or math.isnan(c)
 
 
 def test_bad_inputs_raise_config_error():
@@ -146,3 +148,13 @@ def test_bad_inputs_raise_config_error():
         junction_straight_line(np.array([(50, 50)]), img, t=50)
     with pytest.raises(ConfigError):
         coverage_index(straight_run(10), np.zeros(5), t=50)
+
+
+def test_coverage_denominator_is_the_interface_contour_not_the_junction_contour():
+    """With unstained pixels at both ends the two candidate denominators differ, so this
+    pins the choice directly. Every other coverage fixture happens to have
+    junction_contour == interface_contour, which leaves the choice unpinned."""
+    px, img = straight_run(10), _img([2, 3, 7])
+    assert junction_contour(px, img, t=50) == pytest.approx(5.0)   # 2->3->7, gap-spanning
+    assert fragmented_contour(px, img, t=50) == pytest.approx(1.0)  # only 2->3 is adjacent
+    assert coverage_index(px, img, t=50) == pytest.approx(1.0 / 9.0)
