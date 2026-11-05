@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from junctionmapper.errors import ConfigError
+from junctionmapper.errors import BoundaryError, ConfigError
 from junctionmapper.geometry.boundary import trace_boundary
-from junctionmapper.geometry.corners_tcj import neighbour_at, tcj_corners
+from junctionmapper.geometry.corners_tcj import merge_short_runs, neighbour_at, tcj_corners
 
 
 def two_cells_sharing_a_vertical_edge():
@@ -175,3 +175,131 @@ def test_bad_search_radius_is_a_config_error(radius):
     b = trace_boundary(labels, 1)
     with pytest.raises(ConfigError):
         neighbour_at(labels, b, 1, search_radius=radius)
+
+
+# --- minimum-run filter -----------------------------------------------------------
+
+def _runs(ids):
+    """Circular run lengths of a sequence (empty/constant -> [len])."""
+    ids = np.asarray(ids)
+    ch = np.flatnonzero(ids != np.roll(ids, 1))
+    if ch.size == 0:
+        return [len(ids)]
+    return np.diff(np.append(ch, ch[0] + len(ids))).tolist()
+
+
+def test_one_and_two_pixel_runs_are_absorbed_into_the_longer_neighbour():
+    ids = np.array([0] * 5 + [4] + [2] * 6 + [7, 7] + [3] * 5)
+    out = merge_short_runs(ids, 3)
+    assert out.tolist() == [0] * 5 + [2] * 9 + [3] * 5
+    assert tcj_corners(ids).tolist() == [0, 5, 14]
+    assert tcj_corners(ids, min_run=1).tolist() == [0, 5, 6, 12, 14]
+
+
+def test_equal_length_neighbours_tie_to_the_smaller_label():
+    ids = np.array([5] * 4 + [9] + [3] * 4)
+    assert merge_short_runs(ids, 3).tolist() == [5] * 4 + [3] * 5
+
+
+def test_short_run_spanning_the_wrap_is_merged():
+    ids = np.array([2, 0, 0, 0, 0, 3, 3, 3, 3, 2])      # 2s at positions 9 and 0
+    out = merge_short_runs(ids, 3)
+    assert out.tolist() == [0, 0, 0, 0, 0, 3, 3, 3, 3, 0]
+    assert tcj_corners(ids).tolist() == [5, 9]
+
+
+def test_all_runs_sub_threshold_collapses_to_a_single_identity():
+    ids = np.array([1, 2, 3, 4])
+    out = merge_short_runs(ids, 3)
+    assert len(set(out.tolist())) == 1 and len(out) == 4
+    assert len(tcj_corners(ids)) == 0
+
+
+def test_merge_does_not_mutate_and_is_start_independent():
+    ids = np.array([0] * 5 + [4] + [2] * 6 + [7, 7] + [3] * 5)
+    before = ids.copy()
+    merge_short_runs(ids, 3)
+    assert np.array_equal(ids, before)
+    base = merge_short_runs(ids, 3)
+    for shift in range(len(ids)):
+        assert np.array_equal(np.roll(merge_short_runs(np.roll(ids, shift), 3), -shift), base)
+
+
+def test_merge_with_min_run_one_is_identity():
+    ids = np.array([1, 2, 2, 3, 1])
+    assert merge_short_runs(ids, 1).tolist() == ids.tolist()
+
+
+def test_min_run_one_reproduces_unfiltered_corners_on_three_cell_fixture():
+    b, ids = _ids(three_cells_meeting_at_a_point())
+    raw = np.flatnonzero(ids != np.roll(ids, 1))
+    assert tcj_corners(ids, min_run=1).tolist() == raw.tolist()
+    assert len(tcj_corners(ids)) == 2
+
+
+@pytest.mark.parametrize("m", [0, -2, 2.5, True, "3"])
+def test_bad_min_run_is_a_config_error(m):
+    with pytest.raises(ConfigError):
+        tcj_corners(np.array([1, 1, 2, 2]), min_run=m)
+    with pytest.raises(ConfigError):
+        merge_short_runs(np.array([1, 1, 2, 2]), m)
+
+
+def test_tcj_corners_rejects_non_1d_input():
+    with pytest.raises(ConfigError):
+        tcj_corners(np.zeros((3, 3), dtype=int))
+
+
+def _voronoi(n_seeds=300, size=480, seed=7):
+    from scipy.spatial import cKDTree
+    rng = np.random.default_rng(seed)
+    pts = rng.uniform(0, size, (n_seeds, 2))
+    yy, xx = np.mgrid[0:size, 0:size]
+    _, idx = cKDTree(pts).query(np.column_stack([yy.ravel(), xx.ravel()]))
+    return idx.reshape(size, size) + 1
+
+
+def _field_stats(min_run):
+    labels = _voronoi()
+    interior = [l for l in np.unique(labels)
+                if not ((labels[0] == l).any() or (labels[-1] == l).any()
+                        or (labels[:, 0] == l).any() or (labels[:, -1] == l).any())]
+    short = total = 0
+    seen = {}
+    corners = {}
+    for l in interior:
+        try:
+            b = trace_boundary(labels, l)
+        except BoundaryError:      # pixel-grid sliver; not a measurable cell
+            continue
+        ids = neighbour_at(labels, b, l)
+        if min_run > 1:
+            ids = merge_short_runs(ids, min_run)
+        rl = _runs(ids)
+        total += len(rl) if len(rl) > 1 else 0
+        short += sum(1 for r in rl if r < 3) if len(rl) > 1 else 0
+        c = tcj_corners(ids, min_run=1)
+        corners[l] = len(c)
+        seen[l] = set(ids.tolist())
+    disagree = pairs = 0
+    for a in seen:
+        for b_ in seen[a]:
+            if b_ in seen and a < b_:
+                pairs += 1
+                disagree += a not in seen[b_]
+    return short, total, disagree, pairs, corners, seen
+
+
+def test_voronoi_field_default_filter_leaves_no_short_interface():
+    short, total, disagree, pairs, corners, seen = _field_stats(3)
+    print("filtered", short, total, disagree, pairs)
+    assert short == 0
+    for l, c in corners.items():
+        n = len([x for x in seen[l] if x != 0])
+        assert abs(c - n) <= 1, (l, c, n)
+
+
+def test_voronoi_field_unfiltered_has_short_interfaces():
+    short, total, disagree, pairs, corners, seen = _field_stats(1)
+    print("raw", short, total, disagree, pairs)
+    assert short > 0
