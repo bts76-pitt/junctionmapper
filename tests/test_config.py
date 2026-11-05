@@ -97,3 +97,13 @@ def test_dilation_um_without_any_pixel_size_raises_at_call_time():
     cfg = RunConfig(channels=_minimal_channels(), pixel_size_um=None, dilation_um=1.5)
     with pytest.raises(ValueError):
         cfg.resolved_dilation_px()
+
+
+def test_reproducibility_parameters_default_and_validate():
+    cfg = RunConfig(channels=_minimal_channels(), pixel_size_um=0.3)
+    assert (cfg.epsilon_px, cfg.tcj_min_run, cfg.neighbour_radius_px) == (2.0, 3, 2)
+    for bad in ({"epsilon_px": 0}, {"epsilon_px": float("nan")}, {"epsilon_px": True},
+                {"tcj_min_run": 0}, {"tcj_min_run": True}, {"tcj_min_run": 2.5},
+                {"neighbour_radius_px": 0}, {"neighbour_radius_px": False}):
+        with pytest.raises(ValidationError):
+            RunConfig(channels=_minimal_channels(), pixel_size_um=0.3, **bad)

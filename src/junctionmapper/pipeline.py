@@ -20,7 +20,9 @@ from junctionmapper.qc import assess_cell
 from junctionmapper.segment.cellpose import Segmentation
 from junctionmapper.tables import make_frame
 
-DEFAULT_EPSILON = 2.0   # Douglas-Peucker tolerance in pixels; RunConfig carries none
+# Geometry-layer constants that RunConfig records but the geometry functions do not yet accept.
+_GEOMETRY_TCJ_MIN_RUN = 3
+_GEOMETRY_NEIGHBOUR_RADIUS = 2
 METHODS = ("dp", "tcj")
 
 
@@ -30,6 +32,7 @@ class FieldResult:
     cells: pd.DataFrame
     nuclei: pd.DataFrame
     flags: pd.DataFrame
+    nuclei_distances: pd.DataFrame
 
 
 def resolve_thresholds(field: Field, cfg: RunConfig) -> dict[Role, float]:
@@ -59,12 +62,21 @@ def resolve_thresholds(field: Field, cfg: RunConfig) -> dict[Role, float]:
 
 
 def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
-                  epsilon: float = DEFAULT_EPSILON) -> FieldResult:
+                  epsilon: float | None = None) -> FieldResult:
     """Measure every non-border, non-degenerate cell of ``field``.
 
     Both corner methods are run; JM1 and (if present) JM2 are measured identically.
-    ``epsilon`` is the Douglas-Peucker tolerance (px) and is recorded in the cells table.
+    The Douglas-Peucker tolerance is ``cfg.epsilon_px`` unless ``epsilon`` is passed, and the
+    value used is recorded in ``cells.epsilon``. ``cfg.tcj_min_run`` and
+    ``cfg.neighbour_radius_px`` are recorded too; the geometry layer fixes them at 3 and 2, so
+    other values raise ConfigError rather than being silently ignored.
     """
+    if (cfg.tcj_min_run, cfg.neighbour_radius_px) != (_GEOMETRY_TCJ_MIN_RUN, _GEOMETRY_NEIGHBOUR_RADIUS):
+        raise ConfigError(
+            "tcj_min_run/neighbour_radius_px other than 3/2 are not supported by the geometry "
+            f"layer yet (got {cfg.tcj_min_run}/{cfg.neighbour_radius_px})")
+    if epsilon is None:
+        epsilon = cfg.epsilon_px
     labels = np.asarray(seg.cells)
     nuc_labels = np.asarray(seg.nuclei)
     if labels.ndim != 2:
@@ -79,9 +91,9 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
     roles = [r for r in (Role.JM1, Role.JM2) if r in field.planes and r in thresholds
              and any(c.role == r for c in cfg.channels)]
 
-    mapping, nflags = associate(labels, nuc_labels) if nuc_labels.shape == labels.shape else ({}, None)
-    if nflags is None:
+    if nuc_labels.shape != labels.shape:
         raise ConfigError(f"nucleus labels shape {nuc_labels.shape} != cell labels {labels.shape}")
+    mapping, nflags = associate(labels, nuc_labels)
     nuc_of = {n: c for c, ns in mapping.items() for n in ns}
 
     iface_rows, cell_rows, flag_rows = [], [], []
@@ -89,11 +101,13 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
         fl = assess_cell(labels, cid, epsilon)
         area = int((labels == cid).sum())
         counts = {m: 0 for m in METHODS}
+        neighbours: set[int] = set()
         measured = not (fl.border_touching or fl.degenerate)
         if measured:
             for method in METHODS:
                 for itf in extract_interfaces(labels, cid, method, epsilon):
                     counts[method] += 1
+                    neighbours.add(int(itf.neighbour_id))
                     pix = itf.pixels
                     contour = mi.interface_contour(pix)
                     straight = mi.straight_line_length(pix)
@@ -126,14 +140,17 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                             "marker_area_um2": bm.marker_area_px * px * px,
                             "marker_intensity": bm.marker_intensity,
                             "interface_occupancy_pct": bm.interface_occupancy_pct,
-                            "intensity_per_area": bm.intensity_per_area,
-                            "cluster_density": bm.cluster_density,
+                            "intensity_per_px2": bm.intensity_per_area,
+                            "intensity_per_um2": bm.intensity_per_area / (px * px),
+                            "cluster_density_per_px2": bm.cluster_density,
+                            "cluster_density_per_um2": bm.cluster_density / (px * px),
                         })
         cell_rows.append({
             "field_id": fid, "cell_id": cid, "area_px": area, "area_um2": area * px * px,
-            "measured": measured, "n_interfaces": sum(counts.values()),
+            "measured": measured, "n_neighbours": len(neighbours),
             "n_interfaces_dp": counts["dp"], "n_interfaces_tcj": counts["tcj"],
             "n_nuclei": len(mapping.get(cid, [])), "epsilon": float(epsilon),
+            "tcj_min_run": cfg.tcj_min_run, "neighbour_radius_px": cfg.neighbour_radius_px,
             "dilation_cycles": cycles, "pixel_size_um": px,
         })
         flag_rows.append({
@@ -148,11 +165,18 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
 
     # Nuclei: intra-nuclear distances are summarised per nucleus (mean over its pairs).
     cents = nucleus_centroids(nuc_labels)
-    dists: dict[int, list[float]] = {}
+    pairs: dict[int, list[tuple[float, int]]] = {}
     for i, j, d in intra_distances(cents, cfg.num_intra_cells, cfg.all_pairs):
-        dists.setdefault(i, []).append(d)
-        if cfg.all_pairs:           # pairs are emitted once (i < j); credit both nuclei
-            dists.setdefault(j, []).append(d)
+        pairs.setdefault(i, []).append((d, j))
+    dists: dict[int, list[float]] = {}
+    dist_rows = []
+    for i in sorted(pairs):
+        for rank, (d, j) in enumerate(sorted(pairs[i]), start=1):     # nearest first
+            dists.setdefault(i, []).append(d)
+            dist_rows.append({
+                "field_id": fid, "nucleus_id": i, "neighbour_nucleus_id": j,
+                "rank": rank, "distance_px": d, "distance_um": d * px,
+            })
     nuc_rows = []
     for nid, (r, c) in cents.items():
         ds = dists.get(nid, [])
@@ -168,4 +192,5 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
     return FieldResult(
         interfaces=make_frame("interfaces", iface_rows), cells=make_frame("cells", cell_rows),
         nuclei=make_frame("nuclei", nuc_rows), flags=make_frame("flags", flag_rows),
+        nuclei_distances=make_frame("nuclei_distances", dist_rows),
     )

@@ -6,7 +6,9 @@ never hardcoded.
 
 from enum import StrEnum
 
-from pydantic import BaseModel, model_validator
+import math
+
+from pydantic import BaseModel, field_validator, model_validator
 
 from junctionmapper.errors import ConfigError
 
@@ -31,6 +33,24 @@ class RunConfig(BaseModel):
     num_intra_cells: int = 5
     all_pairs: bool = False
     threshold: dict[Role, float] | None = None
+    # Reproducibility parameters of the geometry layer; defaults are the values it uses.
+    epsilon_px: float = 2.0         # Douglas-Peucker tolerance
+    tcj_min_run: int = 3            # shortest contact run kept by the TCJ method
+    neighbour_radius_px: int = 2    # window radius when assigning boundary pixels a neighbour
+
+    @field_validator("epsilon_px", mode="before")
+    @classmethod
+    def _check_epsilon(cls, v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            raise ConfigError(f"epsilon_px must be a finite number > 0, got {v!r}")
+        return v
+
+    @field_validator("tcj_min_run", "neighbour_radius_px", mode="before")
+    @classmethod
+    def _check_positive_int(cls, v, info):
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise ConfigError(f"{info.field_name} must be an integer >= 1, got {v!r}")
+        return v
 
     @model_validator(mode="after")
     def _validate(self) -> "RunConfig":
