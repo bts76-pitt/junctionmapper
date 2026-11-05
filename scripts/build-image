@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Build the junctionmapper Apptainer image.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+if ! command -v apptainer >/dev/null 2>&1; then
+    module load apptainer/1.4.0
+fi
+
+exec apptainer build --fakeroot --force \
+    "$REPO/container/junctionmapper.sif" \
+    "$REPO/container/junctionmapper.def"

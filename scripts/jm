@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Run a command inside the junctionmapper Apptainer image.
+#
+#   ./scripts/jm pytest tests/test_config.py -v
+#   ./scripts/jm python -c "import junctionmapper"
+#
+# The repo is bind-mounted at /project and PYTHONPATH points at /project/src,
+# so source edits take effect immediately with no reinstall.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+IMAGE="${JM_IMAGE:-$REPO/container/junctionmapper.sif}"
+
+if [ ! -f "$IMAGE" ]; then
+    echo "error: image not found at $IMAGE" >&2
+    echo "build it with: ./scripts/build-image" >&2
+    exit 1
+fi
+
+if ! command -v apptainer >/dev/null 2>&1; then
+    module load apptainer/1.4.0
+fi
+
+exec apptainer exec --cleanenv \
+    --bind "$REPO:/project" \
+    --pwd /project \
+    "$IMAGE" "$@"

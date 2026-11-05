@@ -1,0 +1,53 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+%labels
+    Name junctionmapper
+    Description Runtime for the junctionmapper library and test suite
+
+%post
+    set -eux
+    apt-get update
+    apt-get install -y --no-install-recommends git
+    rm -rf /var/lib/apt/lists/*
+
+    pip install --no-cache-dir --upgrade pip
+
+    # Runtime dependencies. Kept in sync with pyproject.toml [project.dependencies].
+    pip install --no-cache-dir \
+        "numpy>=1.26" \
+        "scipy>=1.11" \
+        "scikit-image>=0.22" \
+        "pandas>=2.1" \
+        "pyarrow>=14" \
+        "pydantic>=2.5" \
+        "jinja2>=3.1" \
+        "matplotlib>=3.8" \
+        "typer>=0.12" \
+        "pyyaml>=6.0" \
+        "bioio>=1.1" \
+        "bioio-ome-tiff>=1.0" \
+        "bioio-ome-zarr>=1.0" \
+        "tifffile>=2024.1.30" \
+        "pillow>=10.0"
+
+    # Test tooling.
+    pip install --no-cache-dir "pytest>=8.0" "pytest-cov>=4.1"
+
+    # NOTE: cellpose (and torch) are deliberately NOT in this image. The
+    # library imports cellpose lazily and the test suite stubs it, so the
+    # whole suite runs without it. Build a separate image with
+    # `pip install 'cellpose>=4.0'` for real segmentation runs on a GPU node.
+
+%environment
+    export PYTHONPATH=/project/src:${PYTHONPATH}
+    export MPLBACKEND=Agg
+    export PYTHONDONTWRITEBYTECODE=1
+
+%runscript
+    exec "$@"
+
+%test
+    python -c "import numpy, scipy, skimage, pandas, pydantic, jinja2, matplotlib, typer, yaml, tifffile, PIL; print('core imports OK')"
+    python -c "import bioio; print('bioio OK')"
+    python -c "import pytest; print('pytest', pytest.__version__)"
