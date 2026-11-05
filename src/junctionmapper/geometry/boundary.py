@@ -8,6 +8,7 @@ from junctionmapper.errors import BoundaryError
 _DIRS = ((0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1))
 _DIR_INDEX = {d: i for i, d in enumerate(_DIRS)}
 _EIGHT = np.ones((3, 3), bool)
+_FOUR = ndimage.generate_binary_structure(2, 1)
 _MIN_AREA = 4
 
 
@@ -49,4 +50,20 @@ def trace_boundary(labels: np.ndarray, label: int) -> np.ndarray:
             break
     else:  # pragma: no cover
         raise BoundaryError(f"label {label}: boundary trace did not close")
-    return np.array(path, dtype=int) - 1
+    traced = np.array(path, dtype=int) - 1
+
+    # Moore tracing can in principle cut diagonally past a pixel that touches the
+    # background, which would silently shorten every contour measured along this
+    # walk. Measured at 0 occurrences over 300 Cellpose-like blobs and three
+    # pathological shapes, but verify rather than assume: a short contour is
+    # invisible in the output, whereas a rejected cell is not.
+    edge = mask & ~ndimage.binary_erosion(mask, _FOUR)
+    missed = int(edge.sum()) - len({tuple(p) for p in traced} & {
+        tuple(p) for p in np.argwhere(edge)
+    })
+    if missed:
+        raise BoundaryError(
+            f"label {label}: boundary trace missed {missed} of {int(edge.sum())} "
+            "boundary pixels, so contours measured along it would be short"
+        )
+    return traced

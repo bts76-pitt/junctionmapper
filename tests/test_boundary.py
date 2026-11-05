@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import ndimage
 import pytest
 
 from junctionmapper.errors import BoundaryError, JunctionMapperError
@@ -59,3 +60,16 @@ def test_other_labels_do_not_block_trace():
     b = trace_boundary(labels, 1)
     assert len(b) == 6 * 3 - 4                           # 6x3 block minus 4 interior
     assert np.all(labels[b[:, 0], b[:, 1]] == 1)
+
+
+def test_trace_covers_every_boundary_pixel():
+    """Contour lengths are counted along this walk, so a pixel the trace cuts past
+    would shorten the measurement with nothing in the output to show it."""
+    labels = np.zeros((12, 14), int)
+    labels[2:6, 2:6] = 1
+    labels[2:6, 8:12] = 1
+    labels[3, 6:9] = 1  # one-pixel-wide neck: the hard case for Moore tracing
+    b = trace_boundary(labels, 1)
+    mask = labels == 1
+    edge = mask & ~ndimage.binary_erosion(mask, ndimage.generate_binary_structure(2, 1))
+    assert {tuple(p) for p in np.argwhere(edge)} <= {tuple(p) for p in b}
