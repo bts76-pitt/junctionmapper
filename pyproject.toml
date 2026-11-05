@@ -44,3 +44,5 @@ packages = ["src/junctionmapper"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra"
+# Third-party noise from bioio-ome-tiff calling ome-types with a deprecated argument.
+filterwarnings = ["ignore:As of version 0.4.0, the parser argument is ignored:DeprecationWarning"]

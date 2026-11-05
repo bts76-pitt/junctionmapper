@@ -8,6 +8,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, model_validator
 
+from junctionmapper.errors import ConfigError
+
 
 class Role(StrEnum):
     JM1 = "JM1"
@@ -60,5 +62,5 @@ class RunConfig(BaseModel):
             return max(1, self.dilation_px)
         size = pixel_size_um if pixel_size_um is not None else self.pixel_size_um
         if not size or size <= 0:
-            raise ValueError("dilation_um requires a positive pixel size")
+            raise ConfigError("dilation_um requires a positive pixel size")
         return max(1, round(self.dilation_um / size))
