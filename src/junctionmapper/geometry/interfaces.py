@@ -13,14 +13,19 @@ TCJ_MIN_RUN = 3     # must match the default of tcj_corners so ids and corners a
 
 @dataclass
 class Interface:
-    """A run of boundary positions of ``cell_id`` against one neighbour.
+    """An interface of ``cell_id`` against one neighbour, as the walk between two corners.
 
-    ``start_idx`` is the first boundary position of the run; ``end_idx`` is the first
-    position of the NEXT run (exclusive). The run covers positions
-    ``start_idx, start_idx+1, ..., end_idx-1`` modulo the boundary length, so the
-    interface that wraps through index 0 has ``start_idx > end_idx``. With a single
-    corner the run is the whole loop and ``start_idx == end_idx``. ``pixels`` is the
-    (row, col) walk in that order, hence contiguous across the wrap.
+    ``pixels`` is authoritative and INCLUSIVE of both corner pixels (start corner first,
+    end corner last), in walk order and contiguous, as in the reference method, so
+    contour and straight-line length are measured corner to corner. ``start_idx`` is the
+    boundary position of the start corner; ``end_idx`` is the boundary position of the
+    end corner, i.e. the first position of the next run. The walk is
+    ``start_idx, start_idx+1, ..., end_idx`` modulo the boundary length, so the interface
+    that wraps through index 0 has ``start_idx > end_idx``. Adjacent interfaces share
+    their common corner pixel, so a corner position is covered by exactly two interfaces
+    and every other position by one. When one run is the whole boundary (single corner,
+    or an engulfed cell) ``start_idx == end_idx`` and the start pixel is repeated as the
+    last pixel to close the loop, so the contour equals the true perimeter.
     """
     cell_id: int
     neighbour_id: "int | None"
@@ -79,8 +84,10 @@ def extract_interfaces(labels: np.ndarray, label: int, method: str,
         s = int(corners[k])
         e = int(corners[(k + 1) % m])
         length = (e - s) % n or n          # m == 1 -> e == s -> whole loop
-        idx = (s + np.arange(length)) % n
-        nb = int(run_ids[s]) if method == "tcj" else _modal_neighbour(ids[idx])
+        # modular, inclusive of the end corner (which is the start again for a loop)
+        idx = (s + np.arange(length + 1)) % n
+        run_idx = idx[:-1]
+        nb = int(run_ids[s]) if method == "tcj" else _modal_neighbour(ids[run_idx])
         if nb == 0:
             continue                       # free edge: consumes positions, not an interface
         out.append(Interface(cell_id=int(label), neighbour_id=nb, start_idx=s,
