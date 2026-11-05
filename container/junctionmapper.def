@@ -7,9 +7,11 @@ From: python:3.11-slim
 
 %post
     set -eux
-    apt-get update
-    apt-get install -y --no-install-recommends git
-    rm -rf /var/lib/apt/lists/*
+
+    # No apt-get here on purpose. CRC has no fakeroot binary and this user is
+    # not in /etc/subuid, so apt cannot drop privileges to _apt and dies with
+    # "setgroups (1: Operation not permitted)". Everything below is pure pip,
+    # which runs fine in the root-mapped namespace. Keep it that way.
 
     pip install --no-cache-dir --upgrade pip
 
