@@ -16,8 +16,9 @@ Units and formulas (``s`` = ``pixel_size_um``):
   * ``cluster_density_per_um2``   = cluster_density_per_px2 / s**2.
   * ``n_neighbours`` = distinct non-zero neighbour ids over both corner methods.
   * nuclei summary: ``n_intra_distances`` and ``mean_intra_distance_*`` are the count and
-    mean of that nucleus's rows in ``nuclei_distances`` (with ``all_pairs`` each pair is
-    emitted once, under the lower nucleus id).
+    mean of that nucleus's rows in ``nuclei_distances``. With ``all_pairs`` each pair is
+    stored once (under the lower id), so the summary reads rows where the nucleus appears in
+    either ``nucleus_id`` or ``neighbour_nucleus_id`` (n - 1 distances for every nucleus).
 """
 from __future__ import annotations
 

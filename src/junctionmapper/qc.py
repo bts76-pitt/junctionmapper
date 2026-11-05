@@ -23,7 +23,8 @@ class CellFlags:
     all_contacts_filtered: bool = False
 
 
-def assess_cell(labels: np.ndarray, label: int, epsilon: float) -> CellFlags:
+def assess_cell(labels: np.ndarray, label: int, epsilon: float, min_run: int = 3,
+                search_radius: int = _NEIGHBOUR_RADIUS) -> CellFlags:
     """QC flags for ``label``.
 
     ``degenerate`` is True when the boundary cannot be traced or either corner method
@@ -45,6 +46,9 @@ def assess_cell(labels: np.ndarray, label: int, epsilon: float) -> CellFlags:
     if (isinstance(epsilon, bool) or not isinstance(epsilon, (int, float, np.floating, np.integer))
             or not np.isfinite(epsilon) or epsilon <= 0):
         raise ConfigError(f"epsilon must be a finite number > 0, got {epsilon!r}")
+    for name, v in (("min_run", min_run), ("search_radius", search_radius)):
+        if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or v < 1:
+            raise ConfigError(f"{name} must be an integer >= 1, got {v!r}")
     if label == 0:
         raise ConfigError("label 0 is background, not a cell")
     labels = np.asarray(labels)
@@ -52,7 +56,7 @@ def assess_cell(labels: np.ndarray, label: int, epsilon: float) -> CellFlags:
     border = bool(mask.any() and (mask[0].any() or mask[-1].any()
                                   or mask[:, 0].any() or mask[:, -1].any()))
     near = ndimage.binary_dilation(mask, structure=np.ones((3, 3), bool),
-                                   iterations=_NEIGHBOUR_RADIUS)
+                                   iterations=search_radius)
     isolated = bool(mask.any() and not ((labels != 0) & (labels != label) & near).any())
 
     degenerate = False
@@ -66,7 +70,7 @@ def assess_cell(labels: np.ndarray, label: int, epsilon: float) -> CellFlags:
     except ConfigError:
         degenerate = True
     try:
-        n_tcj = len(tcj_corners(neighbour_at(labels, boundary, label)))
+        n_tcj = len(tcj_corners(neighbour_at(labels, boundary, label, search_radius=search_radius), min_run=min_run))
     except ConfigError:
         degenerate = True
     disagree = (
@@ -78,8 +82,8 @@ def assess_cell(labels: np.ndarray, label: int, epsilon: float) -> CellFlags:
     # interface, so the cell would silently contribute nothing.
     all_filtered = False
     if not isolated and n_tcj == 0:
-        raw = neighbour_at(labels, boundary, label)
-        filtered = merge_short_runs(raw, 3)
+        raw = neighbour_at(labels, boundary, label, search_radius=search_radius)
+        filtered = merge_short_runs(raw, min_run)
         all_filtered = bool((raw != 0).any() and not (filtered != 0).any())
 
     return CellFlags(border, isolated, degenerate, disagree, n_dp, n_tcj, all_filtered)

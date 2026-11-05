@@ -321,12 +321,46 @@ def test_epsilon_reaches_the_geometry_and_is_recorded():
     assert (arg.cells.epsilon == 2.0).all()
 
 
-def test_unsupported_geometry_parameters_are_rejected_not_ignored(setup):
-    f, seg, _ = setup
-    with pytest.raises(ConfigError):
-        measure_field(f, seg, make_cfg(tcj_min_run=4))
-    with pytest.raises(ConfigError):
-        measure_field(f, seg, make_cfg(neighbour_radius_px=3))
+def test_tcj_min_run_reaches_geometry_and_cells():
+    f, seg = zoo()
+    base = measure_field(f, seg, make_cfg())
+    live = measure_field(f, seg, make_cfg(tcj_min_run=1))
+    # default: cell 4's single-pixel contact with cell 5 is filtered out of tcj
+    assert (_row(base.cells, cell_id=4).n_interfaces_tcj, _row(base.flags, cell_id=4).n_corners_tcj) == (0, 0)
+    c4 = _row(live.cells, cell_id=4)
+    assert (c4.n_interfaces_tcj, c4.n_neighbours, c4.tcj_min_run) == (1, 1, 1)
+    f4 = _row(live.flags, cell_id=4)
+    assert (f4.n_corners_tcj, f4.all_contacts_filtered) == (2, False)
+    row = _row(live.interfaces, cell_id=4, corner_method="tcj", role="JM1")
+    assert (row.neighbour_id, row.start_idx, row.end_idx) == (5, 10, 11)
+    assert (base.cells.tcj_min_run == 3).all()
+
+
+def test_neighbour_radius_reaches_geometry_and_cells():
+    f, seg = zoo()
+    r1 = measure_field(f, seg, make_cfg(neighbour_radius_px=1))
+    assert _row(r1.flags, cell_id=4).isolated and _row(r1.flags, cell_id=5).isolated
+    assert (r1.cells.neighbour_radius_px == 1).all()
+    r3 = measure_field(f, seg, make_cfg(neighbour_radius_px=3))
+    row = _row(r3.interfaces, cell_id=4, corner_method="tcj", role="JM1")
+    assert (row.neighbour_id, row.start_idx, row.end_idx) == (5, 9, 12)
+    assert (r3.cells.neighbour_radius_px == 3).all()
+
+
+def test_short_contact_cells_n_neighbours():
+    f, seg = zoo()
+    cells = measure_field(f, seg, make_cfg()).cells
+    # n_neighbours is the set of distinct neighbour ids over BOTH corner methods. Cell 4's one
+    # contact (a single pixel, 2 px diagonal from cell 5) is dropped by tcj (shorter than
+    # min_run) and loses the dp modal vote to background, so neither method lists cell 5: 0.
+    # Cell 5 is only 2x2: one boundary pixel (41,43) sees cell 4 and one sees background in
+    # its dp run, a tie that goes to the nonzero label, so dp lists cell 4, while tcj filters
+    # the same 1-pixel contact and lists nothing: union = 1. The two
+    # methods genuinely disagree about whether cell 5 has a neighbour (and the relation is not
+    # reciprocal); the flags row says all_contacts_filtered=True. Expected, not a bug.
+    assert _row(cells, cell_id=4).n_neighbours == 0
+    c5 = _row(cells, cell_id=5)
+    assert (c5.n_neighbours, c5.n_interfaces_dp, c5.n_interfaces_tcj) == (1, 1, 0)
 
 
 # ---- item 2: nuclei ---------------------------------------------------------------------
@@ -387,9 +421,24 @@ def test_all_pairs_emits_each_unordered_pair_once():
     assert all(i < j for i, j in zip(d.nucleus_id, d.neighbour_nucleus_id))
     n1 = d[d.nucleus_id == 1].sort_values("rank")
     assert list(n1.distance_px) == pytest.approx([3.0, D13, D14])     # ranked nearest-first
+
+
+def test_all_pairs_summary_covers_every_distance_of_every_nucleus():
+    f, seg = zoo()
+    res = measure_field(f, seg, make_cfg(all_pairs=True))
     n = res.nuclei.set_index("nucleus_id")
-    assert [n.loc[i, "n_intra_distances"] for i in (1, 2, 3, 4)] == [3, 2, 1, 0]
-    assert math.isnan(n.loc[4, "mean_intra_distance_px"])
+    assert [n.loc[i, "n_intra_distances"] for i in (1, 2, 3, 4)] == [3, 3, 3, 3]
+    assert not n.mean_intra_distance_px.isna().any()
+    # nucleus 4 (highest id, stored only as the second element of its pairs):
+    assert n.loc[4, "mean_intra_distance_px"] == pytest.approx((D14 + D24 + D34) / 3)
+    assert n.loc[4, "mean_intra_distance_um"] == pytest.approx((D14 + D24 + D34) / 6)
+    assert n.loc[1, "mean_intra_distance_px"] == pytest.approx((3.0 + D13 + D14) / 3)
+    # derivable from the table by reading rows where the nucleus is in either id column
+    d = res.nuclei_distances
+    for nid in (1, 2, 3, 4):
+        rows = d[(d.nucleus_id == nid) | (d.neighbour_nucleus_id == nid)]
+        assert len(rows) == n.loc[nid, "n_intra_distances"]
+        assert rows.distance_px.mean() == pytest.approx(n.loc[nid, "mean_intra_distance_px"])
 
 
 def test_no_nucleus_gives_empty_nuclei_and_anucleate_flags(setup):

@@ -20,9 +20,6 @@ from junctionmapper.qc import assess_cell
 from junctionmapper.segment.cellpose import Segmentation
 from junctionmapper.tables import make_frame
 
-# Geometry-layer constants that RunConfig records but the geometry functions do not yet accept.
-_GEOMETRY_TCJ_MIN_RUN = 3
-_GEOMETRY_NEIGHBOUR_RADIUS = 2
 METHODS = ("dp", "tcj")
 
 
@@ -68,13 +65,8 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
     Both corner methods are run; JM1 and (if present) JM2 are measured identically.
     The Douglas-Peucker tolerance is ``cfg.epsilon_px`` unless ``epsilon`` is passed, and the
     value used is recorded in ``cells.epsilon``. ``cfg.tcj_min_run`` and
-    ``cfg.neighbour_radius_px`` are recorded too; the geometry layer fixes them at 3 and 2, so
-    other values raise ConfigError rather than being silently ignored.
+    ``cfg.neighbour_radius_px`` are passed to the geometry layer and recorded in ``cells``.
     """
-    if (cfg.tcj_min_run, cfg.neighbour_radius_px) != (_GEOMETRY_TCJ_MIN_RUN, _GEOMETRY_NEIGHBOUR_RADIUS):
-        raise ConfigError(
-            "tcj_min_run/neighbour_radius_px other than 3/2 are not supported by the geometry "
-            f"layer yet (got {cfg.tcj_min_run}/{cfg.neighbour_radius_px})")
     if epsilon is None:
         epsilon = cfg.epsilon_px
     labels = np.asarray(seg.cells)
@@ -98,14 +90,15 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
 
     iface_rows, cell_rows, flag_rows = [], [], []
     for cid in (int(c) for c in np.unique(labels) if c != 0):
-        fl = assess_cell(labels, cid, epsilon)
+        fl = assess_cell(labels, cid, epsilon, cfg.tcj_min_run, cfg.neighbour_radius_px)
         area = int((labels == cid).sum())
         counts = {m: 0 for m in METHODS}
         neighbours: set[int] = set()
         measured = not (fl.border_touching or fl.degenerate)
         if measured:
             for method in METHODS:
-                for itf in extract_interfaces(labels, cid, method, epsilon):
+                for itf in extract_interfaces(labels, cid, method, epsilon,
+                                           cfg.tcj_min_run, cfg.neighbour_radius_px):
                     counts[method] += 1
                     neighbours.add(int(itf.neighbour_id))
                     pix = itf.pixels
@@ -163,7 +156,12 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
             "anucleate": cid in nflags.anucleate_cells,
         })
 
-    # Nuclei: intra-nuclear distances are summarised per nucleus (mean over its pairs).
+    # Nuclei: intra-nuclear distances are summarised per nucleus. With k-nearest, a nucleus's
+    # summary is over its own rows in ``nuclei_distances``. With ``all_pairs`` each unordered
+    # pair is stored once (under the lower id) but the summary covers every distance involving
+    # the nucleus in either direction (n - 1 of them), so it does not depend on label order;
+    # it is derivable from the table by reading rows where the nucleus appears in either
+    # ``nucleus_id`` or ``neighbour_nucleus_id``.
     cents = nucleus_centroids(nuc_labels)
     pairs: dict[int, list[tuple[float, int]]] = {}
     for i, j, d in intra_distances(cents, cfg.num_intra_cells, cfg.all_pairs):
@@ -173,6 +171,8 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
     for i in sorted(pairs):
         for rank, (d, j) in enumerate(sorted(pairs[i]), start=1):     # nearest first
             dists.setdefault(i, []).append(d)
+            if cfg.all_pairs:       # each pair is stored once, but it is a distance of both nuclei
+                dists.setdefault(j, []).append(d)
             dist_rows.append({
                 "field_id": fid, "nucleus_id": i, "neighbour_nucleus_id": j,
                 "rank": rank, "distance_px": d, "distance_um": d * px,

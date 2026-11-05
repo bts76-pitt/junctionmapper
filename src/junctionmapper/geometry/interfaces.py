@@ -47,11 +47,20 @@ def _modal_neighbour(ids: np.ndarray) -> int:
     return int(nonzero.min()) if nonzero.size else 0
 
 
+def _check_int_ge1(name: str, v) -> int:
+    if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or v < 1:
+        raise ConfigError(f"{name} must be an integer >= 1, got {v!r}")
+    return int(v)
+
+
 def extract_interfaces(labels: np.ndarray, label: int, method: str,
-                       epsilon: "float | None" = None) -> "list[Interface]":
+                       epsilon: "float | None" = None, min_run: int = TCJ_MIN_RUN,
+                       search_radius: int = 2) -> "list[Interface]":
     """Interfaces of ``label`` split by ``method`` ('dp' or 'tcj').
 
     ``epsilon`` is required for 'dp' (ConfigError if None) and ignored for 'tcj'.
+    ``min_run`` (TCJ only, shortest contact run kept) and ``search_radius`` (window used to
+    assign each boundary pixel a neighbour; both methods) must be integers >= 1.
     Runs against background (free edge) are dropped. With zero corners the decision is
     made on the neighbour ids: an isolated cell (all background) gives ``[]``, while a
     cell engulfed by a single neighbour gives one whole-boundary interface
@@ -63,12 +72,14 @@ def extract_interfaces(labels: np.ndarray, label: int, method: str,
         raise ConfigError(f"method must be 'dp' or 'tcj', got {method!r}")
     if method == "dp" and epsilon is None:
         raise ConfigError("epsilon is required for method='dp'")
+    min_run = _check_int_ge1("min_run", min_run)
+    search_radius = _check_int_ge1("search_radius", search_radius)
     boundary = trace_boundary(labels, label)
     n = len(boundary)
-    ids = neighbour_at(labels, boundary, label)
+    ids = neighbour_at(labels, boundary, label, search_radius=search_radius)
     if method == "tcj":
-        corners = tcj_corners(ids, min_run=TCJ_MIN_RUN)
-        run_ids = merge_short_runs(ids, TCJ_MIN_RUN)
+        corners = tcj_corners(ids, min_run=min_run)
+        run_ids = merge_short_runs(ids, min_run)
     else:
         corners = np.asarray(dp_corners(boundary, epsilon), dtype=int)
         run_ids = ids

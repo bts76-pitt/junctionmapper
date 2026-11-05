@@ -389,3 +389,71 @@ def test_voronoi_field_corners_covered_exactly_twice_everything_else_once(method
         assert set(np.flatnonzero(counts == 2)) == set(int(c) for c in corners)
         checked += 1
     assert checked >= 10
+
+
+# ---- min_run / search_radius are live parameters ---------------------------------------
+# Cell 4 is a 6x6 square (rows 34..39, cols 36..41) whose only contact is the 2x2 cell 5 at
+# rows 41..42, cols 43..44: diagonal to its corner pixel (39,41), 2 px away both ways.
+# Boundary of cell 4 is traced clockwise from (34,36): idx 0..5 top row, 6..10 right column,
+# so the corner pixel (39,41) is idx 10.
+
+def _short_contact_labels():
+    lab = np.zeros((60, 60), np.int32)
+    lab[34:40, 36:42] = 4
+    lab[41:43, 43:45] = 5
+    return lab
+
+
+def test_min_run_changes_tcj_decomposition():
+    lab = _short_contact_labels()
+    # default radius 2: only the corner pixel sees cell 5, a run of length 1 < min_run 3
+    assert extract_interfaces(lab, 4, "tcj", 2.0) == []
+    kept = extract_interfaces(lab, 4, "tcj", 2.0, min_run=1)
+    assert [(i.neighbour_id, i.start_idx, i.end_idx, len(i.pixels)) for i in kept] == [(5, 10, 11, 2)]
+    assert len(extract_interfaces(lab, 4, "tcj", 2.0, min_run=2)) == 0
+    flags = assess_cell(lab, 4, 2.0)
+    assert (flags.n_corners_tcj, flags.all_contacts_filtered) == (0, True)
+    flags1 = assess_cell(lab, 4, 2.0, min_run=1)
+    assert (flags1.n_corners_tcj, flags1.all_contacts_filtered) == (2, False)
+
+
+def test_search_radius_changes_which_neighbours_are_seen():
+    lab = _short_contact_labels()
+    f1 = assess_cell(lab, 4, 2.0, search_radius=1)
+    assert f1.isolated and not f1.all_contacts_filtered       # cell 5 is 2 px away: unseen
+    assert extract_interfaces(lab, 4, "tcj", 2.0, search_radius=1) == []
+    f3 = assess_cell(lab, 4, 2.0, search_radius=3)
+    assert (f3.n_corners_tcj, f3.all_contacts_filtered) == (2, False)
+    seen = extract_interfaces(lab, 4, "tcj", 2.0, search_radius=3)
+    assert [(i.neighbour_id, i.start_idx, i.end_idx, len(i.pixels)) for i in seen] == [(5, 9, 12, 4)]
+    # cell 5 sees cell 4 only when the window is wide enough for dp to pick it as modal
+    assert extract_interfaces(lab, 5, "dp", 2.0, search_radius=1) == []
+    assert len(extract_interfaces(lab, 5, "dp", 2.0, search_radius=2)) == 1
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 2.5, None])
+@pytest.mark.parametrize("name", ["min_run", "search_radius"])
+def test_geometry_functions_validate_min_run_and_search_radius(name, bad):
+    lab = _short_contact_labels()
+    for method in ("tcj", "dp"):        # validated whichever method is run
+        with pytest.raises(ConfigError):
+            extract_interfaces(lab, 4, method, 2.0, **{name: bad})
+    with pytest.raises(ConfigError):
+        assess_cell(lab, 4, 2.0, **{name: bad})
+
+
+def test_all_contacts_filtered_uses_the_given_min_run_and_search_radius():
+    lab = _short_contact_labels()
+    # radius 3: cell 5's pixel (41,43)... the corner pixel (39,41) sees it for a run of 3
+    # (idx 9..11, as in the interface above), kept by min_run 3 and filtered by min_run 4.
+    kept = assess_cell(lab, 4, 2.0, min_run=3, search_radius=3)
+    assert (kept.n_corners_tcj, kept.all_contacts_filtered) == (2, False)
+    filt = assess_cell(lab, 4, 2.0, min_run=4, search_radius=3)
+    assert (filt.n_corners_tcj, filt.all_contacts_filtered) == (0, True)
+    # a cell 3 px diagonal from the corner is seen only with radius 3: one contact pixel, filtered
+    far = np.zeros((60, 60), np.int32)
+    far[34:40, 36:42] = 4
+    far[42:44, 44:46] = 5
+    assert assess_cell(far, 4, 2.0).isolated
+    seen = assess_cell(far, 4, 2.0, search_radius=3)
+    assert (seen.isolated, seen.n_corners_tcj, seen.all_contacts_filtered) == (False, 0, True)
