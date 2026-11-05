@@ -209,8 +209,10 @@ def test_enclosed_cell_under_dp_is_split_geometrically_but_loses_nothing():
     assert {i.neighbour_id for i in ifs} == {2}
     counts = _coverage(ifs, len(b))
     assert counts.min() >= 1 and counts.max() <= 2
-    assert interface_contour(np.vstack([i.pixels for i in ifs])) >= 0
+    # Each interface's contour is the walk between its own two corners, so the four
+    # of them sum to the perimeter: nothing is lost by DP splitting the loop.
     assert sum(interface_contour(i.pixels) for i in ifs) == pytest.approx(20.0)
+    assert {len(i.pixels) for i in ifs} == {6}  # 4 arcs of 5 steps, corner-inclusive
 
 
 def test_zero_dp_corners_on_enclosed_cell_gives_whole_loop(monkeypatch):
