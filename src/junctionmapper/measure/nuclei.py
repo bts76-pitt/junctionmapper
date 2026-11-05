@@ -22,15 +22,17 @@ class NucleusFlags:
     anucleate_cells: list[int] = field(default_factory=list)  # cell ids, 0 nuclei
 
 
-def nucleus_centroids(nucleus_labels) -> dict[int, tuple[float, float]]:
+def nucleus_centroids(nucleus_labels) -> dict[int, tuple[int, int]]:
     """Return ``{label: (row, col)}`` using the Java tool's midpoint formula.
 
     ``(max - min) // 2 + min`` over each axis of the nucleus's extent (integer
     division, as in ``Cell_Nucleus.getGeometricMean``). This is the floored
-    midpoint of the bounding extent, NOT the centre of mass. Values are ints.
+    midpoint of the bounding extent, NOT the centre of mass. Values are ints
+    on purpose: they are pixel indices produced by integer division, as in
+    the Java original.
     """
     labels = np.asarray(nucleus_labels)
-    out: dict[int, tuple[float, float]] = {}
+    out: dict[int, tuple[int, int]] = {}
     rows, cols = np.nonzero(labels)
     if rows.size == 0:
         return out
@@ -49,11 +51,20 @@ def nucleus_centroids(nucleus_labels) -> dict[int, tuple[float, float]]:
 
 
 def associate(cell_labels, nucleus_labels):
-    """Assign each nucleus to the cell holding the plurality of its pixels.
+    """Assign each nucleus to the cell holding the most of its pixels.
 
-    Background (0) is a candidate: a nucleus mostly over background is an
-    orphan. Ties are broken deterministically: any cell beats background, and
-    among cells the lowest label wins (independent of array order).
+    A nucleus is an orphan if and only if it overlaps no cell at all (zero
+    non-background pixels under it); otherwise it goes to the cell label with
+    the most pixels under it, background ignored in that comparison. Ties go
+    to the lowest cell label, independent of array order.
+
+    Divergence from the Java tool: Java associates a nucleus with the membrane
+    containing its centroid point (``setCellMembrane`` ->
+    ``getSelectedMembrane(getGeometricMean())``). We use pixel overlap because
+    it is robust to irregular nuclei and to nuclei straddling junctions, where
+    the centroid can fall on background or the wrong cell. Consequence: a
+    nucleus with a single pixel over a cell is assigned to it rather than
+    orphaned.
 
     Returns ``({cell_id: sorted [nucleus_ids]}, NucleusFlags)``. The mapping
     holds only cells that received a nucleus; ``anucleate_cells`` enumerates
@@ -72,15 +83,13 @@ def associate(cell_labels, nucleus_labels):
     cell_vals = cells[mask]
     for nid in np.unique(nuc_vals):
         under = cell_vals[nuc_vals == nid]
-        labs, counts = np.unique(under, return_counts=True)  # labs ascending
-        best = counts.max()
-        winners = labs[counts == best]
-        nonzero = winners[winners != 0]
-        winner = int(nonzero.min()) if nonzero.size else 0
-        if winner == 0:
+        under = under[under != 0]  # background is not a candidate
+        if under.size == 0:
             orphans.append(int(nid))
-        else:
-            mapping.setdefault(winner, []).append(int(nid))
+            continue
+        labs, counts = np.unique(under, return_counts=True)  # labs ascending
+        winner = int(labs[counts == counts.max()].min())
+        mapping.setdefault(winner, []).append(int(nid))
     mapping = {c: sorted(v) for c, v in sorted(mapping.items())}
     all_cells = [int(c) for c in np.unique(cells) if c != 0]
     flags = NucleusFlags(
@@ -92,7 +101,7 @@ def associate(cell_labels, nucleus_labels):
 
 
 def intra_distances(
-    centroids: dict[int, tuple[float, float]], k: int = 5, all_pairs: bool = False
+    centroids: dict[int, tuple[int, int]], k: int = 5, all_pairs: bool = False
 ) -> list[tuple[int, int, float]]:
     """Euclidean distances between nucleus centroids, as ``(i, j, dist)``.
 
@@ -108,7 +117,9 @@ def intra_distances(
     Computed with an exact per-row distance sort rather than cKDTree so that
     ties at the k-th neighbour are resolved deterministically (lowest id).
     """
-    if not all_pairs and (not isinstance(k, (int, np.integer)) or k < 1):
+    if not all_pairs and (
+        isinstance(k, bool) or not isinstance(k, (int, np.integer)) or k < 1
+    ):
         raise ConfigError(f"k must be a positive integer, got {k!r}")
     ids = sorted(centroids)
     n = len(ids)

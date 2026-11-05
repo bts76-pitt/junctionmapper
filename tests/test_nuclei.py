@@ -101,14 +101,36 @@ def test_cell_without_a_nucleus_is_flagged():
     assert flags.anucleate_cells == [2]
 
 
-def test_mostly_background_nucleus_is_orphan_but_mostly_cell_is_assigned():
+def test_nucleus_mostly_over_background_is_still_assigned_to_its_best_cell():
     cells = rect(blank(), 1, (0, 9), (0, 9))
-    mostly_out = rect(blank(), 1, (8, 15), (0, 5))  # 2 rows in cell, 6 out
-    cells2, flags = associate(cells, mostly_out)
-    assert flags.orphan_nuclei == [1] and cells2 == {}
-    mostly_in = rect(blank(), 1, (4, 11), (0, 5))  # 6 rows in, 2 out
-    cells3, flags = associate(cells, mostly_in)
-    assert cells3 == {1: [1]} and flags.orphan_nuclei == []
+    mostly_out = rect(blank(), 1, (8, 15), (0, 5))  # 12 px in cell, 36 out
+    m, flags = associate(cells, mostly_out)
+    assert m == {1: [1]} and flags.orphan_nuclei == []
+
+
+def test_six_six_eight_nucleus_goes_to_cell_a_not_orphan():
+    cells = blank()
+    rect(cells, 1, (0, 9), (0, 9))    # cell A
+    rect(cells, 2, (0, 9), (10, 19))  # cell B
+    nuc = rect(blank(), 1, (7, 11), (8, 11))  # 6 px in A, 6 in B, 8 background
+    m, flags = associate(cells, nuc)
+    assert m == {1: [1]}  # tie between cells -> lowest label
+    assert flags.orphan_nuclei == []
+    assert flags.anucleate_cells == [2]
+
+
+def test_single_pixel_over_a_cell_is_enough_to_be_assigned():
+    cells = rect(blank(), 1, (0, 4), (0, 4))
+    nuc = rect(blank(), 1, (4, 12), (4, 12))  # 1 px in cell, 80 over background
+    m, flags = associate(cells, nuc)
+    assert m == {1: [1]} and flags.orphan_nuclei == []
+
+
+def test_nucleus_entirely_over_background_is_orphan_even_with_cells_present():
+    cells = rect(blank(), 1, (0, 4), (0, 4))
+    nuc = rect(blank(), 1, (10, 14), (10, 14))
+    m, flags = associate(cells, nuc)
+    assert m == {} and flags.orphan_nuclei == [1] and flags.anucleate_cells == [1]
 
 
 def test_tie_between_cells_goes_to_lowest_label_regardless_of_array_order():
@@ -120,13 +142,6 @@ def test_tie_between_cells_goes_to_lowest_label_regardless_of_array_order():
     assert m == {3: [1]}
     m2, _ = associate(cells[:, ::-1].copy(), nuc[:, ::-1].copy())
     assert m2 == {3: [1]}
-
-
-def test_tie_between_cell_and_background_prefers_the_cell():
-    cells = rect(blank(), 1, (0, 9), (0, 9))
-    nuc = rect(blank(), 1, (8, 11), (0, 1))  # 2 rows in, 2 out
-    m, flags = associate(cells, nuc)
-    assert m == {1: [1]} and flags.orphan_nuclei == []
 
 
 def test_flag_lists_are_sorted_and_anucleate_covers_all_cell_labels():
@@ -183,9 +198,15 @@ def test_fewer_than_two_nuclei_gives_empty():
     assert intra_distances({1: (0, 0)}, k=3) == []
 
 
-def test_bad_k_raises():
+@pytest.mark.parametrize("bad", [0, -1, True, False, 2.0])
+def test_bad_k_raises(bad):
     with pytest.raises(ConfigError):
-        intra_distances(six_centroids(), k=0)
+        intra_distances(six_centroids(), k=bad)
+
+
+def test_centroids_are_python_ints():
+    r, c = nucleus_centroids(rect_nucleus((2, 8), (4, 10)))[1]
+    assert type(r) is int and type(c) is int
 
 
 def test_all_pairs_ignores_k_and_emits_each_pair_once():
