@@ -23,3 +23,7 @@ class FormatError(JunctionMapperError):
 
 class BoundaryError(JunctionMapperError):
     """A label cannot be traced to a single closed boundary."""
+
+
+class SegmentationError(JunctionMapperError):
+    """Segmentation cannot run (missing optional dependency or missing input plane)."""
