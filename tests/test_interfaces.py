@@ -156,9 +156,52 @@ def test_single_corner_gives_one_closed_loop_interface(monkeypatch):
     assert _contiguous(i.pixels)
 
 
-def test_zero_dp_corners_gives_no_interfaces(monkeypatch):
+def test_zero_dp_corners_on_isolated_cell_gives_no_interfaces(monkeypatch):
     monkeypatch.setattr(interfaces_mod, "dp_corners", lambda b, e: np.zeros(0, int))
-    assert extract_interfaces(two_cells_sharing_a_vertical_edge(), 1, "dp", 1.5) == []
+    assert extract_interfaces(single_isolated_cell(), 1, "dp", 1.5) == []
+
+
+def enclosed_cell():
+    """Cell 1 (6x6) fully enclosed by a 4 px thick ring of label 2."""
+    labels = np.zeros((20, 20), dtype=int)
+    labels[3:17, 3:17] = 2
+    labels[7:13, 7:13] = 1
+    return labels
+
+
+def test_enclosed_cell_has_one_whole_boundary_interface():
+    labels = enclosed_cell()
+    b = trace_boundary(labels, 1)
+    ifs = extract_interfaces(labels, 1, method="tcj")
+    assert len(ifs) == 1
+    i = ifs[0]
+    assert i.neighbour_id == 2
+    assert i.start_idx == i.end_idx == 0
+    assert len(i.pixels) == len(b)
+    assert (i.pixels == b).all()
+    assert _contiguous(i.pixels)
+
+
+def test_enclosed_cell_under_dp_is_split_geometrically_but_loses_nothing():
+    labels = enclosed_cell()
+    b = trace_boundary(labels, 1)
+    ifs = extract_interfaces(labels, 1, method="dp", epsilon=1.5)
+    assert {i.neighbour_id for i in ifs} == {2}
+    assert sum(len(i.pixels) for i in ifs) == len(b)
+
+
+def test_zero_dp_corners_on_enclosed_cell_gives_whole_loop(monkeypatch):
+    monkeypatch.setattr(interfaces_mod, "dp_corners", lambda b, e: np.zeros(0, int))
+    ifs = extract_interfaces(enclosed_cell(), 1, "dp", 1.5)
+    assert len(ifs) == 1 and ifs[0].neighbour_id == 2
+    assert ifs[0].start_idx == ifs[0].end_idx == 0
+
+
+def test_isolated_cell_does_not_flag_corner_disagreement():
+    f = assess_cell(single_isolated_cell(), 1, epsilon=1.5)
+    assert f.isolated is True
+    assert f.n_corners_tcj == 0 and f.n_corners_dp >= 4
+    assert f.corner_methods_disagree is False
 
 
 def test_dp_requires_epsilon():

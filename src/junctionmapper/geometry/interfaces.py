@@ -47,9 +47,11 @@ def extract_interfaces(labels: np.ndarray, label: int, method: str,
     """Interfaces of ``label`` split by ``method`` ('dp' or 'tcj').
 
     ``epsilon`` is required for 'dp' (ConfigError if None) and ignored for 'tcj'.
-    Runs against background (free edge) are dropped. Zero corners (e.g. an isolated
-    cell) give ``[]``. A cell fully enclosed by one neighbour also has zero TCJ
-    corners and gives ``[]``. A single corner yields one closed-loop interface.
+    Runs against background (free edge) are dropped. With zero corners the decision is
+    made on the neighbour ids: an isolated cell (all background) gives ``[]``, while a
+    cell engulfed by a single neighbour gives one whole-boundary interface
+    (``start_idx == end_idx == 0``). A whole-boundary interface is a legitimate result,
+    not a degenerate one. A single corner likewise yields one closed-loop interface.
     Neighbour symmetry is not guaranteed: A may list B while B does not list A.
     """
     if method not in ("dp", "tcj"):
@@ -65,6 +67,12 @@ def extract_interfaces(labels: np.ndarray, label: int, method: str,
     else:
         corners = np.asarray(dp_corners(boundary, epsilon), dtype=int)
         run_ids = ids
+    if len(corners) == 0:
+        # No corner anywhere: the whole boundary is one run. Whether it is an interface
+        # is decided by the neighbour ids (all background -> isolated -> none; one
+        # non-zero identity -> engulfed cell -> one whole-boundary interface), not by
+        # the corner count. Same representation as the single-corner case, anchored at 0.
+        corners = np.array([0], dtype=int)
     m = len(corners)
     out = []
     for k in range(m):

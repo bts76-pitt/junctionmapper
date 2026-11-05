@@ -27,7 +27,9 @@ def assess_cell(labels: np.ndarray, label: int, epsilon: float) -> CellFlags:
 
     ``degenerate`` is True when the boundary cannot be traced or either corner method
     raises; the affected count is None and ``corner_methods_disagree`` is then False
-    (nothing to compare). An invalid ``epsilon`` is a configuration error and raises
+    (nothing to compare). It is also False for an isolated cell, where TCJ has no
+    neighbours to find and the methods are not measuring the same thing; both counts
+    are still reported. An invalid ``epsilon`` is a configuration error and raises
     ConfigError rather than being reported as a bad cell.
     """
     if (isinstance(epsilon, bool) or not isinstance(epsilon, (int, float, np.floating, np.integer))
@@ -55,5 +57,5 @@ def assess_cell(labels: np.ndarray, label: int, epsilon: float) -> CellFlags:
         n_tcj = len(tcj_corners(neighbour_at(labels, boundary, label)))
     except ConfigError:
         degenerate = True
-    disagree = n_dp is not None and n_tcj is not None and abs(n_dp - n_tcj) > 1
+    disagree = (not isolated) and n_dp is not None and n_tcj is not None and abs(n_dp - n_tcj) > 1
     return CellFlags(border, isolated, degenerate, disagree, n_dp, n_tcj)
