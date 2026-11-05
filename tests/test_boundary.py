@@ -105,3 +105,38 @@ def test_start_pixel_with_southwest_neighbour():
     b = trace_boundary(L, 1)
     _assert_closed_walk(L, b)
     assert {tuple(p) for p in b} >= {(2, 4), (3, 2), (4, 2)}
+
+
+def _invariants(mask, b):
+    """Every entry on the mask, every step 8-adjacent including the wrap, and no
+    boundary pixel left out — the contract the corner and interface tasks rely on."""
+    assert all(mask[tuple(p)] for p in b)
+    steps = np.abs(np.diff(np.vstack([b, b[:1]]), axis=0)).max(axis=1)
+    assert steps.max() <= 1 and steps.min() >= 1
+    cross = ndimage.generate_binary_structure(2, 1)
+    edge = mask & ~ndimage.binary_erosion(mask, cross)
+    assert not ({tuple(p) for p in np.argwhere(edge)} - {tuple(p) for p in b})
+
+
+def test_invariants_hold_across_many_random_shapes():
+    """A property sweep, not an example. The stopping criterion was once wrong in a
+    way every rectangle-shaped test missed while rejecting ~4% of real cells, so the
+    invariants are pinned over a population of shapes rather than three hand-picked ones."""
+    rng = np.random.default_rng(7)
+    eight = np.ones((3, 3), bool)
+    checked = 0
+    for _ in range(300):
+        size = int(rng.integers(14, 40))
+        blob = ndimage.gaussian_filter(rng.random((size, size)), rng.uniform(1.5, 4.0))
+        labels, n = ndimage.label(blob > rng.uniform(0.45, 0.58), structure=eight)
+        for k in range(1, n + 1):
+            cell = labels == k
+            cell[0, :] = cell[-1, :] = cell[:, 0] = cell[:, -1] = False
+            if cell.sum() < 8:
+                continue
+            _, parts = ndimage.label(cell, structure=eight)
+            if parts != 1 or (ndimage.binary_fill_holes(cell) & ~cell).any():
+                continue  # rejected by a guard, not by the trace
+            _invariants(cell, trace_boundary(cell.astype(int), 1))
+            checked += 1
+    assert checked > 400, f"sweep degenerated to {checked} shapes"
