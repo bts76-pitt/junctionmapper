@@ -34,7 +34,64 @@ pip install -e '.[dev,segmentation]' # adds Cellpose-SAM
 
 ## Differences from the original
 
-Documented in the design, but the one that changes numbers: the fragmented
-junction contour uses proper 8-connectivity, where the Java admits a gap
-whenever a single coordinate differs by one. This follows the formula in the
-original's own user guide rather than its implementation.
+The method is the original's. These are the places where this implementation
+deliberately does not reproduce the original *code*, each verified by reading
+the Java source and each recorded in the code that diverges.
+
+### 1. `linearity_index` is the reciprocal of the Java's ratio
+
+The Java's `getDistanceRatio` is contour over straight-line length, so it is
+≥ 1 and grows as an interface gets more tortuous. This project reports
+`linearity_index` = straight-line over contour, so it is ≤ 1 and 1.0 means a
+perfectly straight interface. Same information, inverted. Converting an
+older spreadsheet means taking a reciprocal; the two conventions never appear
+in one table.
+
+### 2. The dilation band is uniform; the Java's thins at the image border
+
+Both implementations grow the interface band by repeated 8-connected 3×3
+dilation, and both count cycles as iterations. But the Java's
+`ImageUtilities.getDilatedImage` zeroes the outermost pixel of every row and
+column on each pass, so near an edge the band is clipped and the loss
+compounds with each cycle: at the default 2 cycles the band is up to 2 px
+narrower along the border than in the field interior. Interface area, marker
+area and marker intensity all read off that band, so in the Java they are
+systematically low for cells near the edge of the field. This project dilates
+uniformly. Border-touching cells are flagged and excluded from the interface
+table anyway, which is the more conservative handling of the same problem.
+
+### 3. Marker connectivity is symmetric and the same for both markers
+
+The Java's two marker walks disagree with each other, and its JM1 walk
+disagrees with the formula in its own user guide:
+
+- **JM1** accepts a step between two above-threshold pixels when *either*
+  coordinate differs by one (an OR). A step of (Δrow 1, Δcol 30) therefore
+  counts as "connected" and contributes its full ~30 px to the fragmented
+  junction contour, bridging a gap the formula says should break it.
+- **JM2** advances its running position on *every* contour pixel, not only
+  above-threshold ones, so it also counts the single step from an unstained
+  pixel into each fragment — an over-count proportional to the number of
+  fragments. It computes no fragmented metric and no straight-line junction
+  length at all.
+
+This project applies one rule to both markers: a step joins two consecutive
+above-threshold pixels only when both coordinate differences are at most 1,
+which is 8-connectivity and is what the user guide's formula describes. JM1
+and JM2 are then measured by the same functions, so the two markers are
+directly comparable.
+
+### 4. Nuclei are assigned to cells by pixel plurality, not centroid containment
+
+The Java associates a nucleus with whichever cell contains its centroid point
+(`Cell_Nucleus.setCellMembrane` → `getSelectedMembrane(getGeometricMean())`),
+where that "centroid" is the floored midpoint of the bounding box rather than
+a centre of mass. A nucleus whose centroid falls on a junction or in a gap is
+associated with nothing. This project keeps the Java's midpoint formula for
+the reported centroid, but assigns each nucleus to the cell holding the most
+of its pixels, ties going to the lowest label, and calls a nucleus an orphan
+only when it overlaps no cell at all.
+
+This matters for the biology the tool is aimed at. In discohesive tissue,
+nuclei straddle junctions and gaps far more often, so a centroid rule inflates
+the orphan and anucleate counts exactly in the condition under study.
