@@ -1476,15 +1476,15 @@ def test_the_oracle_itself_reproduces_a_hand_computed_band(synth):
 # convex corner differ from ours by the Java's diagonal corner cut and compare at the stated
 # tolerance. Running this needs no JDK: it ties the port to the original in every test run.
 GOLDEN_JAVA_CONTROL_CELL5 = """\
-image,labels,jm1_channel,jm2_channel,nucleus_channel,cell_id,role,corner_method,epsilon,dilation_cycles,threshold,interior,java_corner_row,java_corner_col,java_paired_row,java_paired_col,java_n_corners,interface_contour_px,straight_line_length_px,java_distance_ratio,fragmented_contour_px,coverage_index,interface_area_px,marker_area_px,marker_intensity,junction_contour_px,junction_straight_line_px,java_corner,java_paired_with,notes
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,47,56,47,98,4,43.41421356237309,42.0,1.0336717514850737,11.0,0.2533732410975573,244,142,25430,40.0,40.0,1,2,java_reference.py
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,47,56,47,98,4,43.41421356237309,42.0,1.0336717514850737,26.414213562373096,0.6084231728492296,244,150,27037,,,1,2,java_reference.py
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,47,98,83,97,4,36.41421356237309,36.013886210738214,1.0111159164909982,8.123105625617661,0.22307513552925634,209,116,20629,35.12310562561766,35.014282800023196,2,3,java_reference.py
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,47,98,83,97,4,36.41421356237309,36.013886210738214,1.0111159164909982,25.414213562373096,0.6979201546901914,209,124,22648,,,2,3,java_reference.py
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,83,97,82,56,4,41.41421356237309,41.012193308819754,1.0098024568090311,21.0,0.5070722873530444,234,159,27928,39.0,39.0,3,4,java_reference.py
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,83,97,82,56,4,41.41421356237309,41.012193308819754,1.0098024568090311,27.414213562373096,0.6619518084313037,234,137,24918,,,3,4,java_reference.py
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,82,56,47,56,4,35.0,35.0,1.0,7.0,0.2,200,114,19125,33.0,33.0,4,1,java_reference.py
-control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,82,56,47,56,4,35.0,35.0,1.0,22.0,0.6285714285714286,200,124,21602,,,4,1,java_reference.py
+image,labels,jm1_channel,jm2_channel,nucleus_channel,cell_id,role,corner_method,epsilon,dilation_cycles,threshold,interior,java_corner_row,java_corner_col,java_paired_row,java_paired_col,java_n_corners,interface_contour_px,straight_line_length_px,java_distance_ratio,fragmented_contour_px,coverage_index,interface_area_px,marker_area_px,marker_intensity,junction_contour_px,junction_straight_line_px,java_corner,java_paired_with,seed_row,seed_col,notes
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,47,56,47,98,4,43.41421356237309,42.0,1.0336717514850737,11.0,0.2533732410975573,244,142,25430,40.0,40.0,1,2,64,74,java_reference.py
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,47,56,47,98,4,43.41421356237309,42.0,1.0336717514850737,26.414213562373096,0.6084231728492296,244,150,27037,,,1,2,64,74,java_reference.py
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,47,98,83,97,4,36.41421356237309,36.013886210738214,1.0111159164909982,8.123105625617661,0.22307513552925634,209,116,20629,35.12310562561766,35.014282800023196,2,3,64,74,java_reference.py
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,47,98,83,97,4,36.41421356237309,36.013886210738214,1.0111159164909982,25.414213562373096,0.6979201546901914,209,124,22648,,,2,3,64,74,java_reference.py
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,83,97,82,56,4,41.41421356237309,41.012193308819754,1.0098024568090311,21.0,0.5070722873530444,234,159,27928,39.0,39.0,3,4,64,74,java_reference.py
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,83,97,82,56,4,41.41421356237309,41.012193308819754,1.0098024568090311,27.414213562373096,0.6619518084313037,234,137,24918,,,3,4,64,74,java_reference.py
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM1,dp,2,2,100,yes,82,56,47,56,4,35.0,35.0,1.0,7.0,0.2,200,114,19125,33.0,33.0,4,1,64,74,java_reference.py
+control_grid.tif,control_grid.JM1.npy,0,1,2,5,JM2,dp,2,2,100,yes,82,56,47,56,4,35.0,35.0,1.0,22.0,0.6285714285714286,200,124,21602,,,4,1,64,74,java_reference.py
 """
 
 
@@ -1492,7 +1492,9 @@ def test_frozen_java_output_on_the_control_grid_matches_our_metrics(tmp_path):
     java_reference.make_control(tmp_path)
     p = tmp_path / "golden.csv"
     p.write_text(GOLDEN_JAVA_CONTROL_CELL5)
-    result = compare_reference(load_reference(p))
+    rows = load_reference(p)
+    assert {r["seed"] for r in rows} == {(64, 74)}      # (row, col) of the click; Java x=74, y=64
+    result = compare_reference(rows)                    # also checks the click lies in cell 5
     assert not result.errors and not result.skipped
     assert len({c.line for c in result.comparisons}) == 8
     bad = result.mismatches(EXACT_METRICS + TOLERANCE_METRICS)
