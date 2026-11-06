@@ -586,6 +586,19 @@ def test_figure_log_has_the_expected_layout(logged):
     assert len(figs) == 1 + 2 * len(PARAMETERS) + 3
 
 
+def test_qc_figure_separates_non_additive_quantities(logged):
+    """M8: cell counts, the exclusion partition, overlapping flags and interface counts used to
+    share one axis, where the bars read as parts of a whole."""
+    _, figs = logged
+    qc = figs[-1]["axes"]                       # the QC figure is built last
+    titles = [a["title"] for a in qc]
+    assert len(qc) == 4, titles
+    assert any("not parts of a whole" in t for t in titles)
+    assert any("sum to" in t for t in titles)
+    assert any("can carry several" in t for t in titles)
+    assert any("not cells" in t for t in titles)
+
+
 def test_histogram_panels_sit_in_dp_then_tcj_order_and_hold_their_own_data(results, logged):
     """Catches dp/tcj panels swapped: title method, n and bar mass must match the table."""
     _, figs = logged

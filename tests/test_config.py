@@ -1,7 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
-from junctionmapper.config import ChannelSpec, RunConfig, Role
+from junctionmapper.config import (
+    DEFAULT_NEIGHBOUR_RADIUS_PX, DEFAULT_TCJ_MIN_RUN, ChannelSpec, RunConfig, Role,
+)
 
 
 def test_role_lookup_returns_marker_identity():
@@ -107,3 +109,45 @@ def test_reproducibility_parameters_default_and_validate():
                 {"neighbour_radius_px": 0}, {"neighbour_radius_px": False}):
         with pytest.raises(ValidationError):
             RunConfig(channels=_minimal_channels(), pixel_size_um=0.3, **bad)
+
+
+def _cfg(**kw):
+    return RunConfig(
+        channels=[ChannelSpec(role=Role.JM1, channel=0, marker="CDH1"),
+                  ChannelSpec(role=Role.NUCLEUS, channel=1, marker="DAPI")],
+        pixel_size_um=0.325, **kw)
+
+
+def test_unknown_key_is_rejected_not_silently_dropped():
+    """M6: a misspelled key used to be dropped, so the run went ahead at a default the
+    operator believed they had changed."""
+    with pytest.raises(ValidationError):
+        _cfg(epsilon=3.0)                       # it is epsilon_px
+    with pytest.raises(ValidationError):
+        _cfg(tcj_minrun=5)
+
+
+def test_a_nucleus_threshold_is_rejected_because_nothing_reads_it():
+    with pytest.raises(ValidationError):
+        _cfg(threshold={Role.NUCLEUS: 10.0})
+    assert _cfg(threshold={Role.JM1: 10.0}).threshold == {Role.JM1: 10.0}
+
+
+def test_geometry_defaults_have_a_single_definition():
+    """M5: the literals used to be repeated across config, geometry and qc."""
+    from junctionmapper.geometry import corners_tcj, interfaces
+    from junctionmapper import qc
+    cfg = _cfg()
+    assert cfg.tcj_min_run == DEFAULT_TCJ_MIN_RUN
+    assert cfg.neighbour_radius_px == DEFAULT_NEIGHBOUR_RADIUS_PX
+    assert interfaces.TCJ_MIN_RUN is DEFAULT_TCJ_MIN_RUN
+    assert qc._NEIGHBOUR_RADIUS is DEFAULT_NEIGHBOUR_RADIUS_PX
+    import inspect
+    assert (inspect.signature(corners_tcj.tcj_corners).parameters["min_run"].default
+            is DEFAULT_TCJ_MIN_RUN)
+    assert (inspect.signature(corners_tcj.neighbour_at).parameters["search_radius"].default
+            is DEFAULT_NEIGHBOUR_RADIUS_PX)
+    assert (inspect.signature(interfaces.extract_interfaces).parameters["search_radius"].default
+            is DEFAULT_NEIGHBOUR_RADIUS_PX)
+    assert (inspect.signature(qc.assess_cell).parameters["min_run"].default
+            is DEFAULT_TCJ_MIN_RUN)
