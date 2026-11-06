@@ -19,6 +19,17 @@ Units and formulas (``s`` = ``pixel_size_um``):
   * ``cluster_density_per_px2``   = marker_intensity / marker_area_px     (per px^2).
   * ``cluster_density_per_um2``   = cluster_density_per_px2 / s**2.
   * ``n_neighbours`` = distinct non-zero neighbour ids over both corner methods.
+  * The unit of an ``interfaces`` row is a MEASURED CELL-SIDE INTERFACE, as in the original
+    (which measures the interfaces of one selected cell), so a junction between two included
+    cells appears twice, once from each side, with its own band and its own numbers.
+    ``pair_id`` is the canonical key of the cell pair (``field|method|lo-hi``) and groups those
+    two rows; ``interface_id`` is the unique key of one cell-side interface. A junction count is
+    ``pair_id.nunique()``; a row count is not a junction count.
+  * ``contact_fraction`` = fraction of the interface's boundary positions actually adjacent to
+    ``neighbour_id`` (at or near 1 for tcj by construction, can be well below 1 for dp), and
+    ``low_contact_fraction`` flags it below ``interfaces.LOW_CONTACT_FRACTION``.
+    ``closed_loop`` marks a whole-boundary interface (``start_idx == end_idx``), whose
+    ``linearity_index`` is ~0 by geometry rather than by tortuosity.
   * ``nuclei_distances`` is long: one row per ORDERED (``nucleus_id``,
     ``neighbour_nucleus_id``) pair, and ``rank_from_nucleus`` is ``nucleus_id``'s own
     ordering of every distance involving it (1 = its nearest neighbour). Under
@@ -41,7 +52,9 @@ from junctionmapper.errors import ConfigError
 # Intensity sums, per-pixel intensity ratios and dimensionless ratios are unscaled.
 INTERFACE_COLUMNS = [
     "field_id", "cell_id", "neighbour_id", "corner_method", "role", "marker",
-    "start_idx", "end_idx", "threshold", "threshold_field_otsu",
+    "pair_id", "interface_id",
+    "start_idx", "end_idx", "contact_fraction", "low_contact_fraction", "closed_loop",
+    "threshold", "threshold_field_otsu",
     "threshold_deviates_from_run", "dilation_cycles",
     "interface_contour_px", "interface_contour_um",
     "straight_line_length_px", "straight_line_length_um",
@@ -74,6 +87,7 @@ NUCLEUS_DISTANCE_COLUMNS = [
 FLAG_COLUMNS = [
     "field_id", "cell_id", "border_touching", "isolated", "degenerate",
     "corner_methods_disagree", "n_corners_dp", "n_corners_tcj", "all_contacts_filtered",
+    "dp_low_contact", "dp_missed_tcj_contact", "closed_loop_interface",
     "multinucleate", "anucleate",
 ]
 SCHEMAS = {
@@ -84,14 +98,15 @@ SCHEMAS = {
     "nuclei_distances": NUCLEUS_DISTANCE_COLUMNS,
 }
 _NULLABLE_INT = ["neighbour_id", "n_corners_dp", "n_corners_tcj", "cell_id"]
-_BOOL = ["threshold_deviates_from_run",
+_BOOL = ["threshold_deviates_from_run", "low_contact_fraction", "closed_loop",
          "border_touching", "isolated", "degenerate", "corner_methods_disagree",
-         "all_contacts_filtered", "multinucleate", "anucleate", "measured", "orphan"]
+         "all_contacts_filtered", "dp_low_contact", "dp_missed_tcj_contact",
+         "closed_loop_interface", "multinucleate", "anucleate", "measured", "orphan"]
 _INT = ["start_idx", "end_idx", "dilation_cycles", "interface_area_px", "marker_area_px",
         "area_px", "n_neighbours", "n_interfaces_dp", "n_interfaces_tcj", "n_nuclei", "tcj_min_run",
         "neighbour_radius_px", "neighbour_nucleus_id", "rank_from_nucleus",
         "nucleus_id", "centroid_row", "centroid_col", "n_intra_distances"]
-_STR = ["field_id", "corner_method", "role", "marker"]
+_STR = ["field_id", "corner_method", "role", "marker", "pair_id", "interface_id"]
 
 
 def make_frame(name: str, rows: list[dict]) -> pd.DataFrame:

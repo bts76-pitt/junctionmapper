@@ -4,12 +4,13 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import ndimage
 
+from junctionmapper.config import DEFAULT_NEIGHBOUR_RADIUS_PX, DEFAULT_TCJ_MIN_RUN
 from junctionmapper.errors import BoundaryError, ConfigError
 from junctionmapper.geometry.boundary import trace_boundary
 from junctionmapper.geometry.corners_dp import dp_corners
 from junctionmapper.geometry.corners_tcj import merge_short_runs, neighbour_at, tcj_corners
 
-_NEIGHBOUR_RADIUS = 2       # same window as neighbour_at's default search_radius
+_NEIGHBOUR_RADIUS = DEFAULT_NEIGHBOUR_RADIUS_PX     # same window as neighbour_at's default
 
 
 @dataclass
@@ -23,7 +24,8 @@ class CellFlags:
     all_contacts_filtered: bool = False
 
 
-def assess_cell(labels: np.ndarray, label: int, epsilon: float, min_run: int = 3,
+def assess_cell(labels: np.ndarray, label: int, epsilon: float,
+                min_run: int = DEFAULT_TCJ_MIN_RUN,
                 search_radius: int = _NEIGHBOUR_RADIUS) -> CellFlags:
     """QC flags for ``label``.
 

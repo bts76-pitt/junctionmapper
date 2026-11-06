@@ -15,7 +15,7 @@ from junctionmapper.errors import ConfigError, JunctionMapperError
 from junctionmapper.pipeline import FieldResult, measure_field
 import junctionmapper.report.build as build_mod
 from junctionmapper.report.build import PARAMETERS, build_report
-from tests.fixtures13 import PX, T1, T2, build, make_cfg, zoo
+from tests.fixtures13 import PX, T1, T2, build, grid3, make_cfg, zoo
 
 PROV = {
     "junctionmapper_version": "9.9.9-test",
@@ -73,7 +73,8 @@ def _expected_flags(results):
     nuc = pd.concat([r.nuclei for r in results])
     out = {c: int(flags[c].sum()) for c in (
         "border_touching", "isolated", "degenerate", "corner_methods_disagree",
-        "all_contacts_filtered", "multinucleate", "anucleate")}
+        "all_contacts_filtered", "dp_low_contact", "dp_missed_tcj_contact",
+        "closed_loop_interface", "multinucleate", "anucleate")}
     out["orphan_nuclei"] = int(nuc.orphan.sum())
     return out
 
@@ -292,6 +293,40 @@ def test_figure_count_depends_on_parameters_not_fields(results, cfg, tmp_path):
     three = n_img(results + [measure_field(f3, s3, cfg)])
     assert one == three
     assert one == 1 + 2 * len(PARAMETERS) + 3
+
+
+# ---- unit of measurement -----------------------------------------------------------
+
+def test_report_says_the_unit_is_a_cell_side_and_gives_the_junction_count(cfg, tmp_path):
+    """I1: both sides of every junction are measured and pooled, so the page must say that an
+    n is a count of cell-side interfaces and give the junction count beside it."""
+    f, seg = grid3()
+    res = [measure_field(f, seg, cfg)]
+    html = build_report(res, cfg, PROV, tmp_path / "r.html").read_text()
+    assert "one measured cell-side interface" in html
+    assert "twice" in html and "pair_id" in html
+    ifc = res[0].interfaces
+    row = _row_cells(html, "units-pooled")
+    for m in ("dp", "tcj"):
+        g = ifc[ifc.corner_method == m]
+        assert row[f"sides_{m}"] == g.interface_id.nunique()
+        assert row[f"junctions_{m}"] == g.pair_id.nunique()
+        assert row[f"junctions_{m}"] < row[f"sides_{m}"]      # interior junctions counted twice
+    assert _row_cells(html, "units-field-g") == row           # one field: pooled == that field
+
+
+def test_qc_surfaces_the_dp_contact_flags(cfg, tmp_path):
+    """I2: the flags live in the QC section, not only in the tables."""
+    lab = np.zeros((40, 40), np.int32)
+    lab[7:27, 7:27] = 1
+    lab[7:15, 27:30] = 2
+    f, seg = build("partial")
+    seg.cells, seg.nuclei = lab, np.zeros_like(lab)
+    html = build_report([measure_field(f, seg, cfg)], cfg, PROV, tmp_path / "r.html").read_text()
+    assert _row_cells(html, "flags-pooled")["dp_low_contact"] == 1
+    assert "mostly free edge" in html and "contact_fraction" in html
+    assert "dropped by dp" in html
+    assert _row_cells(html, "units-pooled")["low_contact_dp"] == 1
 
 
 # ---- threshold comparability -------------------------------------------------------

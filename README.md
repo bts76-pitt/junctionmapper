@@ -37,6 +37,32 @@ pip install -e '.[dev,segmentation]' # adds Cellpose-SAM
 Five tidy tables per run (`interfaces`, `cells`, `nuclei`, `nuclei_distances`, `flags`), each
 written as both `.parquet` and `.csv`, all keyed by `field_id` so several fields concatenate.
 
+### `interfaces` — one row per measured *cell-side* interface
+
+The unit of measurement is a **cell-side interface**, as in the original, which measures the
+interfaces of the one cell the operator selected. A junction between two cells that are both
+included is therefore measured **twice**, once from each side, each with its own dilated band
+and its own numbers; a junction whose neighbour touches the field border or is degenerate is
+measured once, because that neighbour is never measured. The tables are not deduplicated: each
+side is a real measurement of that cell's junction, and discarding one would discard the cell's
+own view of it.
+
+What that means downstream:
+
+- An `n` over rows counts cell-side interfaces, not junctions, and interior junctions carry
+  twice the weight of edge-adjacent ones in any pooled distribution.
+- `pair_id` (`field|method|lo-hi`, the two cell ids sorted) is the canonical key of the cell
+  pair and groups the two sides. A junction count is `df.pair_id.nunique()`; one row per
+  junction is `df.groupby("pair_id").mean()` or `.first()`, whichever the question wants.
+- `interface_id` is the unique key of one cell-side interface, shared by its JM1 and JM2 rows.
+- The report states this wherever it gives an `n`, and its QC section gives the junction count
+  beside the side count.
+
+Also per row: `contact_fraction`, the fraction of the interface's boundary positions actually
+adjacent to the neighbour it is labelled with (see divergence 5 below), `low_contact_fraction`
+when that is under 0.8, and `closed_loop` for a whole-boundary interface, whose
+`linearity_index` is ~0 by geometry rather than by tortuosity.
+
 ### Intensity thresholds: one value per marker, carried across the run
 
 Four of the measured parameters depend on an intensity threshold T per marker channel. Unless
@@ -161,6 +187,26 @@ describes, so a corner can fall on a concave turn and a rectangle has four of
 them. Interface decompositions therefore differ from the original's for any
 non-convex or oblique cell, and corner counts are not comparable between the
 two implementations.
+
+The tricellular (`tcj`) method, which has no counterpart in the original, cuts the boundary
+exactly where the neighbouring identity changes. Douglas–Peucker corners know nothing about
+neighbours, so a corner-to-corner run is assigned the neighbour holding the plurality of its
+pixels, and two things follow that a reader has to be able to see:
+
+- A dp interface can be mostly free edge. A neighbour touching 8 of a cell's 20-pixel side
+  still wins the plurality, so dp reports one interface of 19 px contour against it where tcj
+  reports 11 px: about 11 px of non-junction sit inside the measured band, depressing coverage
+  and occupancy. `contact_fraction` gives the fraction of the interface actually against that
+  neighbour (1.0 for tcj by construction), and `low_contact_fraction` plus the per-cell
+  `dp_low_contact` flag mark it below 0.8.
+- A short real contact can vanish. At 4 pixels of contact the plurality goes to background and
+  dp emits no interface at all, while tcj finds one; the per-cell `dp_missed_tcj_contact` flag
+  says so. Partial free edges are the phenotype in discohesive tissue, so this is not an
+  academic case.
+
+The rule itself stays: it is dp's published partition, and dp without it would need neighbour
+information the method does not have. What is new here is the evidence, in the tables and in the
+report's QC section.
 
 This divergence is about *which* interface gets measured, not about how it is
 measured. Given the same interface path, every metric in this project matches

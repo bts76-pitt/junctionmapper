@@ -8,7 +8,26 @@ from junctionmapper.geometry.boundary import trace_boundary
 from junctionmapper.geometry.corners_dp import dp_corners
 from junctionmapper.geometry.corners_tcj import merge_short_runs, neighbour_at, tcj_corners
 
-TCJ_MIN_RUN = 3     # must match the default of tcj_corners so ids and corners agree
+from junctionmapper.config import DEFAULT_NEIGHBOUR_RADIUS_PX, DEFAULT_TCJ_MIN_RUN
+
+TCJ_MIN_RUN = DEFAULT_TCJ_MIN_RUN   # single definition lives on RunConfig's default
+
+LOW_CONTACT_FRACTION = 0.8
+"""Below this fraction of an interface's positions actually touching the labelled neighbour,
+the interface carries enough non-junction to be worth flagging.
+
+Chosen at four fifths, not at a half. The modal rule keeps a run only when the neighbour wins
+the plurality, so on a run that holds just the neighbour and free edge the fraction is above a
+half by construction: a half would never fire in the commonest case, which is the one that
+matters -- a neighbour touching 8 of a 20-pixel side yields fraction 0.53 and a dp interface
+whose contour is 19 px against a true contact of 11. By contrast tcj, which cuts exactly where
+the identity changes, is at 1.0. A fifth of the band not lying against the labelled neighbour
+already moves the band metrics (interface area, marker area, intensity, occupancy, coverage) by
+a comparable fraction, since they scale with the length of the band.
+
+It is a reporting threshold on an interface the modal-neighbour rule has already produced,
+never a filter: the row is still emitted and still measured.
+"""
 
 
 @dataclass
@@ -25,7 +44,18 @@ class Interface:
     their common corner pixel, so a corner position is covered by exactly two interfaces
     and every other position by one. When one run is the whole boundary (single corner,
     or an engulfed cell) ``start_idx == end_idx`` and the start pixel is repeated as the
-    last pixel to close the loop, so the contour equals the true perimeter.
+    last pixel to close the loop, so the contour equals the true perimeter -- a CLOSED LOOP,
+    whose straight-line length is ~0 and whose linearity index is therefore ~0 by geometry,
+    not by tortuosity.
+
+    ``contact_fraction`` is the fraction of the interface's boundary positions (the run, not
+    counting the repeated closing pixel) whose nearest non-self label actually IS
+    ``neighbour_id``. For 'tcj' it is at or near 1 by construction, since the run was cut where
+    that identity changes. For 'dp' the corners know nothing about neighbours, so a run is
+    labelled with its plurality neighbour and the fraction can be well below 1: the rest of the
+    run is free edge or another cell that nevertheless sits inside the measured band. Reading a
+    dp row's band metrics without reading its ``contact_fraction`` is reading a number that may
+    be half non-junction.
     """
     cell_id: int
     neighbour_id: "int | None"
@@ -33,6 +63,7 @@ class Interface:
     end_idx: int
     pixels: np.ndarray
     method: str
+    contact_fraction: float = 1.0
 
 
 def _modal_neighbour(ids: np.ndarray) -> int:
@@ -55,7 +86,7 @@ def _check_int_ge1(name: str, v) -> int:
 
 def extract_interfaces(labels: np.ndarray, label: int, method: str,
                        epsilon: "float | None" = None, min_run: int = TCJ_MIN_RUN,
-                       search_radius: int = 2) -> "list[Interface]":
+                       search_radius: int = DEFAULT_NEIGHBOUR_RADIUS_PX) -> "list[Interface]":
     """Interfaces of ``label`` split by ``method`` ('dp' or 'tcj').
 
     ``epsilon`` is required for 'dp' (ConfigError if None) and ignored for 'tcj'.
@@ -101,6 +132,9 @@ def extract_interfaces(labels: np.ndarray, label: int, method: str,
         nb = int(run_ids[s]) if method == "tcj" else _modal_neighbour(ids[run_idx])
         if nb == 0:
             continue                       # free edge: consumes positions, not an interface
+        # measured on the RAW ids, so it says how much of the run really touches nb
+        frac = float(np.mean(ids[run_idx] == nb)) if run_idx.size else 0.0
         out.append(Interface(cell_id=int(label), neighbour_id=nb, start_idx=s,
-                             end_idx=e, pixels=boundary[idx], method=method))
+                             end_idx=e, pixels=boundary[idx], method=method,
+                             contact_fraction=frac))
     return out

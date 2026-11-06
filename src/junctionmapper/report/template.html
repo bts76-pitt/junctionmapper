@@ -86,7 +86,15 @@ different reason. <em>Corner methods disagree</em> counts cells where the tricel
 Douglas-Peucker and tricellular corner counts differ by more than one; the flag is silent (false) for isolated cells, cells enclosed
 by a single neighbour, degenerate cells and cells whose contacts were all filtered, because the methods are not measuring the same thing
 there. <em>All contacts filtered</em> counts cells that have a neighbour but whose every contact was too short for the tricellular method:
-such a cell can still contribute dp interfaces. Multinucleate, anucleate and orphan nuclei (nuclei in no cell) are warnings, not exclusions.</p>
+such a cell can still contribute dp interfaces. <em>dp interface mostly free edge</em> counts cells with at least one Douglas-Peucker interface
+fewer than four fifths of whose positions actually touch the neighbour it is labelled with: dp corners know nothing about neighbours, so a corner-to-corner
+run is assigned its plurality neighbour and the rest of the run, free edge included, sits inside the measured band. Read those cells'
+<code>contact_fraction</code> before their band metrics (interface area, marker area, intensity, occupancy, coverage). Conversely,
+<em>contact found by tcj, dropped by dp</em> counts cells where the tricellular method found a neighbour that the dp partition produced no
+interface for at all (its runs lost the plurality vote to background) - a short real contact that dp does not report, which is the phenotype in
+discohesive tissue. <em>Closed-loop interface</em> counts cells with a whole-boundary interface (an engulfed cell, or a single corner):
+its straight-line length is ~0, so its <em>linearity index</em> is ~0 by geometry, not by tortuosity, and it should not be read as a tortuous junction.
+Multinucleate, anucleate and orphan nuclei (nuclei in no cell) are warnings, not exclusions.</p>
 <div class="scroll"><table>
 <thead><tr><th class="l">Field</th>{% for k, lab in flag_columns %}<th>{{ lab }}</th>{% endfor %}</tr></thead>
 <tbody>
@@ -94,7 +102,22 @@ such a cell can still contribute dp interfaces. Multinucleate, anucleate and orp
 <tr id="{{ r.flag_id }}"><td class="l">{{ r.label }}</td>{% for k, lab in flag_columns %}<td data-col="{{ k }}">{{ r.counts[k] }}</td>{% endfor %}</tr>
 {% endfor %}
 </tbody></table></div>
-{% if qc_img %}<img src="data:image/png;base64,{{ qc_img }}" alt="QC counts, all fields pooled">{% endif %}
+<h3>Unit of measurement: cell-side interfaces and junctions</h3>
+<p>A row of the <code>interfaces</code> table is <strong>one measured cell-side interface</strong>, as in the original, which measures the
+interfaces of one selected cell. A junction between two cells that are both included is therefore measured <strong>twice</strong>, once from each
+side, with its own dilated band and its own numbers; a junction whose neighbour touches the border or is degenerate is measured once, because that
+neighbour is never measured. So every <em>n</em> on this page counts cell-side interfaces, not junctions, and interior junctions carry twice the
+weight of edge-adjacent ones in the pooled distributions. The two counts are given separately below: <code>pair_id</code> in the tables
+(<code>field|method|lo-hi</code>) is the canonical key of the cell pair and groups the two sides, so a junction count is the number of distinct
+<code>pair_id</code> and a downstream analysis that wants one row per junction groups by it.</p>
+<div class="scroll"><table>
+<thead><tr><th class="l">Field</th>{% for k, lab in unit_columns %}<th>{{ lab }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for r in unit_rows %}
+<tr id="{{ r.id }}"><td class="l">{{ r.label }}</td>{% for k, lab in unit_columns %}<td data-col="{{ k }}">{{ r.counts[k] }}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody></table></div>
+{% if qc_img %}<img src="data:image/png;base64,{{ qc_img }}" alt="QC counts, all fields pooled: cell accounting, exclusion reasons, overlapping flags and measured units, in four panels with separate axes">{% endif %}
 {% endif %}
 </section>
 
@@ -104,11 +127,12 @@ such a cell can still contribute dp interfaces. Multinucleate, anucleate and orp
 <p>No interfaces were measured, so there is no distribution to show. See the QC section for why cells were excluded
 (every cell may have touched the border, been degenerate or isolated).</p>
 {% else %}
-<p>Each figure is a distribution, not a mean: a histogram of every interface pooled over all fields (dashed line = median),
+<p>Each figure is a distribution, not a mean: a histogram of every <strong>cell-side interface</strong> pooled over all fields (dashed line = median),
 then one strip per field (points are individual interfaces, the bar is Q1 to Q3, the circle is the median).
 The two corner methods (<code>dp</code>, <code>tcj</code>) are different decompositions of the same cells and the
 markers are different molecules, so every panel is one (marker, corner method) group and none is pooled with another.
-The tables give n (interfaces), the number of distinct cells behind them, minimum, Q1, median, Q3 and maximum.
+The tables give n (cell-side interfaces - a junction between two included cells contributes two of them, see the unit of measurement in QC),
+the number of distinct cells behind them, minimum, Q1, median, Q3 and maximum.
 Histogram bins are chosen per marker and shared by dp and tcj within a marker, so the two methods of one marker are directly comparable
 but the x-axes of different markers differ. A cell can contribute to dp and not to tcj (see QC), so the two panels of a marker may
 cover different cells; the cells behind each panel are listed under every figure.

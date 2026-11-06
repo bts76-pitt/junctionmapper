@@ -575,6 +575,79 @@ def test_no_nucleus_gives_empty_nuclei_and_anucleate_flags(setup):
     assert res.flags.anucleate.all() and not res.flags.multinucleate.any()
 
 
+# ---- I1 / I2: unit of measurement, and the dp partition's blind spots --------------
+
+def _relabel(field_id, lab):
+    """The base field with its cell labels replaced (planes and shape unchanged)."""
+    f, seg = build(field_id=field_id)
+    seg.cells = lab
+    seg.nuclei = np.zeros_like(lab)
+    return f, seg
+
+
+def test_pair_id_groups_the_two_sides_of_one_junction_and_interface_id_is_unique():
+    """I1: every junction between two included cells is measured twice, once per side. The
+    tables carry the canonical pair key so a consumer can group or deduplicate without
+    guessing, and a junction count is a count of distinct pair_id, never of rows."""
+    f, seg = grid3()
+    df = measure_field(f, seg, make_cfg()).interfaces
+    dp = df[(df.corner_method == "dp") & (df.role == "JM1")]
+    # the centre cell 5 and its neighbour 4 are both measured, and share one pair_id
+    a = dp[(dp.cell_id == 5) & (dp.neighbour_id == 4)].pair_id.unique()
+    b = dp[(dp.cell_id == 4) & (dp.neighbour_id == 5)].pair_id.unique()
+    assert len(a) == len(b) == 1 and a[0] == b[0] == "g|dp|4-5"
+    # the two sides are different measurements of the same junction
+    assert len(dp[dp.pair_id == a[0]]) == 2
+    # a row key: one per (method, cell, start_idx), shared by the two roles of that interface
+    for m in ("dp", "tcj"):
+        g = df[df.corner_method == m]
+        assert g.interface_id.nunique() == len(g[["cell_id", "start_idx"]].drop_duplicates())
+        assert (g.groupby("interface_id").role.nunique() == 2).all()
+    # junctions < sides, because every interior junction is measured from both sides
+    assert dp.pair_id.nunique() < len(dp)
+
+
+def test_dp_low_contact_and_dropped_contact_are_flagged_per_cell():
+    """I2 at the pipeline level: the two flags a reader needs when the modal-neighbour rule
+    misleads -- a dp interface that is mostly free edge, and a contact dp dropped entirely."""
+    def labels(contact_rows):
+        lab = np.zeros((40, 40), np.int32)
+        lab[7:27, 7:27] = 1
+        lab[7:7 + contact_rows, 27:30] = 2
+        return lab
+    res = measure_field(*_relabel("partial", labels(8)), make_cfg())
+    fl = _row(res.flags, cell_id=1)
+    assert fl.dp_low_contact and not fl.dp_missed_tcj_contact
+    ifc = res.interfaces
+    dp = _row(ifc[ifc.corner_method == "dp"], cell_id=1, role="JM1")
+    tcj = _row(ifc[ifc.corner_method == "tcj"], cell_id=1, role="JM1")
+    assert dp.low_contact_fraction and not tcj.low_contact_fraction
+    assert dp.contact_fraction < tcj.contact_fraction == 1.0
+    assert dp.interface_contour_px > tcj.interface_contour_px   # whole side vs the contact
+
+    short = measure_field(*_relabel("short", labels(4)), make_cfg())
+    fl = _row(short.flags, cell_id=1)
+    assert fl.dp_missed_tcj_contact                             # tcj found it, dp dropped it
+    assert 1 not in set(short.interfaces.loc[short.interfaces.corner_method == "dp", "cell_id"])
+
+
+def test_closed_loop_interface_is_flagged_not_pooled_as_a_tortuous_junction():
+    """M4: an engulfed cell's whole-boundary interface has straight-line length ~0, so its
+    linearity index is ~0 by geometry. Unflagged it spikes the linearity histogram near 0."""
+    lab = np.zeros((40, 40), np.int32)
+    lab[10:30, 10:30] = 1
+    lab[18:22, 18:22] = 2                   # engulfed; cell 1 then has a hole -> degenerate
+    res = measure_field(*_relabel("loop", lab), make_cfg())
+    ifc = res.interfaces
+    tcj = _row(ifc[ifc.corner_method == "tcj"], cell_id=2, role="JM1")
+    assert tcj.closed_loop and tcj.start_idx == tcj.end_idx
+    assert tcj.linearity_index == pytest.approx(0.0)
+    assert _row(res.flags, cell_id=2).closed_loop_interface
+    # the dp partition of the same boundary is open arcs, and is not flagged
+    dp = ifc[(ifc.corner_method == "dp") & (ifc.cell_id == 2)]
+    assert not dp.closed_loop.any()
+
+
 # ---- misc -------------------------------------------------------------------------------
 
 def test_jm2_is_optional(setup):

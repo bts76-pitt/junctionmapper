@@ -12,7 +12,7 @@ from skimage.filters import threshold_otsu
 
 from junctionmapper.config import Role, RunConfig
 from junctionmapper.errors import ConfigError
-from junctionmapper.geometry.interfaces import extract_interfaces
+from junctionmapper.geometry.interfaces import LOW_CONTACT_FRACTION, extract_interfaces
 from junctionmapper.io.reader import Field
 from junctionmapper.measure import interface as mi
 from junctionmapper.measure.nuclei import associate, intra_distances, nucleus_centroids
@@ -53,6 +53,25 @@ one grey level for the reason given above (it also covers skimage's 256-bin quan
 Otsu, which is one bin = range/256). 10% is the scale at which the measured marker area
 changes materially, T sitting in the shoulder of the intensity distribution.
 """
+
+
+def _pair_id(field_id: str, method: str, cell_id: int, neighbour_id: int) -> str:
+    """Stable, order-independent key for the CELL PAIR this interface belongs to.
+
+    ``field|method|lo-hi`` with the two cell ids sorted, so the row measured from A against B
+    and the row measured from B against A carry the same ``pair_id`` and can be grouped or
+    deduplicated without guessing. The method is part of the key because dp and tcj partition
+    the boundary differently, so their interfaces are not the same objects. Several contact runs
+    between one pair share the pair id (deduplicating by it takes the junction once, whatever
+    the run count); ``interface_id`` is the unique key of a row's interface.
+    """
+    lo, hi = sorted((int(cell_id), int(neighbour_id)))
+    return f"{field_id}|{method}|{lo}-{hi}"
+
+
+def _interface_id(field_id: str, method: str, cell_id: int, start_idx: int) -> str:
+    """Unique key of one measured cell-side interface (both roles share it)."""
+    return f"{field_id}|{method}|{int(cell_id)}@{int(start_idx)}"
 
 
 @dataclass
@@ -250,14 +269,20 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
         fl = assess_cell(labels, cid, epsilon, cfg.tcj_min_run, cfg.neighbour_radius_px)
         area = int((labels == cid).sum())
         counts = {m: 0 for m in METHODS}
-        neighbours: set[int] = set()
+        nb_by_method: dict[str, set[int]] = {m: set() for m in METHODS}
+        low_contact = {m: False for m in METHODS}
+        closed_loop_cell = False
         measured = not (fl.border_touching or fl.degenerate)
         if measured:
             for method in METHODS:
                 for itf in extract_interfaces(labels, cid, method, epsilon,
                                            cfg.tcj_min_run, cfg.neighbour_radius_px):
                     counts[method] += 1
-                    neighbours.add(int(itf.neighbour_id))
+                    nb_by_method[method].add(int(itf.neighbour_id))
+                    low = itf.contact_fraction < LOW_CONTACT_FRACTION
+                    low_contact[method] = low_contact[method] or low
+                    closed = itf.start_idx == itf.end_idx
+                    closed_loop_cell = closed_loop_cell or closed
                     pix = itf.pixels
                     contour = mi.interface_contour(pix)
                     straight = mi.straight_line_length(pix)
@@ -274,6 +299,10 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                             "corner_method": itf.method, "role": role.value,
                             "marker": cfg.marker_for(role),
                             "start_idx": itf.start_idx, "end_idx": itf.end_idx,
+                            "pair_id": _pair_id(fid, itf.method, cid, itf.neighbour_id),
+                            "interface_id": _interface_id(fid, itf.method, cid, itf.start_idx),
+                            "contact_fraction": itf.contact_fraction,
+                            "low_contact_fraction": low, "closed_loop": closed,
                             "threshold": t,
                             "threshold_field_otsu": (float("nan") if own_otsu.get(role) is None
                                                      else own_otsu[role]),
@@ -299,6 +328,7 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                             "cluster_density_per_px2": bm.cluster_density,
                             "cluster_density_per_um2": bm.cluster_density / (px * px),
                         })
+        neighbours = nb_by_method["dp"] | nb_by_method["tcj"]
         cell_rows.append({
             "field_id": fid, "cell_id": cid, "area_px": area, "area_um2": area * px * px,
             "measured": measured, "n_neighbours": len(neighbours),
@@ -313,6 +343,9 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
             "corner_methods_disagree": fl.corner_methods_disagree,
             "n_corners_dp": fl.n_corners_dp, "n_corners_tcj": fl.n_corners_tcj,
             "all_contacts_filtered": fl.all_contacts_filtered,
+            "dp_low_contact": low_contact["dp"],
+            "dp_missed_tcj_contact": bool(nb_by_method["tcj"] - nb_by_method["dp"]),
+            "closed_loop_interface": closed_loop_cell,
             "multinucleate": cid in nflags.multinucleate,
             "anucleate": cid in nflags.anucleate_cells,
         })

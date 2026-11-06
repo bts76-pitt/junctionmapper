@@ -5,11 +5,12 @@ identity of the neighbouring cell changes (including changes to or from a free e
 """
 import numpy as np
 
+from junctionmapper.config import DEFAULT_NEIGHBOUR_RADIUS_PX, DEFAULT_TCJ_MIN_RUN
 from junctionmapper.errors import ConfigError
 
 
 def neighbour_at(labels: np.ndarray, boundary: np.ndarray, label: int,
-                 search_radius: int = 2) -> np.ndarray:
+                 search_radius: int = DEFAULT_NEIGHBOUR_RADIUS_PX) -> np.ndarray:
     """Neighbour label for every boundary *position* (0 = free edge / background).
 
     ``boundary`` is the (N, 2) (row, col) array from ``trace_boundary``; the result has
@@ -97,7 +98,7 @@ def merge_short_runs(neighbour_ids: np.ndarray, min_run: int) -> np.ndarray:
         out[pos] = out[starts[tgt]]
 
 
-def tcj_corners(neighbour_ids: np.ndarray, min_run: int = 3) -> np.ndarray:
+def tcj_corners(neighbour_ids: np.ndarray, min_run: int = DEFAULT_TCJ_MIN_RUN) -> np.ndarray:
     """Ascending indices where the neighbour identity changes, treating the array as circular.
 
     Convention: index ``i`` is returned when ``ids[i] != ids[i-1]`` (with ``ids[-1]``

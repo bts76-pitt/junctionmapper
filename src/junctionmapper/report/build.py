@@ -72,10 +72,24 @@ FLAG_COLUMNS = [
     ("border_touching", "Border-touching"), ("isolated", "Isolated"), ("degenerate", "Degenerate"),
     ("corner_methods_disagree", "Corner methods disagree"),
     ("all_contacts_filtered", "All contacts filtered"),
+    ("dp_low_contact", "dp interface mostly free edge"),
+    ("dp_missed_tcj_contact", "Contact found by tcj, dropped by dp"),
+    ("closed_loop_interface", "Closed-loop interface"),
     ("multinucleate", "Multinucleate"), ("anucleate", "Anucleate"), ("orphan_nuclei", "Orphan nuclei"),
 ]
 _FLAG_COLS = ("border_touching", "isolated", "degenerate", "corner_methods_disagree",
-              "all_contacts_filtered", "multinucleate", "anucleate")
+              "all_contacts_filtered", "dp_low_contact", "dp_missed_tcj_contact",
+              "closed_loop_interface", "multinucleate", "anucleate")
+
+# The unit of an interfaces row is a measured cell-side interface, so a junction between two
+# included cells is two rows. Both counts are reported; neither is the other.
+UNIT_COLUMNS = [
+    ("sides_dp", "dp: cell-side interfaces"), ("junctions_dp", "dp: junctions (cell pairs)"),
+    ("low_contact_dp", "dp: sides mostly free edge"),
+    ("sides_tcj", "tcj: cell-side interfaces"), ("junctions_tcj", "tcj: junctions (cell pairs)"),
+    ("low_contact_tcj", "tcj: sides mostly free edge"),
+    ("closed_loop", "closed-loop interfaces (either method)"),
+]
 BANNER_CAP = 10        # fields listed inline in the threshold banner; the full list is in Provenance
 LOST_FRACTION = 0.5     # a field with fewer than this fraction of cells yielding interfaces is flagged
 
@@ -189,6 +203,33 @@ def _qc_counts(cells: pd.DataFrame, flags: pd.DataFrame, nuclei: pd.DataFrame,
     return out
 
 
+def _unit_counts(ifc: pd.DataFrame) -> dict[str, int]:
+    """Interface-side and junction counts for one scope (a field, or all of them)."""
+    out = {k: 0 for k, _ in UNIT_COLUMNS}
+    if not len(ifc) or "pair_id" not in ifc.columns:
+        return out
+    for m in METHODS:
+        g = ifc[ifc["corner_method"] == m]
+        if not len(g):
+            continue
+        out[f"sides_{m}"] = int(g["interface_id"].nunique())
+        out[f"junctions_{m}"] = int(g["pair_id"].nunique())
+        if "low_contact_fraction" in g.columns:
+            out[f"low_contact_{m}"] = int(g.loc[g["low_contact_fraction"].astype(bool),
+                                                "interface_id"].nunique())
+    if "closed_loop" in ifc.columns:
+        out["closed_loop"] = int(ifc.loc[ifc["closed_loop"].astype(bool), "interface_id"].nunique())
+    return out
+
+
+def _units(fields: list[str], ifc: pd.DataFrame) -> list[dict[str, Any]]:
+    rows = [{"label": "All fields (pooled)", "id": "units-pooled", "counts": _unit_counts(ifc)}]
+    for fid in fields:
+        rows.append({"label": fid, "id": f"units-field-{fid}",
+                     "counts": _unit_counts(ifc[ifc["field_id"] == fid] if len(ifc) else ifc)})
+    return rows
+
+
 def _qc(fields: list[str], cells, flags, nuclei, ifc):
     def sel(df, fid):
         return df[df["field_id"] == fid]
@@ -211,20 +252,44 @@ def _qc(fields: list[str], cells, flags, nuclei, ifc):
     return rows, warnings
 
 
-def _qc_figure(pooled: dict[str, int]) -> str | None:
+_ACCOUNT_KEYS = [k for k, _ in QC_COLUMNS if not k.startswith("excl_")]
+
+
+def _qc_figure(pooled: dict[str, int], units: dict[str, int]) -> str | None:
+    """One PNG, three panels, because the quantities are not comparable.
+
+    Panel 1 counts cells and does not add up (a cell can be measured and contributing);
+    panel 2 is a partition of the non-contributing cells, so those bars DO sum to it;
+    panel 3 counts overlapping flags, one cell possibly in several bars, plus orphan nuclei,
+    which are not cells at all; panel 4 counts interfaces and junctions, which are not cells.
+    Drawn as one figure so the page's figure count stays independent of the number of fields.
+    """
     if not pooled["cells_found"]:
         return None
-    keys = [k for k, _ in QC_COLUMNS] + [k for k, _ in FLAG_COLUMNS]
-    labels = dict(QC_COLUMNS + FLAG_COLUMNS)
-    fig, ax = plt.subplots(figsize=(6.4, 5.4))
-    vals = [pooled[k] for k in keys]
-    ypos = np.arange(len(keys))[::-1]
-    ax.barh(ypos, vals, color="#4c78a8")
-    ax.set_yticks(ypos, [labels[k] for k in keys])
-    for y, v in zip(ypos, vals):
-        ax.text(v, y, f" {v}", va="center", fontsize=8)
-    ax.set_xlabel("cells (nuclei for orphan); flag counts overlap")
-    ax.set_title("QC counts, all fields pooled", fontsize=10)
+    labels = dict(QC_COLUMNS + FLAG_COLUMNS + UNIT_COLUMNS)
+    panels = [
+        ("Cell accounting (bars overlap; not parts of a whole)", _ACCOUNT_KEYS, pooled, "cells"),
+        ("Why a cell contributed nothing (these sum to 'Not contributing')",
+         [k for k, _ in EXCL_COLUMNS], pooled, "cells"),
+        ("QC flags (a cell can carry several; orphan nuclei are nuclei)",
+         [k for k, _ in FLAG_COLUMNS], pooled, "cells, except orphan nuclei (nuclei)"),
+        ("Measured units (interfaces and junctions, not cells)",
+         [k for k, _ in UNIT_COLUMNS], units, "interfaces / cell pairs"),
+    ]
+    heights = [max(1.2, 0.26 * len(keys) + 0.9) for _, keys, _, _ in panels]
+    fig, axes = plt.subplots(len(panels), 1, figsize=(6.4, sum(heights)),
+                             gridspec_kw={"height_ratios": heights})
+    for ax, (title, keys, src, unit) in zip(np.atleast_1d(axes), panels):
+        vals = [src.get(k, 0) for k in keys]
+        ypos = np.arange(len(keys))[::-1]
+        ax.barh(ypos, vals, color="#4c78a8")
+        ax.set_yticks(ypos, [labels[k] for k in keys])
+        for y, v in zip(ypos, vals):
+            ax.text(v, y, f" {v}", va="center", fontsize=8)
+        ax.set_xlabel(unit, fontsize=7)
+        ax.set_title(title, fontsize=8)
+        ax.tick_params(labelsize=7)
+    fig.suptitle("QC counts, all fields pooled", fontsize=10)
     fig.tight_layout()
     return _png(fig)
 
@@ -529,6 +594,7 @@ def build_report(results: Iterable, cfg: RunConfig, provenance: dict | None, out
     tinfo = _threshold_info(ifc)
     varied_roles = {r for r, t in tinfo.items() if t["varied"]}
     qc_rows, qc_warnings = _qc(fields, cells, flags, nuclei, ifc) if results else ([], [])
+    unit_rows = _units(fields, ifc) if results else []
     quant, groups = _quantification(ifc, fields, varied_roles, use_um)
     no_px = _fields_without_pixel_size(cells, fields) if use_um else []
     extras = _extras(cells, nuclei, use_um) if len(cells) else []
@@ -537,7 +603,8 @@ def build_report(results: Iterable, cfg: RunConfig, provenance: dict | None, out
                       trim_blocks=True, lstrip_blocks=True)
     page = env.get_template("template.html").render(
         n_fields=len(fields), fields=fields, qc_columns=QC_COLUMNS, qc_rows=qc_rows,
-        qc_warnings=qc_warnings, qc_img=_qc_figure(qc_rows[0]["counts"]) if qc_rows else None,
+        qc_warnings=qc_warnings, unit_columns=UNIT_COLUMNS, unit_rows=unit_rows,
+        qc_img=_qc_figure(qc_rows[0]["counts"], unit_rows[0]["counts"]) if qc_rows else None,
         lost_pct=int(LOST_FRACTION * 100), quant=quant, groups=groups, extras=extras,
         use_um=use_um, no_px_fields=no_px, flag_columns=FLAG_COLUMNS, excl_columns=EXCL_COLUMNS,
         tick_max=TICK_LABEL_MAX_FIELDS, has_interfaces=bool(len(ifc)), tinfo=list(tinfo.values()),

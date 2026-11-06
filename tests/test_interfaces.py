@@ -6,7 +6,9 @@ from junctionmapper.geometry import interfaces as interfaces_mod
 from junctionmapper.geometry.boundary import trace_boundary
 from junctionmapper.geometry.corners_dp import dp_corners
 from junctionmapper.geometry.corners_tcj import neighbour_at, tcj_corners
-from junctionmapper.geometry.interfaces import Interface, extract_interfaces
+from junctionmapper.geometry.interfaces import (
+    LOW_CONTACT_FRACTION, Interface, extract_interfaces,
+)
 from junctionmapper.measure.interface import interface_contour
 from junctionmapper.qc import CellFlags, assess_cell
 
@@ -457,3 +459,46 @@ def test_all_contacts_filtered_uses_the_given_min_run_and_search_radius():
     assert assess_cell(far, 4, 2.0).isolated
     seen = assess_cell(far, 4, 2.0, search_radius=3)
     assert (seen.isolated, seen.n_corners_tcj, seen.all_contacts_filtered) == (False, 0, True)
+
+
+# ---- I2: the modal-neighbour rule's blind spots, made visible -----------------------
+
+def _partial_contact(contact_rows: int):
+    """A 20x20 cell 1 whose right side is touched by cell 2 over ``contact_rows`` rows only."""
+    lab = np.zeros((34, 34), np.int32)
+    lab[7:27, 7:27] = 1
+    lab[7:7 + contact_rows, 27:30] = 2
+    return lab
+
+
+def test_dp_interface_mostly_free_edge_is_flagged_and_a_contact_dp_drops_is_visible():
+    """I2: dp labels a corner-to-corner run with its plurality neighbour, so an interface can
+    be mostly free edge with nothing saying so, and a short real contact can vanish entirely.
+    contact_fraction and the two flags are that evidence."""
+    lab = _partial_contact(8)
+    dp = extract_interfaces(lab, 1, "dp", epsilon=2.0)
+    tcj = extract_interfaces(lab, 1, "tcj")
+    assert [i.neighbour_id for i in dp] == [2] and [i.neighbour_id for i in tcj] == [2]
+    # dp measures the whole side; tcj measures the contact. Same labelled neighbour.
+    assert len(dp[0].pixels) == 20 and len(tcj[0].pixels) == 12
+    assert dp[0].contact_fraction == pytest.approx(10 / 19)      # just over half: a plurality
+    assert dp[0].contact_fraction < LOW_CONTACT_FRACTION         # and so it is flagged
+    assert tcj[0].contact_fraction == 1.0                        # exact by construction
+
+    # 4 rows of contact: the plurality goes to background, so dp emits nothing at all
+    short = _partial_contact(4)
+    assert extract_interfaces(short, 1, "dp", epsilon=2.0) == []
+    only_tcj = extract_interfaces(short, 1, "tcj")
+    assert [i.neighbour_id for i in only_tcj] == [2]
+    assert only_tcj[0].contact_fraction == 1.0
+
+
+def test_contact_fraction_is_one_when_the_whole_run_touches_the_neighbour():
+    lab = np.zeros((20, 20), np.int32)
+    lab[5:12, 5:12] = 1
+    lab[5:12, 12:19] = 2
+    for method, kw in (("dp", {"epsilon": 2.0}), ("tcj", {})):
+        for itf in extract_interfaces(lab, 1, method, **kw):
+            assert 0.0 < itf.contact_fraction <= 1.0
+            if method == "tcj":
+                assert itf.contact_fraction == 1.0
