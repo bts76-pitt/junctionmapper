@@ -474,6 +474,10 @@ class FigLog:
                     "xticks": [t.get_text() for t in ax.get_xticklabels()],
                     "bars": [p.get_height() for p in ax.patches],
                     "n_lines": len(ax.lines),
+                    "bar_left": [p.get_x() for p in ax.patches],
+                    "bar_right": [p.get_x() + p.get_width() for p in ax.patches],
+                    "points": [(np.asarray(l.get_xdata(), float), np.asarray(l.get_ydata(), float))
+                               for l in ax.lines if l.get_marker() == "."],
                 })
             png = orig(fig)
             self.figs.append({"axes": axes, "png": base64.b64decode(png)})
@@ -703,3 +707,67 @@ def test_mixed_pixel_size_names_the_fields_missing_from_um_panels(cfg, tmp_path)
     n = {int(x) for x in re.findall(r'data-scope="pooled" data-param="interface_contour_um" data-method="dp" data-role="JM1"[^>]*data-n="(\d+)"', html)}
     assert n == {8}                           # only the field with a pixel size contributes
     assert "Fields without a pixel size" not in build_report(res[:1], cfg, PROV, tmp_path / "o.html").read_text()
+
+
+NBINS = 30
+
+
+def _group_values(ifc, col, role, method):
+    return ifc[(ifc.role == role) & (ifc.corner_method == method)][col].dropna().to_numpy(float)
+
+
+def test_histogram_bars_and_axis_limits_equal_an_independent_histogram_of_the_table(results, logged):
+    """The picture, not just the table: every pooled panel's per-bin heights, bin edges and absolute
+    x-limits are recomputed from the interfaces DataFrame. Catches a histogram drawn from the wrong
+    column or from transformed values (e.g. scaled by 2), whatever happens to the statistics."""
+    _, figs = logged
+    ifc = pd.concat([r.interfaces for r in results])
+    for k in range(len(PARAMETERS)):
+        col = _col(k)
+        axes = _pooled_fig(figs, k)["axes"]
+        for r, role in enumerate(("JM1", "JM2")):
+            vs = [_group_values(ifc, col, role, m) for m in ("dp", "tcj")]
+            allv = np.concatenate(vs)
+            lo, hi = float(allv.min()), float(allv.max())
+            if hi <= lo:
+                lo, hi = lo - 0.5, lo + 0.5
+            edges = np.linspace(lo, hi, NBINS + 1)
+            for j, v in enumerate(vs):
+                ax = axes[2 * r + j]
+                assert ax["xlim"] == pytest.approx((lo, hi)), (col, role, j)
+                if not v.size:
+                    continue
+                assert ax["bars"] == list(np.histogram(v, bins=edges)[0]), (col, role, j)
+                assert np.allclose(ax["bar_left"], edges[:-1]) and np.allclose(ax["bar_right"], edges[1:])
+
+
+def test_histogram_hand_checked_marker_intensity_limits_are_absolute(results, logged):
+    """Absolute x-limits for one panel, from the table (a uniform x2 of plotted values moves them)."""
+    _, figs = logged
+    k = next(i for i, p in enumerate(PARAMETERS) if p["key"] == "marker_intensity")
+    ifc = pd.concat([r.interfaces for r in results])
+    v = ifc[ifc.role == "JM1"]["marker_intensity"].dropna()
+    assert _pooled_fig(figs, k)["axes"][0]["xlim"] == pytest.approx((v.min(), v.max()))
+    assert v.max() > 0 and v.max() > v.min()      # a non-trivial range, so scaling would be visible
+
+
+def test_strip_points_are_the_tables_values_per_field(results, logged):
+    """Per-field strip panels plot exactly each field's values for that group: right column,
+    untransformed, on the right field's x position."""
+    _, figs = logged
+    ifc = pd.concat([r.interfaces for r in results])
+    fields = ["f1", "zoo"]
+    for k in range(len(PARAMETERS)):
+        col = _col(k)
+        axes = _strip_fig(figs, k)["axes"]
+        for r, role in enumerate(("JM1", "JM2")):
+            for j, m in enumerate(("dp", "tcj")):
+                ax = axes[2 * r + j]
+                g = ifc[(ifc.role == role) & (ifc.corner_method == m)]
+                expected = [(i, np.sort(g[g.field_id == f][col].dropna().to_numpy(float)))
+                            for i, f in enumerate(fields)]
+                expected = [(i, v) for i, v in expected if v.size]
+                assert len(ax["points"]) == len(expected), (col, role, m)
+                for (xs, ys), (i, v) in zip(ax["points"], expected):
+                    assert np.allclose(np.sort(ys), v), (col, role, m, i)
+                    assert np.all(np.abs(xs - i) <= 0.25 + 1e-9)
