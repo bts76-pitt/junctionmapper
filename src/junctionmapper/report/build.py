@@ -53,8 +53,21 @@ PARAMETERS: list[dict[str, Any]] = [
     {"key": "cluster_density", "label": "Cluster density (intensity per marker area)", "px": "cluster_density_per_px2", "um": "cluster_density_per_um2", "td": True},
 ]
 
+# Exclusion accounting: every cell that contributes no interface is assigned to exactly one
+# reason, in this precedence order, so the reason columns add up to "Not contributing".
+EXCL_COLUMNS = [
+    ("excl_degenerate", "Degenerate"), ("excl_border", "Border-touching"),
+    ("excl_isolated", "Isolated"), ("excl_filtered", "All contacts filtered"),
+    ("excl_other", "Other (no interface)"),
+]
 QC_COLUMNS = [
-    ("cells_found", "Cells found"), ("measured", "Measured"), ("with_interfaces", "With interfaces"),
+    ("cells_found", "Cells found"), ("measured", "Measured"),
+    ("with_interfaces", "Contributing (any method)"),
+    ("contrib_dp", "Contributing: dp"), ("contrib_tcj", "Contributing: tcj"),
+    ("not_contributing", "Not contributing"),
+] + EXCL_COLUMNS
+# Overlapping raw flag counts (a cell can carry several); not exclusion reasons.
+FLAG_COLUMNS = [
     ("border_touching", "Border-touching"), ("isolated", "Isolated"), ("degenerate", "Degenerate"),
     ("corner_methods_disagree", "Corner methods disagree"),
     ("all_contacts_filtered", "All contacts filtered"),
@@ -62,6 +75,7 @@ QC_COLUMNS = [
 ]
 _FLAG_COLS = ("border_touching", "isolated", "degenerate", "corner_methods_disagree",
               "all_contacts_filtered", "multinucleate", "anucleate")
+BANNER_CAP = 10        # fields listed inline in the threshold banner; the full list is in Provenance
 LOST_FRACTION = 0.5     # a field with fewer than this fraction of cells yielding interfaces is flagged
 
 
@@ -92,7 +106,7 @@ def _mpl(s: str) -> str:
 
 def _png(fig) -> str:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=80)
+    fig.savefig(buf, format="png", dpi=80, metadata={"Software": None})
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
@@ -106,12 +120,12 @@ def _fids(res) -> set[str]:
     return {str(f) for n in _TABLES for f in getattr(res, n)["field_id"].dropna()}
 
 
-def _stats(vals: np.ndarray) -> dict[str, Any]:
+def _stats(vals: np.ndarray, cells: int = 0) -> dict[str, Any]:
     v = vals[np.isfinite(vals)]
     if v.size == 0:
-        return {"n": 0, "min": "–", "q1": "–", "median": "–", "q3": "–", "max": "–"}
+        return {"n": 0, "cells": 0, "min": "–", "q1": "–", "median": "–", "q3": "–", "max": "–"}
     q1, med, q3 = np.percentile(v, [25, 50, 75])
-    return {"n": int(v.size), "min": _fmt(v.min()), "q1": _fmt(q1), "median": _fmt(med),
+    return {"n": int(v.size), "cells": cells, "min": _fmt(v.min()), "q1": _fmt(q1), "median": _fmt(med),
             "q3": _fmt(q3), "max": _fmt(v.max())}
 
 
@@ -127,33 +141,69 @@ def _has_pixel_size(cells: pd.DataFrame, cfg: RunConfig) -> bool:
     return bool(ps) and np.isfinite(ps) and ps > 0
 
 
+def _fields_without_pixel_size(cells: pd.DataFrame, fields: list[str]) -> list[str]:
+    """Fields that have cells but no usable pixel size (absent from the micrometre panels)."""
+    out = []
+    for fid in fields:
+        ps = pd.to_numeric(cells.loc[cells["field_id"] == fid, "pixel_size_um"], errors="coerce")
+        if len(ps) and not ((ps > 0) & np.isfinite(ps)).any():
+            out.append(fid)
+    return out
+
+
 # ---- QC ----------------------------------------------------------------------------
 
 def _qc_counts(cells: pd.DataFrame, flags: pd.DataFrame, nuclei: pd.DataFrame,
                ifc: pd.DataFrame) -> dict[str, int]:
-    out = {"cells_found": int(len(cells)), "measured": int(cells["measured"].sum()) if len(cells) else 0}
-    out["with_interfaces"] = int(len(ifc[["field_id", "cell_id"]].drop_duplicates())) if len(ifc) else 0
+    """Counts for ONE field (cell ids are only unique within a field)."""
+    out = {k: 0 for k, _ in QC_COLUMNS}
+    out.update({c: 0 for c in _FLAG_COLS})
+    out["orphan_nuclei"] = int(nuclei["orphan"].sum()) if len(nuclei) else 0
+    ids = [int(c) for c in cells["cell_id"].dropna()]
+    out["cells_found"] = len(ids)
+    out["measured"] = int(cells["measured"].sum()) if len(cells) else 0
+    contrib = {m: {int(c) for c in ifc.loc[ifc["corner_method"] == m, "cell_id"].dropna()}
+               for m in METHODS} if len(ifc) else {m: set() for m in METHODS}
+    anyc = contrib["dp"] | contrib["tcj"]
+    out["contrib_dp"], out["contrib_tcj"] = len(contrib["dp"] & set(ids)), len(contrib["tcj"] & set(ids))
+    out["with_interfaces"] = len(anyc & set(ids))
     for c in _FLAG_COLS:
         out[c] = int(flags[c].sum()) if len(flags) else 0
-    out["orphan_nuclei"] = int(nuclei["orphan"].sum()) if len(nuclei) else 0
+    fl = {int(r["cell_id"]): r for _, r in flags.iterrows()} if len(flags) else {}
+    for cid in ids:
+        if cid in anyc:
+            continue
+        r = fl.get(cid)
+        if r is not None and r["degenerate"]:
+            out["excl_degenerate"] += 1
+        elif r is not None and r["border_touching"]:
+            out["excl_border"] += 1
+        elif r is not None and r["isolated"]:
+            out["excl_isolated"] += 1
+        elif r is not None and r["all_contacts_filtered"]:
+            out["excl_filtered"] += 1
+        else:
+            out["excl_other"] += 1
+        out["not_contributing"] += 1
     return out
 
 
 def _qc(fields: list[str], cells, flags, nuclei, ifc):
     def sel(df, fid):
         return df[df["field_id"] == fid]
-    rows = [{"id": "qc-pooled", "label": "All fields (pooled)", "n_fields": len(fields),
-             "counts": _qc_counts(cells, flags, nuclei, ifc)}]
+    per = {fid: _qc_counts(sel(cells, fid), sel(flags, fid), sel(nuclei, fid), sel(ifc, fid))
+           for fid in fields}
+    pooled = {k: sum(c[k] for c in per.values()) for k in [k for k, _ in QC_COLUMNS + FLAG_COLUMNS]}
+    rows = [{"id": "qc-pooled", "flag_id": "flags-pooled", "label": "All fields (pooled)", "counts": pooled}]
     warnings = []
     for fid in fields:
-        counts = _qc_counts(sel(cells, fid), sel(flags, fid), sel(nuclei, fid), sel(ifc, fid))
-        rows.append({"id": f"qc-field-{fid}", "label": fid, "counts": counts})
+        counts = per[fid]
+        rows.append({"id": f"qc-field-{fid}", "flag_id": f"flags-field-{fid}", "label": fid, "counts": counts})
         found = counts["cells_found"]
         if found and counts["with_interfaces"] < LOST_FRACTION * found:
-            why = [f"{counts[c]} {c.replace('_', ' ')}" for c in
-                   ("border_touching", "degenerate", "isolated", "all_contacts_filtered") if counts[c]]
+            why = [f"{counts[k]} {lab.lower()}" for k, lab in EXCL_COLUMNS if counts[k]]
             warnings.append({"field": fid, "found": found, "usable": counts["with_interfaces"],
-                             "why": ", ".join(why) or "no single dominant reason"})
+                             "lost": counts["not_contributing"], "why": ", ".join(why)})
     for r in rows:
         c = r["counts"]
         r["usable_pct"] = "–" if not c["cells_found"] else f"{100 * c['with_interfaces'] / c['cells_found']:.0f}%"
@@ -163,16 +213,16 @@ def _qc(fields: list[str], cells, flags, nuclei, ifc):
 def _qc_figure(pooled: dict[str, int]) -> str | None:
     if not pooled["cells_found"]:
         return None
-    keys = [k for k, _ in QC_COLUMNS]
-    labels = dict(QC_COLUMNS)
-    fig, ax = plt.subplots(figsize=(6.4, 3.4))
+    keys = [k for k, _ in QC_COLUMNS] + [k for k, _ in FLAG_COLUMNS]
+    labels = dict(QC_COLUMNS + FLAG_COLUMNS)
+    fig, ax = plt.subplots(figsize=(6.4, 5.4))
     vals = [pooled[k] for k in keys]
     ypos = np.arange(len(keys))[::-1]
     ax.barh(ypos, vals, color="#4c78a8")
     ax.set_yticks(ypos, [labels[k] for k in keys])
     for y, v in zip(ypos, vals):
         ax.text(v, y, f" {v}", va="center", fontsize=8)
-    ax.set_xlabel("cells (nuclei for orphan)")
+    ax.set_xlabel("cells (nuclei for orphan); flag counts overlap")
     ax.set_title("QC counts, all fields pooled", fontsize=10)
     fig.tight_layout()
     return _png(fig)
@@ -200,47 +250,65 @@ def _threshold_info(ifc: pd.DataFrame) -> dict[str, dict[str, Any]]:
         info[str(role)] = {
             "role": str(role), "markers": sorted(set(map(str, g["marker"]))),
             "by_field": by_field, "distinct": distinct, "varied": len(distinct) > 1,
+            "distinct_txt": " vs ".join(_fmt(x) for x in distinct),
+            "shown": [(f, ", ".join(_fmt(x) for x in v)) for f, v in sorted(by_field.items())[:BANNER_CAP]],
+            "more": max(0, len(by_field) - BANNER_CAP),
         }
     return info
 
 
+RED = "#c0392b"
+BLUE = "#4c78a8"
+
+
 def _hist_figure(sub: dict, groups, col, label, unit, varied_roles, td) -> str:
+    """Rows = (role, marker), columns = dp / tcj.
+
+    The bin range is computed per (role, marker) and shared by dp and tcj within it, so the
+    two methods of one marker are directly comparable while a weak marker is not crushed by a
+    strong one.
+    """
     rows = groups
-    fig, axes = plt.subplots(len(rows), len(METHODS), figsize=(3.4 * len(METHODS), 2.3 * len(rows)),
+    fig, axes = plt.subplots(len(rows), len(METHODS), figsize=(3.4 * len(METHODS), 2.5 * len(rows)),
                              squeeze=False)
-    allv = np.concatenate([v for v in sub.values()] or [np.array([])])
-    allv = allv[np.isfinite(allv)] if allv.size else allv
-    lo, hi = (allv.min(), allv.max()) if allv.size else (0.0, 1.0)
-    if hi <= lo:
-        hi = lo + 1.0
-    bins = np.linspace(lo, hi, 31)
     for i, (role, marker) in enumerate(rows):
+        vs = [sub[(role, marker, m)] for m in METHODS]
+        vs = [v[np.isfinite(v)] for v in vs]
+        allv = np.concatenate(vs)
+        lo, hi = (float(allv.min()), float(allv.max())) if allv.size else (0.0, 1.0)
+        if hi <= lo:
+            lo, hi = lo - 0.5, lo + 0.5
+        bins = np.linspace(lo, hi, 31)
         for j, m in enumerate(METHODS):
             ax = axes[i][j]
-            v = sub[(role, marker, m)]
-            v = v[np.isfinite(v)]
+            v = vs[j]
             bad = td and role in varied_roles
             title = _mpl(f"{role} {marker} | {m}  n={v.size}")
             if v.size:
-                ax.hist(v, bins=bins, color="#c0392b" if bad else "#4c78a8", edgecolor="white", linewidth=0.3)
+                ax.hist(v, bins=bins, color=RED if bad else BLUE, edgecolor="white", linewidth=0.3)
                 ax.axvline(float(np.median(v)), color="black", lw=1, ls="--")
             else:
                 ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+            ax.set_xlim(lo, hi)
             if bad:
                 title += "\nTHRESHOLD VARIED: not comparable"
                 ax.set_facecolor("#fdecea")
             ax.set_title(title, fontsize=8, color="#a93226" if bad else "black")
             ax.tick_params(labelsize=7)
-            if i == len(rows) - 1:
-                ax.set_xlabel(_mpl(f"{label} [{unit}]" if unit else label), fontsize=7)
-    fig.tight_layout()
+            ax.set_xlabel(_mpl(f"{label} [{unit}]" if unit else label), fontsize=7)
+    fig.tight_layout(h_pad=1.5)
     return _png(fig)
+
+
+TICK_LABEL_MAX_FIELDS = 40
 
 
 def _strip_figure(per_field: dict, fields, groups, label, unit, varied_roles, td) -> str:
     n = len(fields)
     width = min(max(3.4, 0.28 * n + 1.5), 14.0)
-    fig, axes = plt.subplots(len(groups), len(METHODS), figsize=(width * len(METHODS) / 2 + 1.5, 2.4 * len(groups)),
+    labelled = n <= TICK_LABEL_MAX_FIELDS
+    fig, axes = plt.subplots(len(groups), len(METHODS),
+                             figsize=(width * len(METHODS) / 2 + 1.5, (3.6 if labelled else 3.0) * len(groups)),
                              squeeze=False, sharey="row")
     rng = np.random.default_rng(0)
     for i, (role, marker) in enumerate(groups):
@@ -254,26 +322,34 @@ def _strip_figure(per_field: dict, fields, groups, label, unit, varied_roles, td
                     continue
                 pts = v if v.size <= 60 else v[np.linspace(0, v.size - 1, 60).astype(int)]
                 ax.plot(k + rng.uniform(-0.25, 0.25, pts.size), pts, ".", ms=2.5, alpha=0.5,
-                        color="#c0392b" if bad else "#4c78a8")
+                        color=RED if bad else BLUE)
                 q1, med, q3 = np.percentile(v, [25, 50, 75])
                 ax.vlines(k, q1, q3, color="black", lw=2)
                 ax.plot([k], [med], "o", color="white", mec="black", ms=3)
             ax.set_xlim(-0.8, max(n - 1, 0) + 0.8)
-            if n <= 40:
+            if labelled:
                 ax.set_xticks(range(n), fields, rotation=90, fontsize=6)
             else:
                 ax.set_xticks([])
-                ax.set_xlabel(f"{n} fields (sorted by id)", fontsize=7)
+                ax.set_xlabel(f"{n} fields (sorted by id; labels omitted)", fontsize=7)
             ax.tick_params(axis="y", labelsize=7)
             t = _mpl(f"{role} {marker} | {m}")
             if bad:
-                t += "\nTHRESHOLD VARIED: not comparable"
+                t += "\nTHRESHOLD VARIED"
                 ax.set_facecolor("#fdecea")
-            ax.set_title(t, fontsize=8, color="#a93226" if bad else "black")
+            ax.set_title(t, fontsize=8, color="#a93226" if bad else "black", pad=6)
             if j == 0:
                 ax.set_ylabel(_mpl(f"{label} [{unit}]" if unit else label), fontsize=7)
-    fig.tight_layout()
+    fig.tight_layout(h_pad=3.0, w_pad=1.5)
     return _png(fig)
+
+
+def _ncells(g: pd.DataFrame, col: str) -> int:
+    """Distinct (field, cell) pairs with a finite value of ``col``."""
+    if not len(g):
+        return 0
+    ok = np.isfinite(_finite(g, col))
+    return len(g.loc[ok, ["field_id", "cell_id"]].drop_duplicates())
 
 
 def _quantification(ifc: pd.DataFrame, fields: list[str], varied_roles: set[str], use_um: bool):
@@ -293,18 +369,21 @@ def _quantification(ifc: pd.DataFrame, fields: list[str], varied_roles: set[str]
                 sub[(role, marker, m)] = _finite(g, col)
                 rows.append({"scope": "pooled", "param": col, "method": m, "role": role,
                              "marker": marker, "varied": bool(p["td"] and role in varied_roles),
-                             **_stats(sub[(role, marker, m)])})
+                             **_stats(sub[(role, marker, m)], _ncells(g, col))})
                 for fid in fields:
-                    v = _finite(g[g["field_id"] == fid], col)
+                    gf = g[g["field_id"] == fid]
+                    v = _finite(gf, col)
                     per_field[(role, marker, m, fid)] = v
                     rows.append({"scope": f"field:{fid}", "param": col, "method": m, "role": role,
                                  "marker": marker, "varied": bool(p["td"] and role in varied_roles),
-                                 **_stats(v)})
+                                 **_stats(v, _ncells(gf, col))})
         out.append({
             "key": p["key"], "label": p["label"], "col": col, "unit": unit, "td": p["td"],
             "varied": any(r["varied"] for r in rows),
             "pooled_img": _hist_figure(sub, groups, col, p["label"], unit, varied_roles, p["td"]),
             "field_img": _strip_figure(per_field, fields, groups, p["label"], unit, varied_roles, p["td"]),
+            "cells_caption": [{"role": r["role"], "marker": r["marker"], "method": r["method"],
+                               "cells": r["cells"]} for r in rows if r["scope"] == "pooled"],
             "pooled_rows": [r for r in rows if r["scope"] == "pooled"],
             "field_rows": [r for r in rows if r["scope"] != "pooled"],
         })
@@ -422,6 +501,7 @@ def build_report(results: Iterable, cfg: RunConfig, provenance: dict | None, out
     varied_roles = {r for r, t in tinfo.items() if t["varied"]}
     qc_rows, qc_warnings = _qc(fields, cells, flags, nuclei, ifc) if results else ([], [])
     quant, groups = _quantification(ifc, fields, varied_roles, use_um)
+    no_px = _fields_without_pixel_size(cells, fields) if use_um else []
     extras = _extras(cells, nuclei, use_um) if len(cells) else []
 
     env = Environment(loader=FileSystemLoader(str(Path(__file__).parent)), autoescape=True,
@@ -430,7 +510,8 @@ def build_report(results: Iterable, cfg: RunConfig, provenance: dict | None, out
         n_fields=len(fields), fields=fields, qc_columns=QC_COLUMNS, qc_rows=qc_rows,
         qc_warnings=qc_warnings, qc_img=_qc_figure(qc_rows[0]["counts"]) if qc_rows else None,
         lost_pct=int(LOST_FRACTION * 100), quant=quant, groups=groups, extras=extras,
-        use_um=use_um, has_interfaces=bool(len(ifc)), tinfo=list(tinfo.values()),
+        use_um=use_um, no_px_fields=no_px, flag_columns=FLAG_COLUMNS, excl_columns=EXCL_COLUMNS,
+        tick_max=TICK_LABEL_MAX_FIELDS, has_interfaces=bool(len(ifc)), tinfo=list(tinfo.values()),
         varied=[t for t in tinfo.values() if t["varied"]], doi="10.7554/eLife.45413",
         prov=_provenance(cfg, provenance, cells, ifc, tinfo, use_um),
     )

@@ -35,9 +35,8 @@ lower threshold counts more pixels as marker. Geometry-only metrics (interface c
 linearity, interface area) are unaffected.</p>
 <ul>
 {% for t in varied %}
-<li data-role="{{ t.role }}"><strong>{{ t.role }} ({{ t.markers | join(", ") }})</strong>: thresholds
-{{ t.distinct | map("string") | join(" vs ") }}.
-{% for f, v in t.by_field.items() %}<code>{{ f }}</code> = {{ v | map("string") | join(", ") }}{{ "; " if not loop.last }}{% endfor %}
+<li data-role="{{ t.role }}"><strong>{{ t.role }} ({{ t.markers | join(", ") }})</strong>: thresholds {{ t.distinct_txt }}.
+{% for f, v in t.shown %}<code>{{ f }}</code> = {{ v }}{{ "; " if not loop.last }}{% endfor %}{% if t.more %}; and {{ t.more }} more field{{ "" if t.more == 1 else "s" }} (all listed under Provenance){% endif %}
 </li>
 {% endfor %}
 </ul>
@@ -50,19 +49,23 @@ linearity, interface area) are unaffected.</p>
 {% if not n_fields %}
 <p>No fields were supplied, so there is nothing to report.</p>
 {% else %}
-<p>Cells found is every labelled cell. <em>Measured</em> excludes border-touching and degenerate (untraceable) cells.
-<em>Isolated</em> cells are measured but have no neighbour and so contribute no interfaces.
-<em>With interfaces</em> is the number of cells that actually contribute rows to the quantification.
-Reason columns can overlap, so they need not sum to the excluded total.
-<em>Corner methods disagree</em> counts cells where both corner methods found corners and reached different answers.
-<em>All contacts filtered</em> counts cells whose contacts were all too short to measure; the disagreement flag is
-deliberately not raised for these (the methods are not measuring the same thing), so check this column, not the disagreement one,
-for such cells. Multinucleate, anucleate and orphan nuclei are warnings rather than exclusions.</p>
+<p><em>Cells found</em> is every labelled cell. <em>Measured</em> excludes border-touching and degenerate (untraceable) cells.
+<em>Contributing</em> is the number of cells that produce at least one interface row, counted for either method and for each
+corner method separately. The two methods can contribute different cells: a cell with a neighbour whose every contact is too
+short for the tricellular (tcj) method still yields Douglas-Peucker (dp) interfaces but none for tcj, so the dp and tcj
+distributions below are over different sets of cells and are not the same cells measured two ways.</p>
+<p><strong>Exclusion accounting.</strong> Each cell that contributes no interface under either method is counted
+under exactly one reason, taking the first that applies: degenerate, then border-touching, then isolated, then all contacts
+filtered, then other. The reason columns therefore add up to <em>Not contributing</em>, and
+<em>Cells found</em> = <em>Contributing (any method)</em> + <em>Not contributing</em>. <em>Usable</em> is Contributing divided by Cells found.</p>
+{% if no_px_fields %}
+<p class="warn">Fields without a pixel size ({{ no_px_fields | join(", ") }}) have no micrometre values and are absent from the µm panels; their data are in the px columns of the tables only.</p>
+{% endif %}
 {% if qc_warnings %}
 <section id="qc-warnings" class="warn">
 <strong>Fields that lost most of their cells</strong> (fewer than {{ lost_pct }}% of cells yielded interfaces):
 <ul>
-{% for w in qc_warnings %}<li><code>{{ w.field }}</code>: {{ w.usable }} of {{ w.found }} cells yielded interfaces ({{ w.why }}).</li>
+{% for w in qc_warnings %}<li><code>{{ w.field }}</code>: {{ w.usable }} of {{ w.found }} cells contributed interfaces; the {{ w.lost }} that did not are counted once each as: {{ w.why }}.</li>
 {% endfor %}
 </ul></section>
 {% endif %}
@@ -71,6 +74,22 @@ for such cells. Multinucleate, anucleate and orphan nuclei are warnings rather t
 <tbody>
 {% for r in qc_rows %}
 <tr id="{{ r.id }}"><td class="l">{{ r.label }}</td>{% for k, lab in qc_columns %}<td data-col="{{ k }}">{{ r.counts[k] }}</td>{% endfor %}<td>{{ r.usable_pct }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+
+<h3>Flag counts (overlapping; not exclusion reasons)</h3>
+<p>These count each QC flag over all cells, so one cell can appear in several columns and the columns do not add up to anything.
+<em>Border-touching</em>, <em>isolated</em> and <em>degenerate</em> here include cells that the exclusion table above assigned to a
+different reason. <em>Corner methods disagree</em> counts cells where the tricellular method found at least one corner and the
+Douglas-Peucker and tricellular corner counts differ by more than one; the flag is silent (false) for isolated cells, cells enclosed
+by a single neighbour, degenerate cells and cells whose contacts were all filtered, because the methods are not measuring the same thing
+there. <em>All contacts filtered</em> counts cells that have a neighbour but whose every contact was too short for the tricellular method:
+such a cell can still contribute dp interfaces. Multinucleate, anucleate and orphan nuclei (nuclei in no cell) are warnings, not exclusions.</p>
+<div class="scroll"><table>
+<thead><tr><th class="l">Field</th>{% for k, lab in flag_columns %}<th>{{ lab }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for r in qc_rows %}
+<tr id="{{ r.flag_id }}"><td class="l">{{ r.label }}</td>{% for k, lab in flag_columns %}<td data-col="{{ k }}">{{ r.counts[k] }}</td>{% endfor %}</tr>
 {% endfor %}
 </tbody></table></div>
 {% if qc_img %}<img src="data:image/png;base64,{{ qc_img }}" alt="QC counts, all fields pooled">{% endif %}
@@ -87,7 +106,11 @@ for such cells. Multinucleate, anucleate and orphan nuclei are warnings rather t
 then one strip per field (points are individual interfaces, the bar is Q1 to Q3, the circle is the median).
 The two corner methods (<code>dp</code>, <code>tcj</code>) are different decompositions of the same cells and the
 markers are different molecules, so every panel is one (marker, corner method) group and none is pooled with another.
-The tables give n, minimum, Q1, median, Q3 and maximum.</p>
+The tables give n (interfaces), the number of distinct cells behind them, minimum, Q1, median, Q3 and maximum.
+Histogram bins are chosen per marker and shared by dp and tcj within a marker, so the two methods of one marker are directly comparable
+but the x-axes of different markers differ. A cell can contribute to dp and not to tcj (see QC), so the two panels of a marker may
+cover different cells; the cells behind each panel are listed under every figure.
+Per-field strips omit field labels beyond {{ tick_max }} fields.</p>
 {% if use_um %}
 <p class="muted">Lengths in µm, areas in µm², using each field's pixel size.</p>
 {% else %}
@@ -97,15 +120,16 @@ The tables give n, minimum, Q1, median, Q3 and maximum.</p>
 <h3>{{ q.label }} <span class="muted">({{ q.col }}{{ ", " ~ q.unit if q.unit }})</span>
 {% if q.varied %}<span class="badge">threshold varied</span>{% endif %}</h3>
 <img src="data:image/png;base64,{{ q.pooled_img }}" alt="Pooled distribution of {{ q.label }}">
+<p class="muted">Cells contributing: {% for c in q.cells_caption %}{{ c.role }} {{ c.marker }} {{ c.method }} = {{ c.cells }}{{ "; " if not loop.last }}{% endfor %}. Histogram bins are per marker, shared by dp and tcj within a marker.</p>
 <details><summary>Per-field distribution</summary>
 <img src="data:image/png;base64,{{ q.field_img }}" alt="Per-field distribution of {{ q.label }}">
 </details>
 <details><summary>Summary statistics</summary>
 <div class="scroll"><table>
-<thead><tr><th class="l">Scope</th><th class="l">Role</th><th class="l">Marker</th><th class="l">Corner method</th><th>n</th><th>min</th><th>Q1</th><th>median</th><th>Q3</th><th>max</th></tr></thead>
+<thead><tr><th class="l">Scope</th><th class="l">Role</th><th class="l">Marker</th><th class="l">Corner method</th><th>n</th><th>cells</th><th>min</th><th>Q1</th><th>median</th><th>Q3</th><th>max</th></tr></thead>
 <tbody>
 {% for r in q.pooled_rows + q.field_rows %}
-<tr class="dist" data-scope="{{ r.scope }}" data-param="{{ r.param }}" data-method="{{ r.method }}" data-role="{{ r.role }}" data-marker="{{ r.marker }}" data-n="{{ r.n }}"{% if r.varied %} data-threshold-varied="1"{% endif %}><td class="l">{{ r.scope }}</td><td class="l">{{ r.role }}</td><td class="l">{{ r.marker }}</td><td class="l">{{ r.method }}</td><td>{{ r.n }}</td><td>{{ r.min }}</td><td>{{ r.q1 }}</td><td>{{ r.median }}</td><td>{{ r.q3 }}</td><td>{{ r.max }}</td></tr>
+<tr class="dist" data-scope="{{ r.scope }}" data-param="{{ r.param }}" data-method="{{ r.method }}" data-role="{{ r.role }}" data-marker="{{ r.marker }}" data-n="{{ r.n }}" data-cells="{{ r.cells }}"{% if r.varied %} data-threshold-varied="1"{% endif %}><td class="l">{{ r.scope }}</td><td class="l">{{ r.role }}</td><td class="l">{{ r.marker }}</td><td class="l">{{ r.method }}</td><td>{{ r.n }}</td><td>{{ r.cells }}</td><td>{{ r.min }}</td><td>{{ r.q1 }}</td><td>{{ r.median }}</td><td>{{ r.q3 }}</td><td>{{ r.max }}</td></tr>
 {% endfor %}
 </tbody></table></div>
 </details>
