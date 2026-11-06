@@ -22,16 +22,28 @@ every contact, so:
   the background pixel beside it);
 * pixels on the image border are not boundary merely for being on the border.
 
-Everything else is clear (value 0). Why both sides and why 4-neighbours: the Java fills a cell
-by an 8-connected flood of clear pixels (``ImageUtilities.selectCell``). A line drawn on one
-side only, or one that is thin along a diagonal, is crossed by an 8-connected flood at the
-corners; a line that is every pixel with a different 4-neighbour is itself 4-connected and
-cannot be crossed.
+Everything else is clear (value 0).
 
-Consequence the validation has to respect: the Java's cell is the label with that line
-removed, i.e. each cell eroded by one pixel wherever it meets another label or background.
-``java_view_labels`` returns exactly that image, and the harness measures our side on it, so
-both implementations trace the same boundary.
+Why this rule, and why it is not about leaks
+--------------------------------------------
+The Java fills a cell from a click with ``ImageUtilities.selectCell``. It VISITS all eight
+neighbours of a pixel but EXPANDS only from pixels that have no set pixel among their eight
+neighbours; a clear pixel next to the line is recorded as an "edge point" of the cell and never
+expands. A line therefore cannot be crossed at all unless it has a hole, and a one-pixel
+one-sided line works too (the Task 16 review ran the real flood on a one-sided 1-px barrier
+over a staircase, a jogged grid and two Voronoi tilings and found no leak). Earlier versions of
+this file claimed that a thin or one-sided line leaks; that came from modelling the flood as a
+plain 8-connected labelling of the clear pixels, which it is not. Do not "simplify" the
+barrier on the strength of either claim.
+
+The two-sided, 4-neighbour line is kept for SYMMETRY and MARGIN: neither of two touching
+cells is favoured by label order, the line has no holes even where labels meet at a corner, and
+nothing depends on the exact expansion rule of one Java version.
+
+Consequence the validation has to respect: the Java's cell is the label with that line removed
+(each cell eroded by one pixel wherever it meets another label or background), minus any acute
+tip the flood cannot reach. ``java_view_labels`` returns exactly that, modelling the flood as
+the Java does it, and the harness measures our side on it.
 
 The file is a 1-bit grayscale PNG (Pillow mode "1"). The Java's loader throws unless
 ``ImageIO.read`` returns ``TYPE_BYTE_BINARY``, and several of its code paths silently do nothing
@@ -45,6 +57,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
+from scipy import ndimage
 
 
 def _check_labels(labels) -> np.ndarray:
@@ -70,9 +83,24 @@ def edge_map_pixels(labels) -> np.ndarray:
 
 
 def java_view_labels(labels) -> np.ndarray:
-    """The labels as the Java will see them after its flood fill: edge-map pixels become 0."""
+    """The labels as the Java's flood will see them: each cell's reachable clear pixels.
+
+    Models ``ImageUtilities.selectCell`` (ImageUtilities.java:1356-1410): the flood expands only
+    from clear pixels with no set pixel among their 8 neighbours ("interior" pixels) and adds
+    every clear 8-neighbour of an expanding pixel to the cell. So a cell is its interior pixels
+    plus their clear 8-neighbours (its "edge points"). Clear pixels that touch the line but are
+    8-adjacent to no interior pixel, such as the tip of an acute corner, are NOT part of the
+    Java's cell (1647 vs 1653 px on a 45-degree staircase in the review's run).
+
+    One cell per label is assumed: a label whose interior pixels form two separate islands would
+    need two clicks in the Java, and here both islands are returned under the one label (an upper
+    bound; the harness then fails to trace it and skips the cell as degenerate).
+    """
     lab = _check_labels(labels)
-    return np.where(edge_map_pixels(lab), 0, lab).astype(lab.dtype)
+    edge = edge_map_pixels(lab)
+    interior = ~ndimage.binary_dilation(edge, structure=np.ones((3, 3), bool))
+    owner = ndimage.grey_dilation(np.where(interior, lab, 0), footprint=np.ones((3, 3), bool))
+    return np.where(~edge & (owner > 0), owner, 0).astype(lab.dtype)
 
 
 def labels_to_edge_map(labels: np.ndarray, out: Path) -> Path:
