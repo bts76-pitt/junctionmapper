@@ -231,6 +231,8 @@ def choose_cells(view: np.ndarray, dilation: int, wanted: list[int] | None, n: i
 def seed_for(view: np.ndarray, cid: int) -> tuple[int, int]:
     """(x, y) = (col, row) of the pixel deepest inside the cell: a click that surely floods it.
 
+    Ties are normal (14 pixels share the maximum in the control grid's centre cell); the one
+    chosen is the smallest row, then the smallest column, which is what ``argmax`` returns.
     The Java's flood, and so its edge pixels, convex hull and corners, depend on the click
     (README.md "Why the click matters"); this fixed rule makes the generator deterministic and
     the click is written to every row as seed_row / seed_col.

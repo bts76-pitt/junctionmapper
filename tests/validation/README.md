@@ -166,16 +166,23 @@ machine with a display (or X forwarding / VNC), a JDK 17 and the Java checkout (
    **Finish**.
 
 7. **Select the cell (steps 4 and 5) at the recorded click.** The Java's output depends on
-   where you click (see "Why the click matters"), so use the generator's rule: click the pixel
-   **farthest from the cell's boundary**, that is, the centre of the largest circle that fits
-   inside the cell on the Java's view of the labels (the cell without its edge-map line). To
-   find it, take the generator's value: run it for this cell
-   (`--cells <id>`) and read `seed_row` / `seed_col` from the CSV (row = the Java's `y`, column
-   = its `x`), or compute `scipy.ndimage.distance_transform_edt(java_view == cell)` and take the
-   argmax. Click there, press **Finish**, click the same pixel again. Write the pixel in
-   `seed_row` / `seed_col`. A click elsewhere in the same cell is legitimate but gives a
-   different edge-pixel set and usually different corners, so it will not reproduce the
-   generator's numbers.
+   where you click (see "Why the click matters"), so click the generator's pixel. **The
+   authoritative source is the CSV**: run the generator for this cell (`--cells <id>`) and read
+   `seed_row` / `seed_col` (row = the Java's `y`, column = its `x`). The rule below is only how
+   that pixel is recomputed, not a second source of truth: take the pixels of the cell on the
+   Java's view of the labels (the cell without its edge-map line), compute each one's distance
+   to the nearest pixel outside it (`scipy.ndimage.distance_transform_edt(java_view == cell)`),
+   keep those at the **maximum** distance, and among them take the **smallest row, then the
+   smallest column** (that is what `np.argmax` returns). **Ties are normal, not exotic**: in the
+   control grid's centre cell the 19.0 px maximum is shared by 14 pixels (rows 64 to 65, cols 74
+   to 80), and one of them, (x, y) = (77, 65), floods a different edge-pixel set and gives 3
+   corners instead of 4. "The pixel farthest from the boundary" without the tie-break does not
+   identify the click. **The click must be pixel-exact.** The application never reports which
+   pixel you clicked, so make sure the image is shown at 100% (no zoom, no display scaling) or
+   check the pixel under the pointer some other way before clicking. Click, press **Finish**,
+   click the same pixel again, and write it in `seed_row` / `seed_col`. A click elsewhere in
+   the same cell is legitimate but gives a different edge-pixel set and usually different
+   corners, so it will not reproduce the generator's numbers.
 
 8. **Step 6.** Set **Epsilon** to your epsilon (it returns to 0 each time you re-enter step 6),
    **# Dilations applied to edge** to your cycles, and the two thresholds. Release each slider.
@@ -246,7 +253,7 @@ machine with a display (or X forwarding / VNC), a JDK 17 and the Java checkout (
 | `java_n_corners` | the Java's corner count for the cell (`# Corners`), consistent across a cell's rows; information only |
 | `interface_contour_px` ... `marker_intensity` | the Java's numbers; the last three must be whole numbers; none may be blank |
 | `junction_contour_px`, `junction_straight_line_px` | JM1 rows only, may be blank |
-| `seed_row`, `seed_col` | optional, together or not at all: the pixel clicked to flood the cell (row = the Java's `y`, col = its `x`). The generator always writes them and the harness checks the pixel lies in the cell. A hand-transcribed row may omit them, but then the click is unknown and the row cannot be reproduced exactly: the Java's edge pixels, hull and corners depend on it |
+| `seed_row`, `seed_col` | optional, together or not at all: the pixel clicked to flood the cell (row = the Java's `y`, col = its `x`). The generator always writes them. The loader checks, for every row that carries one (compared or not), that the pixel lies in `cell_id` on the labels, and requires every row of one cell (same image and `cell_id`) to carry the same click, or none: mixing clicks would mix corner sets. A hand-transcribed row may omit them, but then the click is unknown and the row cannot be reproduced exactly: the Java's edge pixels, hull and corners depend on it |
 | `java_corner`, `java_paired_with`, `notes` | optional, never compared |
 
 The loader validates every row (types, ranges, paths, one row per image/cell/Java interface/role,
@@ -270,8 +277,9 @@ set of pixels it reaches, and the "edge points" it records along the line, diffe
 the starting point (acute tips and one-pixel necks are reached or not). A different edge-pixel
 set gives a different **convex hull**, and the hull is what the Java runs Douglas-Peucker on
 (recorded divergence 5), so the corner set, the corner count and the edge-pixel count all change
-with the click. On the control grid's centre cell, clicks at different pixels of the same cell
-gave 154 to 158 edge pixels and 3 or 4 corners. The harness stays valid because the Java's
+with the click. A reviewer who clicked different pixels of the control grid's centre cell
+measured 154 to 158 edge pixels and 3 or 4 corners (a one-off measurement from a review, not
+output this repository can regenerate). The harness stays valid because the Java's
 corner pixels are inputs and the path is shared, but reproducibility needs the click recorded,
 hence `seed_row` / `seed_col`.
 

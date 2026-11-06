@@ -408,6 +408,10 @@ def _parse_float(raw: str, name: str, line: int, allow_nonfinite: bool = False) 
     return f
 
 
+def _seed_labels(path: Path) -> np.ndarray:
+    return np.load(path, mmap_mode="r")
+
+
 def load_reference(path: Path) -> list[dict]:
     """Parse and validate ``reference.csv``; raise ReferenceFormatError on any defect.
 
@@ -498,8 +502,10 @@ def load_reference(path: Path) -> list[dict]:
         # row cannot be reproduced exactly: the Java's edge pixels, hull and corners depend
         # on where it was clicked (README.md "Why the click matters").
         sr, sc = raw.get("seed_row", ""), raw.get("seed_col", "")
-        if (sr == "") != (sc == ""):
-            raise _ref_error(lineno, "seed_row and seed_col must be given together or not at all")
+        if sr == "" and sc != "":
+            raise _ref_error(lineno, "seed_col is given without seed_row; give both or neither")
+        if sr != "" and sc == "":
+            raise _ref_error(lineno, "seed_row is given without seed_col; give both or neither")
         row["seed"] = None
         if sr != "":
             row["seed"] = (_parse_int(sr, "seed_row", lineno), _parse_int(sc, "seed_col", lineno))
@@ -511,12 +517,20 @@ def load_reference(path: Path) -> list[dict]:
             if not p.is_file():
                 raise _ref_error(lineno, f"{name} file not found: {p}")
             row[name] = p
+        if row["seed"] is not None:
+            # validated whenever present, whether or not the row is later compared
+            lab = _seed_labels(row["labels"])
+            r, c = row["seed"]
+            if not (r < lab.shape[0] and c < lab.shape[1] and lab[r, c] == row["cell_id"]):
+                raise _ref_error(lineno, f"cell {row['cell_id']}: the recorded click (row {r}, "
+                                         f"col {c}) is not inside that cell")
         rows.append(row)
 
     if not rows:
         raise ReferenceFormatError(f"{path} has a header but no data rows")
     seen: dict[tuple, int] = {}
     per_cell: dict[tuple, tuple[int, int, int]] = {}
+    seeds: dict[tuple, object] = {}
     for r in rows:
         key = (r["image"], r["labels"], r["cell_id"], r["role"], r["java_corner_row"],
                r["java_corner_col"], r["java_paired_row"], r["java_paired_col"])
@@ -534,8 +548,13 @@ def load_reference(path: Path) -> list[dict]:
             if nc != r["java_n_corners"]:
                 raise _ref_error(r["_line"], f"cell {r['cell_id']} has java_n_corners {nc} on line "
                                              f"{first} but {r['java_n_corners']} here")
+            if seeds[ckey] != r["seed"]:
+                raise _ref_error(r["_line"], f"cell {r['cell_id']} has click {seeds[ckey]} on line "
+                                             f"{first} but {r['seed']} here; one cell is one click "
+                                             "(different clicks give different corner sets)")
         else:
             per_cell[ckey] = (r["epsilon"], r["java_n_corners"], r["_line"])
+            seeds[ckey] = r["seed"]
     return rows
 
 
@@ -626,10 +645,6 @@ def _geometry(row: dict) -> Geometry:
     cid = row["cell_id"]
     if not (labels == cid).any():
         raise AssertionError(f"cell {cid} is not a label in {row['labels'].name}")
-    seed = row.get("seed")
-    if seed is not None and not (0 <= seed[0] < labels.shape[0] and 0 <= seed[1] < labels.shape[1]
-                                 and labels[seed] == cid):
-        raise AssertionError(f"cell {cid}: the recorded click {seed} is not inside that cell")
     if any((labels[s] == cid).any() for s in (np.s_[0, :], np.s_[-1, :], np.s_[:, 0], np.s_[:, -1])):
         raise RowSkip(f"cell {cid} touches the image border; it is not measured (the Java "
                       "clips its dilation band there; README.md divergence 2)")
@@ -1789,9 +1804,9 @@ def test_generator_header_is_the_loaders_schema():
 
 CANNED_JAVA = """\
 cell,seedx,seedy,ncorners,ncellpx,nedgepx,minx,maxx,miny,maxy,corner,cx,cy,paired,px,py,contour,euclid,ratio,frag,iarea,m1area,m1int,junc_contour,junc_euclid,m2area,m2int,m2dist
-1,20,20,4,100,40,10,30,10,30,1,10,12,2,30,12,20.0,20.0,1.0,5.0,100,60,6000.0,18.0,17.0,50,5000.0,9.0
-1,20,20,4,100,40,10,30,10,30,2,30,12,3,30,28,0.0,0.0,Infinity,0.0,0,0,0.0,0.0,0.0,0,0.0,0.0
-2,50,50,3,100,40,3,30,10,30,1,1,12,2,30,12,20.0,20.0,1.0,5.0,100,60,6000.0,18.0,17.0,50,5000.0,9.0
+1,30,100,4,100,40,10,30,10,30,1,10,12,2,30,12,20.0,20.0,1.0,5.0,100,60,6000.0,18.0,17.0,50,5000.0,9.0
+1,30,100,4,100,40,10,30,10,30,2,30,12,3,30,28,0.0,0.0,Infinity,0.0,0,0,0.0,0.0,0.0,0,0.0,0.0
+2,70,100,3,100,40,3,30,10,30,1,1,12,2,30,12,20.0,20.0,1.0,5.0,100,60,6000.0,18.0,17.0,50,5000.0,9.0
 """
 
 
@@ -1818,25 +1833,76 @@ def test_generator_turns_java_output_into_valid_reference_rows(tmp_path):
     assert jm1["junction_contour_px"] == 18.0 and jm2["junction_contour_px"] is None
     assert (jm1["java_corner_row"], jm1["java_corner_col"]) == (12, 10)       # (y, x) -> (row, col)
     assert math.isclose(jm1["coverage_index"], 0.25) and math.isclose(jm2["coverage_index"], 0.45)
-    assert jm1["seed"] == (20, 20) and loaded[4]["seed"] == (50, 50)         # (seedy, seedx)
+    assert jm1["seed"] == (100, 30) and loaded[4]["seed"] == (100, 70)        # (seedy, seedx)
     assert math.isinf(loaded[2]["java_distance_ratio"]) and math.isnan(loaded[2]["coverage_index"])
     assert [r["cell_id"] for r in loaded] == [7, 7, 7, 7, 8, 8]               # seeds map to cell ids
     assert loaded[0]["interior"] is True and loaded[4]["interior"] is False   # minx 3 - 2 < 2
 
 
-def test_seed_columns_are_optional_paired_validated_and_must_lie_in_the_cell(synth):
+def _seeded(synth_, **kw):
+    tmp, tif, npy = synth_
+    return [dict(_good_rows(synth_)[0], **kw)]
+
+
+def test_seed_columns_are_optional(synth):
+    tmp = synth[0]
+    assert load_reference(write_csv(tmp / "n.csv", _seeded(synth)))[0]["seed"] is None
+    assert load_reference(write_csv(tmp / "s.csv", _seeded(synth, seed_row=30, seed_col=20)))[0]["seed"] == (30, 20)
+
+
+def test_seed_pair_mutant_row_blank_col_set_is_rejected(synth):
+    with pytest.raises(ReferenceFormatError, match="seed_col is given without seed_row"):
+        load_reference(write_csv(synth[0] / "b.csv", _seeded(synth, seed_row="", seed_col=3)))
+
+
+def test_seed_pair_mutant_row_set_col_blank_is_rejected(synth):
+    with pytest.raises(ReferenceFormatError, match="seed_row is given without seed_col"):
+        load_reference(write_csv(synth[0] / "b.csv", _seeded(synth, seed_row=30, seed_col="")))
+
+
+@pytest.mark.parametrize("bad, match", [({"seed_row": -1, "seed_col": 3}, ">= 0"),
+                                        ({"seed_row": 1.5, "seed_col": 3}, "whole number")])
+def test_malformed_seed_values_are_rejected(synth, bad, match):
+    with pytest.raises(ReferenceFormatError, match=match):
+        load_reference(write_csv(synth[0] / "b.csv", _seeded(synth, **bad)))
+
+
+def test_seed_bounds_mutant_row_beyond_the_image_is_rejected_cleanly(synth):
+    with pytest.raises(ReferenceFormatError, match="not inside that cell"):
+        load_reference(write_csv(synth[0] / "b.csv", _seeded(synth, seed_row=500, seed_col=20)))
+
+
+def test_seed_bounds_mutant_col_beyond_the_image_is_rejected_cleanly(synth):
+    with pytest.raises(ReferenceFormatError, match="not inside that cell"):
+        load_reference(write_csv(synth[0] / "b.csv", _seeded(synth, seed_row=30, seed_col=500)))
+
+
+def test_seed_row_col_swap_mutant_is_pinned_by_a_seed_inside_in_one_order_only(synth):
     tmp, tif, npy = synth
-    rows = _good_rows(synth)[:1]
-    assert load_reference(write_csv(tmp / "n.csv", rows))[0]["seed"] is None      # hand-transcribed
-    rows[0].update(seed_row=30, seed_col=20)
-    assert load_reference(write_csv(tmp / "s.csv", rows))[0]["seed"] == (30, 20)
-    for bad, match in (({"seed_row": 30, "seed_col": ""}, "together"), ({"seed_row": -1, "seed_col": 3}, ">= 0"),
-                       ({"seed_row": 1.5, "seed_col": 3}, "whole number")):
-        with pytest.raises(ReferenceFormatError, match=match):
-            load_reference(write_csv(tmp / "b.csv", [dict(rows[0], **bad)]))
-    rows[0].update(seed_row=50, seed_col=50)                   # background, not cell 1
-    res = compare_reference(load_reference(write_csv(tmp / "o.csv", rows)))
-    assert res.errors and "recorded click (50, 50) is not inside" in res.errors[0]
+    lab = np.load(npy)
+    assert lab[40, 20] == 1 and lab[20, 40] == 2          # (row 40, col 20) is cell 1; swapped is cell 2
+    ok = load_reference(write_csv(tmp / "ok.csv", _seeded(synth, seed_row=40, seed_col=20)))
+    assert ok[0]["seed"] == (40, 20)
+    with pytest.raises(ReferenceFormatError, match=r"\(row 20, col 40\) is not inside that cell"):
+        load_reference(write_csv(tmp / "sw.csv", _seeded(synth, seed_row=20, seed_col=40)))
+
+
+def test_a_seed_outside_the_cell_is_rejected_even_when_the_row_is_not_compared(synth):
+    rows = _seeded(synth, seed_row=50, seed_col=50, interior="no")      # background; row would be skipped
+    with pytest.raises(ReferenceFormatError, match="not inside that cell"):
+        load_reference(write_csv(synth[0] / "b.csv", rows))
+
+
+def test_rows_of_one_cell_must_carry_the_same_click(synth):
+    tmp, tif, npy = synth
+    a = dict(_good_rows(synth)[0], seed_row=40, seed_col=20)
+    b = dict(_good_rows(synth)[1], seed_row=41, seed_col=20)           # same cell 1, different click
+    with pytest.raises(ReferenceFormatError, match="one cell is one click"):
+        load_reference(write_csv(tmp / "mix.csv", [a, b]))
+    c = dict(_good_rows(synth)[1])                                      # same cell, click missing
+    with pytest.raises(ReferenceFormatError, match="one cell is one click"):
+        load_reference(write_csv(tmp / "mix2.csv", [a, c]))
+    assert len(load_reference(write_csv(tmp / "same.csv", [a, dict(b, seed_row=40)]))) == 2
 
 
 def test_generator_chooses_interior_cells_and_seeds_inside_them():
