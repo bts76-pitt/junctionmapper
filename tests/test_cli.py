@@ -701,3 +701,83 @@ def test_collision_on_any_one_label_file_refuses(env, monkeypatch, which):
     r = invoke("segment", "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
     assert r.exit_code == 1 and name in r.output
     assert (d / name).read_bytes() == b"precious" and calls == []
+
+
+# ---- fix round 2 ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", ["segment", "run"])
+@pytest.mark.parametrize("field", ["a", "b", "c"])
+@pytest.mark.parametrize("suffix", ["JM1.npy", "nucleus.npy", "provenance.json"])
+def test_collision_anywhere_in_a_three_field_batch_refuses_and_writes_nothing(
+        env, monkeypatch, cmd, field, suffix):
+    """The napari case: one hand-corrected later field in a batch. Every (field, file)
+    position must be caught, with nothing written for any field."""
+    calls = counting_segment(monkeypatch, env["seg"])
+    batch = make_batch(env, good=())
+    write_tif(batch / "c.tif")
+    d = env["out"] / "labels"
+    d.mkdir(parents=True)
+    victim = d / f"{field}_t0_z0.{suffix}"
+    victim.write_bytes(b"hand-corrected")
+    r = invoke(cmd, "--config", env["cfg"], "--input", batch, "--out", env["out"])
+    assert r.exit_code == 1, r.output
+    assert victim.name in r.output and "--overwrite-labels" in r.output
+    assert victim.read_bytes() == b"hand-corrected"
+    assert [p.name for p in d.iterdir()] == [victim.name]     # nothing else appeared
+    assert calls == []
+    assert not (env["out"] / "report.html").exists()
+
+
+# ---- bioio logger scoping --------------------------------------------------------------
+
+def _spy_reader(monkeypatch, seen, exc=None):
+    import logging
+
+    def fake(path, cfg):
+        seen.append(logging.getLogger("bioio.bio_image").level)
+        if exc:
+            raise exc
+        return
+        yield
+    monkeypatch.setattr(cli, "read_fields", fake)
+
+
+@pytest.mark.parametrize("name,quiet", [("x.tif", True), ("x.tiff", True), ("x.czi", False)])
+def test_bioio_logger_level_restored_after_read(env, monkeypatch, name, quiet):
+    import logging
+    log = logging.getLogger("bioio.bio_image")
+    log.setLevel(logging.INFO)
+    try:
+        seen = []
+        _spy_reader(monkeypatch, seen)
+        cfg, _ = cli._load_config(env["cfg"])
+        assert list(cli._iter_fields([env["tmp"] / name], cfg, [])) == []
+        assert seen == [logging.ERROR if quiet else logging.INFO]   # only TIFF reads are quieted
+        assert log.level == logging.INFO                             # and always restored
+    finally:
+        log.setLevel(logging.NOTSET)
+
+
+def test_bioio_logger_level_restored_after_a_read_that_raises(env, monkeypatch):
+    import logging
+    log = logging.getLogger("bioio.bio_image")
+    log.setLevel(logging.INFO)
+    try:
+        _spy_reader(monkeypatch, [], exc=RuntimeError("boom"))
+        cfg, _ = cli._load_config(env["cfg"])
+        with pytest.raises(RuntimeError):
+            list(cli._iter_fields([env["tmp"] / "x.tif"], cfg, []))
+        assert log.level == logging.INFO
+    finally:
+        log.setLevel(logging.NOTSET)
+
+
+# ---- unreadable sidecar ----------------------------------------------------------------
+
+def test_unreadable_sidecar_warns_and_the_run_proceeds(env):
+    (env["labels"] / f"{FID}.provenance.json").write_bytes(b"\x00not json{{")
+    r = run_ok(env)
+    assert r.exit_code == 0, r.output
+    assert "unreadable" in r.stderr and f"{FID}.provenance.json" in r.stderr
+    assert set(pd.read_parquet(env["out"] / "cells.parquet").field_id) == {FID}
+    assert "labels_source_mismatch" not in (env["out"] / "report.html").read_text()
