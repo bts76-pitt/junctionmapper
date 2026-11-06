@@ -25,6 +25,7 @@ _GIT_TIMEOUT_S = 5
 
 
 def _git(args: list[str], cwd: Path) -> str | None:
+    """Run git, or None when there is no usable git here (the container has no git binary)."""
     try:
         out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
                              timeout=_GIT_TIMEOUT_S, check=False)
@@ -35,15 +36,73 @@ def _git(args: list[str], cwd: Path) -> str | None:
     return out.stdout.strip()
 
 
-def git_commit(start: Path | None = None) -> str | None:
-    """``<short sha>`` for the checkout holding this package, ``<short sha>-dirty`` when the
-    working tree has uncommitted changes, or None when it is not a git checkout."""
-    cwd = Path(start) if start is not None else Path(__file__).resolve().parent
-    sha = _git(["rev-parse", "--short", "HEAD"], cwd)
-    if not sha:
+def _git_dir(start: Path) -> Path | None:
+    """The ``.git`` directory above ``start``, resolving a ``.git`` file (a worktree)."""
+    for d in (start, *start.parents):
+        g = d / ".git"
+        if g.is_dir():
+            return g
+        if g.is_file():
+            try:
+                line = g.read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            if line.startswith("gitdir:"):
+                p = Path(line.split(":", 1)[1].strip())
+                return p if p.is_absolute() else (d / p)
+    return None
+
+
+def _head_sha(git_dir: Path) -> str | None:
+    """HEAD's commit sha read straight off the filesystem, with no git binary.
+
+    The shipped container installs no git (its %post is pure pip on purpose), so the binary is
+    exactly unavailable on the path this project actually runs. Reading .git is what makes the
+    commit recoverable there, which is the whole point of recording it.
+    """
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
         return None
-    dirty = _git(["status", "--porcelain", "--untracked-files=no"], cwd)
-    return f"{sha}-dirty" if dirty else sha
+    if not head.startswith("ref:"):
+        return head or None                             # detached HEAD holds the sha itself
+    ref = head.split(":", 1)[1].strip()
+    try:
+        return (git_dir / ref).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        pass
+    try:                                                # packed refs
+        for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith(("#", "^")):
+                sha, _, name = line.partition(" ")
+                if name.strip() == ref:
+                    return sha
+    except OSError:
+        return None
+    return None
+
+
+def git_state(start: Path | None = None) -> tuple[str | None, bool | None]:
+    """``(short sha, dirty)``. ``dirty`` is None when it cannot be determined."""
+    cwd = Path(start) if start is not None else Path(__file__).resolve().parent
+    git_dir = _git_dir(cwd)
+    sha = _head_sha(git_dir) if git_dir else None
+    if sha is None:
+        sha = _git(["rev-parse", "HEAD"], cwd)
+    if not sha:
+        return None, None
+    status = _git(["status", "--porcelain", "--untracked-files=no"], cwd)
+    dirty = None if status is None else bool(status)
+    return sha[:12], dirty
+
+
+def git_commit(start: Path | None = None) -> str | None:
+    """``<short sha>``, with ``-dirty`` appended when the working tree is known to be dirty
+    and ``-dirty?`` when that cannot be checked (no git binary). None outside a checkout."""
+    sha, dirty = git_state(start)
+    if sha is None:
+        return None
+    return sha if dirty is False else f"{sha}-dirty" if dirty else f"{sha}-dirty?"
 
 
 def distribution_version() -> str | None:
@@ -57,7 +116,9 @@ def code_identity() -> str:
     """One resolvable string: the commit when there is one, else the installed version.
 
     The container runs the package off ``PYTHONPATH`` without installing it, so the
-    distribution version is frequently absent; the commit is what survives there.
+    distribution version is frequently absent; the commit is what survives there. A trailing
+    ``-dirty`` means uncommitted changes, ``-dirty?`` that no git binary was available to
+    check (the image has none), so the commit identifies the checkout but not the edits in it.
     """
     sha = git_commit()
     dist = distribution_version()
