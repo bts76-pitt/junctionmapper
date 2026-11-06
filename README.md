@@ -70,7 +70,9 @@ Four of the measured parameters depend on an intensity threshold T per marker ch
 applied to every field: Otsu is computed on each of up to five fields chosen deterministically
 and spread across the run (sorted `field_id`, evenly spaced; all of them when there are five or
 fewer), and the run value is the **median** of those values, so one saturated or empty field
-cannot drag it. Fields whose plane is flat or non-finite contribute nothing, and if every
+cannot drag it. (A field id does not exist until its file has been read, so the CLI opens up to
+five input files, spread over the sorted input list, to offer that choice; with one field per
+file the two selections are the same.) Fields whose plane is flat or non-finite contribute nothing, and if every
 calibration field is like that the run value falls back to 0.0 and the report says so.
 
 `threshold` in `interfaces` is the value applied; `threshold_field_otsu` is what Otsu on that
@@ -124,8 +126,9 @@ pixel whenever any of its 3×3 neighbours falls outside
 loss compounds with each cycle. Interface area, marker area and marker
 intensity all read off that band, so in the Java they are systematically low
 for cells within a couple of pixels of the field border. This project dilates
-uniformly (`measure/interface.py`, `dilated_band`). Border-touching cells are flagged and excluded from the interface
-table anyway, which is the more conservative handling of the same problem.
+uniformly (`measure/interface.py`, `dilated_band`). Border-touching cells are flagged and
+excluded from the interface table anyway, which is the more conservative handling of the same
+problem.
 
 ### 3. Marker connectivity is symmetric and the same for both markers
 

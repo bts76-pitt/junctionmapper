@@ -610,7 +610,12 @@ def test_version_resolves_and_reaches_report_without_installed_metadata(env, mon
     assert run_ok(env).exit_code == 0
     html = (env["out"] / "report.html").read_text()
     assert junctionmapper.__version__ in html
-    assert "unknown" not in html
+    # the version row itself must not read "unknown". (The MODEL may legitimately be unknown
+    # here: these labels carry no provenance sidecar, and the report now says so per field.)
+    import re
+    row = re.search(r'<tr><td class="l">junctionmapper version</td><td class="l">([^<]*)</td>', html)
+    assert row and row.group(1) == junctionmapper.__version__
+    assert "code_identity" in html                   # and the code is identified regardless
 
 
 # ---- napari-seam properties -----------------------------------------------------------

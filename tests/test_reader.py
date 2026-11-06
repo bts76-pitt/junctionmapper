@@ -311,11 +311,17 @@ def test_only_one_xy_pixel_size_raises_naming_missing_axis():
         _metadata_pixel_size(img)
 
 
-def test_unreadable_non_tiff_reraises_unsupported_format(tmp_path):
+def test_unreadable_non_tiff_becomes_a_format_error_not_a_bare_bioio_exception(tmp_path):
+    """I4: bioio's UnsupportedFileFormatError is not a JunctionMapperError, so when it escaped
+    the reader it escaped the CLI's per-field handling too and ended the whole run with a
+    traceback, discarding the fields that had already been measured."""
     path = tmp_path / "junk.xyz"
     path.write_bytes(np.random.default_rng(0).bytes(256))
-    with pytest.raises(bioio_base.exceptions.UnsupportedFileFormatError):
+    with pytest.raises(FormatError) as exc:
         list(read_fields(path, make_cfg()))
+    assert isinstance(exc.value, JunctionMapperError)
+    assert "junk.xyz" in str(exc.value) and "OME-TIFF" in str(exc.value)
+    assert not isinstance(exc.value, bioio_base.exceptions.UnsupportedFileFormatError)
 
 
 def _write_zarr(path: Path, unit: str, scale: float) -> Path:
