@@ -117,13 +117,14 @@ in one table.
 
 Both implementations grow the interface band by repeated 8-connected 3×3
 dilation, and both count cycles as iterations. But the Java's
-`ImageUtilities.getDilatedImage` zeroes the outermost pixel of every row and
-column on each pass, so near an edge the band is clipped and the loss
-compounds with each cycle: at the default 2 cycles the band is up to 2 px
-narrower along the border than in the field interior. Interface area, marker
-area and marker intensity all read off that band, so in the Java they are
-systematically low for cells near the edge of the field. This project dilates
-uniformly. Border-touching cells are flagged and excluded from the interface
+`ImageUtilities.getDilatedImage` (lines 660–690) suppresses a *newly* dilated
+pixel whenever any of its 3×3 neighbours falls outside
+`[1, w−2] × [1, h−2]` — so dilation is dead at indices 0, 1, w−2 and w−1, a
+2 px dead frame, while pixels that were already set are left untouched. The
+loss compounds with each cycle. Interface area, marker area and marker
+intensity all read off that band, so in the Java they are systematically low
+for cells within a couple of pixels of the field border. This project dilates
+uniformly (`measure/interface.py`, `dilated_band`). Border-touching cells are flagged and excluded from the interface
 table anyway, which is the more conservative handling of the same problem.
 
 ### 3. Marker connectivity is symmetric and the same for both markers
@@ -135,11 +136,16 @@ disagrees with the formula in its own user guide:
   coordinate differs by one (an OR). A step of (Δrow 1, Δcol 30) therefore
   counts as "connected" and contributes its full ~30 px to the fragmented
   junction contour, bridging a gap the formula says should break it.
-- **JM2** advances its running position on *every* contour pixel, not only
+- **JM2** tests the same step with an AND (both coordinate differences at most
+  one) but advances its running position on *every* contour pixel, not only
   above-threshold ones, so it also counts the single step from an unstained
   pixel into each fragment — an over-count proportional to the number of
-  fragments. It computes no fragmented metric and no straight-line junction
-  length at all.
+  fragments. It does write a fragmented metric: `Membrane_SpreadSheet.java`
+  lines 150 and 169–170 fill a "JM2 Fragmented Junction contour" column from
+  `measurementDistanceToNeighbour`, and a "JM2 Coverage index" from it. What the
+  Java's JM2 genuinely lacks is the junction contour, the straight-line junction
+  length and the junction linearity: `getMeasurementPoints` computes no
+  `measurementEuclidianDistance`, and the JM2 table has no columns for them.
 
 This project applies one rule to both markers: a step joins two consecutive
 above-threshold pixels only when both coordinate differences are at most 1,
@@ -172,15 +178,32 @@ vertices, with a loop bound that never considers the last interior vertex of
 each range and a point-to-line distance computed from an integer-truncated
 slope.
 
-Three consequences, measured by driving the original's own classes over 148
-interfaces across rectilinear, jogged, staircase, Voronoi and hexagonal
-geometries:
+Consequences, from the code and from driving the original's own classes
+headless over the rectilinear control grid that `scripts/java_reference.py`
+builds:
 
 - A reflex (concave) vertex can never be a corner, because the hull discards
   it. Cells in discohesive tissue are frequently concave.
-- A plain rectangle yields **three** corners rather than four, so one
-  "interface" spans two sides of the cell.
-- A regular hexagon yields eight to ten corners, **none of them at a vertex**.
+- The Java's corner count for a cell is **click-dependent**, because its flood
+  fill starts from the clicked pixel and the edge-pixel set it reaches decides
+  the hull. On the nine rectangular cells of the control grid, clicked at the
+  seed the generator records, the Java gave **four** corners, matching our
+  Douglas–Peucker count; a different click inside the same centre cell (one of
+  the 14 pixels sharing the maximum distance to the boundary) gives **three**,
+  so one "interface" then spans two sides of the cell. Neither count is a
+  property of rectangles: the click is part of the input, which is why
+  `reference.csv` records it (`seed_row`, `seed_col`). See
+  `tests/validation/README.md`, "Why the click matters".
+- Because the Java's epsilon slider has no published default (it starts at 0,
+  where only hull vertices are candidates), dp corner counts and therefore dp
+  interface decompositions here are not comparable to *any* published Junction
+  Mapper run, not merely different in principle.
+
+A review-time measurement over 148 interfaces across jogged, staircase, Voronoi
+and hexagonal geometries also found that a regular hexagon yields eight to ten
+corners, none of them at a vertex. That driver is not committed and the
+repository cannot regenerate the number; it is cited here as a one-off
+observation, not as evidence this project ships.
 
 This project runs Douglas–Peucker on the traced boundary itself, as the guide
 describes, so a corner can fall on a concave turn and a rectangle has four of
@@ -209,9 +232,46 @@ information the method does not have. What is new here is the evidence, in the t
 report's QC section.
 
 This divergence is about *which* interface gets measured, not about how it is
-measured. Given the same interface path, every metric in this project matches
-the original exactly — verified on all 148 interfaces above for both junction
-markers, including the integer pixel counts and intensity sums. The validation
-harness in `tests/validation/` is built on that distinction: it takes the
-original's corner coordinates as input and compares the measurements, while
-reporting corner-count differences as information rather than as failures.
+measured, and the validation harness in `tests/validation/` is built on that
+distinction: it takes the original's corner pixels as **input** and compares the
+measurements along the shared path, reporting corner-count differences as
+information rather than as failures.
+
+## What the validation harness demonstrates
+
+`scripts/java_reference.py` drives the original's own classes headless and
+writes `tests/validation/reference.csv`; `./scripts/jm pytest tests/validation`
+then compares our functions along our boundary between the Java's two corner
+pixels. The numbers below are the ones recorded in
+`tests/validation/README.md`, from a real-Java run of 208 interfaces (416 rows,
+one per interface and marker) over two Voronoi tilings and a hexagonal tiling:
+
+- **Where the two paths are the same pixel for pixel, the metrics agree
+  exactly.** On the *straight* rows — our shared path is a single axis-aligned
+  run on an axis-aligned outline — `interface_area_px`, `marker_area_px` and
+  `marker_intensity` are **identical** to the Java with no tolerance, and
+  `interface_contour_px`, `straight_line_length_px`, `linearity_index`,
+  `junction_contour_px` and `junction_straight_line_px` agree to a relative
+  1e-9.
+- **Few rows are exactly comparable**: 10 of those 208 interfaces (20 of 416
+  rows, about 5%). The harness refuses a reference containing no straight row,
+  so the exact assertions can never silently not run.
+- The other 396 rows agree only **within tolerances** (areas within 15% or
+  16 px, intensity within 15%, linearity within 0.35; contour and the junction
+  lengths are recorded, not asserted). Worst observed: interface area −15 to
+  +3 px (11.3%), marker area −12 to +6 px, intensity 14.0%, linearity 0.31.
+  Those differences are an artefact of the **edge-map seam**, not of the
+  measurement: the Java's 8-neighbour edge set is two pixels thick on oblique
+  edges and its walk follows the inner row, and it cuts convex corners
+  diagonally, so the two paths are not the same pixels. They are not a
+  tolerance on the port.
+- `fragmented_contour_px` and `coverage_index` are **recorded and never
+  asserted**, by divergence 3 above: they are deliberately different.
+
+So the honest claim is: *given the same interface path, the formulas reproduce
+the original's numbers, exactly where the paths coincide pixel for pixel and
+within a measured envelope where the edge-map seam makes them differ.* Not
+"every metric matches exactly on every interface" — divergence 3 alone makes
+that false. Running the comparison needs a JDK and the Java checkout; without
+`reference.csv` those tests skip, naming what is missing, and
+`tests/validation/README.md` has the procedure.
