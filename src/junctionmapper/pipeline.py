@@ -156,26 +156,30 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
             "anucleate": cid in nflags.anucleate_cells,
         })
 
-    # Nuclei: intra-nuclear distances are summarised per nucleus. With k-nearest, a nucleus's
-    # summary is over its own rows in ``nuclei_distances``. With ``all_pairs`` each unordered
-    # pair is stored once (under the lower id) but the summary covers every distance involving
-    # the nucleus in either direction (n - 1 of them), so it does not depend on label order;
-    # it is derivable from the table by reading rows where the nucleus appears in either
-    # ``nucleus_id`` or ``neighbour_nucleus_id``.
+    # Nuclei: ``nuclei_distances`` is LONG - one row per (nucleus, other nucleus) ORDERED pair.
+    # Every nucleus owns its rows, so ``rank_from_nucleus`` is that nucleus's own ordering over
+    # every distance involving it, in either direction, and ``rank_from_nucleus == 1`` is its
+    # nearest neighbour for every nucleus, including the highest id. With ``all_pairs`` this
+    # means each unordered pair appears twice, once from each end, each with its own rank; that
+    # is the price of making the obvious selection (``rank_from_nucleus == 1``) correct, and it
+    # is the shape the k-nearest mode already has (there a mutual nearest pair appears twice
+    # too). A consumer wanting each distance once keeps the rows with
+    # ``nucleus_id < neighbour_nucleus_id``. The summary columns in ``nuclei`` are the count and
+    # mean of that nucleus's own rows, so they are a plain groupby of this table.
     cents = nucleus_centroids(nuc_labels)
     pairs: dict[int, list[tuple[float, int]]] = {}
     for i, j, d in intra_distances(cents, cfg.num_intra_cells, cfg.all_pairs):
         pairs.setdefault(i, []).append((d, j))
+        if cfg.all_pairs:     # stored once there, but it is a distance of BOTH nuclei
+            pairs.setdefault(j, []).append((d, i))
     dists: dict[int, list[float]] = {}
     dist_rows = []
     for i in sorted(pairs):
         for rank, (d, j) in enumerate(sorted(pairs[i]), start=1):     # nearest first
             dists.setdefault(i, []).append(d)
-            if cfg.all_pairs:       # each pair is stored once, but it is a distance of both nuclei
-                dists.setdefault(j, []).append(d)
             dist_rows.append({
                 "field_id": fid, "nucleus_id": i, "neighbour_nucleus_id": j,
-                "rank": rank, "distance_px": d, "distance_um": d * px,
+                "rank_from_nucleus": rank, "distance_px": d, "distance_um": d * px,
             })
     nuc_rows = []
     for nid, (r, c) in cents.items():

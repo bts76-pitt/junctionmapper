@@ -369,6 +369,7 @@ D13 = math.sqrt(208)    # n1 (13,13) -> n3 (25,21)
 D14 = math.sqrt(1258)   # n1 -> n4 (46,26)
 D24 = math.sqrt(1189)   # n2 (13,16) -> n4
 D34 = math.sqrt(466)    # n3 -> n4
+D23 = 13.0              # n2 (13,16) -> n3 (25,21)
 
 
 def test_nuclei_table_assignment_and_orphan():
@@ -385,12 +386,12 @@ def test_nuclei_table_assignment_and_orphan():
 def test_nuclei_distances_default_k_gives_all_ranks_sorted():
     f, seg = zoo()
     d = measure_field(f, seg, make_cfg(num_intra_cells=5)).nuclei_distances
-    n1 = d[d.nucleus_id == 1].sort_values("rank")
-    assert list(n1["rank"]) == [1, 2, 3]
+    n1 = d[d.nucleus_id == 1].sort_values("rank_from_nucleus")
+    assert list(n1["rank_from_nucleus"]) == [1, 2, 3]
     assert list(n1.neighbour_nucleus_id) == [2, 3, 4]
     assert list(n1.distance_px) == pytest.approx([3.0, D13, D14])
     assert list(n1.distance_um) == pytest.approx([1.5, D13 / 2, D14 / 2])
-    n4 = d[d.nucleus_id == 4].sort_values("rank")
+    n4 = d[d.nucleus_id == 4].sort_values("rank_from_nucleus")
     assert list(n4.neighbour_nucleus_id) == [3, 2, 1]
     assert list(n4.distance_px) == pytest.approx([D34, D24, D14])
 
@@ -399,8 +400,8 @@ def test_num_intra_cells_limits_rank_count_and_summary_matches_table():
     f, seg = zoo()
     res = measure_field(f, seg, make_cfg(num_intra_cells=2))
     d = res.nuclei_distances
-    assert len(d) == 8 and d["rank"].max() == 2
-    n1 = d[d.nucleus_id == 1].sort_values("rank")
+    assert len(d) == 8 and d["rank_from_nucleus"].max() == 2
+    n1 = d[d.nucleus_id == 1].sort_values("rank_from_nucleus")
     assert list(n1.distance_px) == pytest.approx([3.0, D13])
     n = res.nuclei.set_index("nucleus_id")
     for nid in (1, 2, 3, 4):
@@ -411,16 +412,38 @@ def test_num_intra_cells_limits_rank_count_and_summary_matches_table():
     assert n.loc[1, "mean_intra_distance_px"] == pytest.approx((3.0 + D13) / 2)
 
 
-def test_all_pairs_emits_each_unordered_pair_once():
+def test_all_pairs_emits_every_ordered_pair_so_each_distance_appears_from_both_ends():
     f, seg = zoo()
     res = measure_field(f, seg, make_cfg(all_pairs=True))
     d = res.nuclei_distances
-    assert len(d) == 6
+    assert len(d) == 12                                   # 4 nuclei, 4 * 3 ordered pairs
     assert set(zip(d.nucleus_id, d.neighbour_nucleus_id)) == {
-        (1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)}
-    assert all(i < j for i, j in zip(d.nucleus_id, d.neighbour_nucleus_id))
-    n1 = d[d.nucleus_id == 1].sort_values("rank")
+        (i, j) for i in (1, 2, 3, 4) for j in (1, 2, 3, 4) if i != j}
+    # one copy of each distance is the lower-id half of the table
+    half = d[d.nucleus_id < d.neighbour_nucleus_id]
+    assert len(half) == 6
+    n1 = d[d.nucleus_id == 1].sort_values("rank_from_nucleus")
     assert list(n1.distance_px) == pytest.approx([3.0, D13, D14])     # ranked nearest-first
+
+
+def test_rank_is_each_nucleus_own_nearest_neighbour_order_not_lower_id_rows_only():
+    """C1: with all_pairs, ``rank_from_nucleus == 1`` must be the nearest neighbour OF EVERY
+    nucleus, the highest id included. Ranking over only the rows a nucleus held as the lower
+    id made rank 1 the nearest *higher-id* neighbour and left the highest id out of the table
+    altogether."""
+    f, seg = zoo()
+    d = measure_field(f, seg, make_cfg(all_pairs=True)).nuclei_distances
+    truth = {1: (2, 3.0), 2: (1, 3.0), 3: (2, D23), 4: (3, D34)}
+    assert set(d.nucleus_id) == set(truth)                # nucleus 4 is present at all
+    for nid, (nearest, dist) in truth.items():
+        rows = d[(d.nucleus_id == nid) & (d.rank_from_nucleus == 1)]
+        assert len(rows) == 1, nid
+        assert int(rows.iloc[0].neighbour_nucleus_id) == nearest, nid
+        assert rows.iloc[0].distance_px == pytest.approx(dist), nid
+        # and the whole ordering is that nucleus's own, nearest first
+        own = d[d.nucleus_id == nid].sort_values("rank_from_nucleus")
+        assert list(own.rank_from_nucleus) == [1, 2, 3]
+        assert list(own.distance_px) == pytest.approx(sorted(own.distance_px))
 
 
 def test_all_pairs_summary_covers_every_distance_of_every_nucleus():
@@ -433,10 +456,10 @@ def test_all_pairs_summary_covers_every_distance_of_every_nucleus():
     assert n.loc[4, "mean_intra_distance_px"] == pytest.approx((D14 + D24 + D34) / 3)
     assert n.loc[4, "mean_intra_distance_um"] == pytest.approx((D14 + D24 + D34) / 6)
     assert n.loc[1, "mean_intra_distance_px"] == pytest.approx((3.0 + D13 + D14) / 3)
-    # derivable from the table by reading rows where the nucleus is in either id column
+    # a plain groupby of the long table reproduces the summary
     d = res.nuclei_distances
     for nid in (1, 2, 3, 4):
-        rows = d[(d.nucleus_id == nid) | (d.neighbour_nucleus_id == nid)]
+        rows = d[d.nucleus_id == nid]
         assert len(rows) == n.loc[nid, "n_intra_distances"]
         assert rows.distance_px.mean() == pytest.approx(n.loc[nid, "mean_intra_distance_px"])
 
@@ -446,7 +469,8 @@ def test_no_nucleus_gives_empty_nuclei_and_anucleate_flags(setup):
     seg.nuclei[:] = 0
     res = measure_field(f, seg, cfg)
     assert res.nuclei.empty and "nucleus_id" in res.nuclei.columns
-    assert res.nuclei_distances.empty and "rank" in res.nuclei_distances.columns
+    assert res.nuclei_distances.empty
+    assert "rank_from_nucleus" in res.nuclei_distances.columns
     assert res.flags.anucleate.all() and not res.flags.multinucleate.any()
 
 

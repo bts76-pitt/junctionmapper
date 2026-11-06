@@ -15,10 +15,14 @@ Units and formulas (``s`` = ``pixel_size_um``):
   * ``cluster_density_per_px2``   = marker_intensity / marker_area_px     (per px^2).
   * ``cluster_density_per_um2``   = cluster_density_per_px2 / s**2.
   * ``n_neighbours`` = distinct non-zero neighbour ids over both corner methods.
+  * ``nuclei_distances`` is long: one row per ORDERED (``nucleus_id``,
+    ``neighbour_nucleus_id``) pair, and ``rank_from_nucleus`` is ``nucleus_id``'s own
+    ordering of every distance involving it (1 = its nearest neighbour). Under
+    ``all_pairs`` an unordered pair therefore appears twice, once from each end; keep the
+    rows with ``nucleus_id < neighbour_nucleus_id`` for one copy of each distance.
   * nuclei summary: ``n_intra_distances`` and ``mean_intra_distance_*`` are the count and
-    mean of that nucleus's rows in ``nuclei_distances``. With ``all_pairs`` each pair is
-    stored once (under the lower id), so the summary reads rows where the nucleus appears in
-    either ``nucleus_id`` or ``neighbour_nucleus_id`` (n - 1 distances for every nucleus).
+    mean of that nucleus's own rows in ``nuclei_distances`` (n - 1 of them under
+    ``all_pairs``, for every nucleus), i.e. a plain groupby on ``nucleus_id``.
 """
 from __future__ import annotations
 
@@ -59,7 +63,8 @@ NUCLEUS_COLUMNS = [
     "n_intra_distances", "mean_intra_distance_px", "mean_intra_distance_um",
 ]
 NUCLEUS_DISTANCE_COLUMNS = [
-    "field_id", "nucleus_id", "neighbour_nucleus_id", "rank", "distance_px", "distance_um",
+    "field_id", "nucleus_id", "neighbour_nucleus_id", "rank_from_nucleus",
+    "distance_px", "distance_um",
 ]
 FLAG_COLUMNS = [
     "field_id", "cell_id", "border_touching", "isolated", "degenerate",
@@ -78,7 +83,7 @@ _BOOL = ["border_touching", "isolated", "degenerate", "corner_methods_disagree",
          "all_contacts_filtered", "multinucleate", "anucleate", "measured", "orphan"]
 _INT = ["start_idx", "end_idx", "dilation_cycles", "interface_area_px", "marker_area_px",
         "area_px", "n_neighbours", "n_interfaces_dp", "n_interfaces_tcj", "n_nuclei", "tcj_min_run",
-        "neighbour_radius_px", "neighbour_nucleus_id", "rank",
+        "neighbour_radius_px", "neighbour_nucleus_id", "rank_from_nucleus",
         "nucleus_id", "centroid_row", "centroid_col", "n_intra_distances"]
 _STR = ["field_id", "corner_method", "role", "marker"]
 

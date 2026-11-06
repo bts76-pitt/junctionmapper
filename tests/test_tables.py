@@ -42,7 +42,7 @@ def test_nuclei_distances_table_is_written(tmp_path):
     f, seg = build()
     write_tables([measure_field(f, seg, make_cfg())], tmp_path)
     d = pd.read_parquet(tmp_path / "nuclei_distances.parquet")
-    assert list(d.columns) == ["field_id", "nucleus_id", "neighbour_nucleus_id", "rank",
+    assert list(d.columns) == ["field_id", "nucleus_id", "neighbour_nucleus_id", "rank_from_nucleus",
                                "distance_px", "distance_um"]
     assert len(d) == 2 and (tmp_path / "nuclei_distances.csv").exists()
 

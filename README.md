@@ -32,6 +32,28 @@ pip install -e '.[dev]'              # library and tests
 pip install -e '.[dev,segmentation]' # adds Cellpose-SAM
 ```
 
+## Output tables
+
+Five tidy tables per run (`interfaces`, `cells`, `nuclei`, `nuclei_distances`, `flags`), each
+written as both `.parquet` and `.csv`, all keyed by `field_id` so several fields concatenate.
+
+### `nuclei_distances` — one row per *ordered* nucleus pair
+
+The table is long: a row is `(nucleus_id, neighbour_nucleus_id, rank_from_nucleus,
+distance_px, distance_um)`, and `rank_from_nucleus` is **that** nucleus's own ordering of
+every distance involving it, nearest first. So `rank_from_nucleus == 1` is the nearest
+neighbour of `nucleus_id`, for every nucleus in the field, and
+`df[df.rank_from_nucleus == 1]` is the nearest-neighbour distance distribution — the readout
+discohesion scoring needs.
+
+With `all_pairs: true` an unordered pair therefore appears **twice**, once from each end, each
+copy carrying the rank it has for its own nucleus. That is deliberate: a single row per pair
+cannot give both endpoints a correct rank, and the k-nearest mode (the default) already repeats
+a mutual nearest pair. For one copy of each distance, keep the rows with
+`nucleus_id < neighbour_nucleus_id`. The `n_intra_distances` and `mean_intra_distance_*`
+columns of `nuclei` are the count and mean of a nucleus's own rows, i.e. a plain
+`groupby("nucleus_id")` of this table.
+
 ## Differences from the original
 
 The method is the original's. These are the places where this implementation
