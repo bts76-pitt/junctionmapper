@@ -423,3 +423,281 @@ def test_segment_partial_failure_exit_code(env, monkeypatch):
     assert r.exit_code == 3 and "model blew up" in r.output
     assert (env["out"] / "labels" / "a_t0_z0.JM1.npy").exists()
     assert not (env["out"] / "labels" / "b_t0_z0.JM1.npy").exists()
+
+
+# ---- fix round 1 --------------------------------------------------------------------
+import os
+import tomllib
+from pathlib import Path
+
+import junctionmapper
+
+
+def counting_segment(monkeypatch, seg):
+    calls = []
+
+    def fake(field, params):
+        calls.append(field.field_id)
+        return Segmentation(seg.cells.copy(), seg.nuclei.copy(), {"model": "stub"})
+    monkeypatch.setattr(cli, "segment_field", fake)
+    return calls
+
+
+def corrected_labels(env):
+    """Hand-corrected labels already sitting in OUT/labels."""
+    d = env["out"] / "labels"
+    cells = np.zeros((40, 40), np.int32)
+    cells[5:9, 5:9] = 42
+    save_labels(d, FID, Segmentation(cells, np.zeros_like(cells), {}))
+    return d, {p.name: p.read_bytes() for p in d.iterdir()}
+
+
+@pytest.mark.parametrize("cmd", ["run", "segment"])
+def test_existing_labels_are_never_silently_overwritten(env, monkeypatch, cmd):
+    calls = counting_segment(monkeypatch, env["seg"])
+    d, before = corrected_labels(env)
+    r = invoke(cmd, "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
+    assert r.exit_code == 1, r.output
+    assert {p.name: p.read_bytes() for p in d.iterdir()} == before      # nothing modified
+    assert calls == []                                                   # refused BEFORE segmenting
+    assert str(d) in r.output and f"{FID}.JM1.npy" in r.output
+    assert f"--labels {d}" in r.output and "--overwrite-labels" in r.output
+    assert "Traceback" not in r.output
+    assert not (env["out"] / "report.html").exists()
+
+
+@pytest.mark.parametrize("cmd", ["run", "segment"])
+def test_overwrite_labels_flag_replaces_them(env, monkeypatch, cmd):
+    counting_segment(monkeypatch, env["seg"])
+    d, before = corrected_labels(env)
+    r = invoke(cmd, "--config", env["cfg"], "--input", env["tif"], "--out", env["out"],
+               "--overwrite-labels")
+    assert r.exit_code == 0, r.output
+    assert np.array_equal(np.load(d / f"{FID}.JM1.npy"), env["seg"].cells)
+
+
+def test_partially_populated_labels_dir_refuses_rather_than_half_writing(env, monkeypatch):
+    calls = counting_segment(monkeypatch, env["seg"])
+    batch = make_batch(env, good=())
+    save_labels(env["out"] / "labels", "a_t0_z0", env["seg"])           # a exists, b does not
+    r = invoke("segment", "--config", env["cfg"], "--input", batch, "--out", env["out"])
+    assert r.exit_code == 1 and "a_t0_z0" in r.output
+    assert calls == []
+    assert not (env["out"] / "labels" / "b_t0_z0.JM1.npy").exists()
+
+
+def test_run_with_labels_never_writes_labels_even_into_out_labels(env, monkeypatch):
+    forbid_cellpose(monkeypatch)
+    before = {p.name: p.read_bytes() for p in env["labels"].iterdir()}
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+               "--out", env["tmp"])
+    assert r.exit_code == 0
+    assert {p.name: p.read_bytes() for p in env["labels"].iterdir()} == before
+
+
+# ---- output directory -----------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", ["run", "segment"])
+def test_out_is_an_existing_file(env, cmd):
+    f = env["tmp"] / "afile"
+    f.write_text("x")
+    r = invoke(cmd, "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+               "--out", f) if cmd == "run" else \
+        invoke(cmd, "--config", env["cfg"], "--input", env["tif"], "--out", f)
+    assert r.exit_code == 1 and str(f) in r.output and "not a directory" in r.output
+    assert "Traceback" not in r.output and isinstance(r.exception, SystemExit)
+
+
+def test_out_directory_not_writable(env):
+    ro = env["tmp"] / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        if os.access(ro, os.W_OK):
+            pytest.skip("permissions are not enforceable for this user")
+        r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+                   "--out", ro / "sub")
+        assert r.exit_code == 1 and str(ro) in r.output and "Traceback" not in r.output
+        r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+                   "--out", ro)
+        assert r.exit_code == 1 and "not writable" in r.output
+    finally:
+        ro.chmod(0o700)
+
+
+# ---- version --------------------------------------------------------------------------
+
+def test_dunder_version_matches_pyproject():
+    py = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert junctionmapper.__version__ == py["project"]["version"]
+
+
+def test_version_resolves_and_reaches_report_without_installed_metadata(env, monkeypatch):
+    from importlib import metadata
+
+    def missing(name):
+        raise metadata.PackageNotFoundError(name)
+    monkeypatch.setattr(cli.metadata, "version", missing)       # the container: nothing installed
+    assert cli._version() == junctionmapper.__version__ != "unknown"
+    assert run_ok(env).exit_code == 0
+    html = (env["out"] / "report.html").read_text()
+    assert junctionmapper.__version__ in html
+    assert "unknown" not in html
+
+
+# ---- napari-seam properties -----------------------------------------------------------
+
+def distinct_labels(offset):
+    cells = np.zeros((40, 40), np.int32)
+    cells[10:18, 10:18] = offset + 1
+    cells[10:18, 18:26] = offset + 2
+    cells[18:26, 10:18] = offset + 3
+    cells[18:26, 18:26] = offset + 4
+    nuc = np.zeros_like(cells)
+    nuc[12:15, 12:15] = offset + 1
+    return Segmentation(cells, nuc, {})
+
+
+def test_each_field_is_measured_with_its_own_label_file(env):
+    d = env["tmp"] / "batch"
+    d.mkdir()
+    for n in ("a", "b"):
+        write_tif(d / f"{n}.tif")
+    save_labels(env["labels"], "a_t0_z0", distinct_labels(0))
+    save_labels(env["labels"], "b_t0_z0", distinct_labels(100))
+    r = invoke("run", "--config", env["cfg"], "--input", d, "--labels", env["labels"],
+               "--out", env["out"])
+    assert r.exit_code == 0, r.output
+    cells = pd.read_parquet(env["out"] / "cells.parquet")
+    assert set(cells[cells.field_id == "a_t0_z0"].cell_id) == {1, 2, 3, 4}
+    assert set(cells[cells.field_id == "b_t0_z0"].cell_id) == {101, 102, 103, 104}
+    nuc = pd.read_parquet(env["out"] / "nuclei.parquet")
+    assert set(nuc[nuc.field_id == "b_t0_z0"].nucleus_id) == {101}
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int64, np.uint64])
+def test_label_dtype_reaches_measure_field_unchanged(env, monkeypatch, dtype):
+    seen = []
+    real = cli.measure_field
+
+    def spy(field, seg, cfg, *a, **k):
+        seen.append((seg.cells.dtype, seg.nuclei.dtype))
+        return real(field, seg, cfg, *a, **k)
+    monkeypatch.setattr(cli, "measure_field", spy)
+    save_labels(env["labels"], FID, Segmentation(env["seg"].cells.astype(dtype),
+                                                 env["seg"].nuclei.astype(dtype), {}))
+    assert run_ok(env).exit_code == 0
+    assert seen == [(np.dtype(dtype), np.dtype(dtype))]
+
+
+def test_bad_file_sorted_first_does_not_abort_the_batch(env):
+    d = make_batch(env)
+    write_tif(d / "0bad.tif", planes=np.zeros((2, 40, 40), np.float32))   # sorts before a, b
+    r = invoke("run", "--config", env["cfg"], "--input", d, "--labels", env["labels"],
+               "--out", env["out"])
+    assert r.exit_code == 3, r.output
+    assert "0bad.tif" in r.output
+    assert set(pd.read_parquet(env["out"] / "cells.parquet").field_id) == {"a_t0_z0", "b_t0_z0"}
+
+
+def test_report_provenance_carries_thresholds_version_and_failures(env):
+    d = make_batch(env, good=("a",))                      # b fails
+    r = invoke("run", "--config", env["cfg"], "--input", d, "--labels", env["labels"],
+               "--out", env["out"])
+    assert r.exit_code == 3
+    html = (env["out"] / "report.html").read_text()
+    assert junctionmapper.__version__ in html
+    assert "fields_failed" in html
+    assert "a_t0_z0&#34;: {&#34;JM1&#34;: 50.0" in html          # per-field thresholds record
+    assert "labels_dir" in html
+
+
+# ---- sidecar --------------------------------------------------------------------------
+
+def _write_sidecar(env, source):
+    side = env["labels"] / f"{FID}.provenance.json"
+    side.write_text(json.dumps({"source": source, "field_id": FID}))
+
+
+def test_sidecar_source_mismatch_warns_and_is_recorded_but_does_not_refuse(env):
+    _write_sidecar(env, "/elsewhere/other_experiment.tif")
+    r = run_ok(env)
+    assert r.exit_code == 0, r.output
+    assert "WARNING" in r.stderr and "/elsewhere/other_experiment.tif" in r.stderr
+    assert str(env["tif"].resolve()) in r.stderr
+    html = (env["out"] / "report.html").read_text()
+    assert "labels_source_mismatch" in html and "other_experiment.tif" in html
+
+
+def test_sidecar_matching_source_is_silent(env, monkeypatch):
+    _write_sidecar(env, str(env["tif"].resolve()))
+    r = run_ok(env)
+    assert r.exit_code == 0 and "WARNING" not in r.stderr
+    assert "labels_source_mismatch" not in (env["out"] / "report.html").read_text()
+
+
+def test_missing_sidecar_is_not_an_error(env):
+    assert not list(env["labels"].glob("*.json"))
+    r = run_ok(env)
+    assert r.exit_code == 0 and "WARNING" not in r.stderr
+
+
+def test_segment_then_run_produces_no_mismatch_warning(env, monkeypatch):
+    stub_segment(monkeypatch, env["seg"])
+    assert invoke("segment", "--config", env["cfg"], "--input", env["tif"],
+                  "--out", env["out"]).exit_code == 0
+    side = json.loads((env["out"] / "labels" / f"{FID}.provenance.json").read_text())
+    assert side["source"] == str(env["tif"].resolve())
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels",
+               env["out"] / "labels", "--out", env["tmp"] / "o2")
+    assert r.exit_code == 0 and "WARNING" not in r.stderr
+
+
+# ---- minor items ----------------------------------------------------------------------
+
+def test_negative_label_ids_rejected(env):
+    bad = env["seg"].cells.copy()
+    bad[0, 0] = -3
+    np.save(env["labels"] / f"{FID}.JM1.npy", bad)
+    r = run_ok(env)
+    assert r.exit_code != 0 and "negative" in r.output and f"{FID}.JM1.npy" in r.output
+
+
+def test_summary_goes_to_stderr(env):
+    r = run_ok(env)
+    assert "1 succeeded, 0 failed" in r.stderr
+    assert "succeeded" not in r.stdout
+
+
+@pytest.mark.parametrize("cmd", ["run", "segment"])
+def test_help_documents_partial_exit_code(cmd):
+    r = invoke(cmd, "--help")
+    assert r.exit_code == 0 and "PARTIAL" in r.output and "3" in r.output
+
+
+def test_labels_dir_recorded_as_absolute_path(env, monkeypatch):
+    monkeypatch.chdir(env["tmp"])
+    r = invoke("run", "--config", "cfg.yaml", "--input", "img.tif", "--labels", "labs",
+               "--out", "out")
+    assert r.exit_code == 0, r.output
+    html = (env["out"] / "report.html").read_text()
+    assert str(env["labels"].resolve()) in html
+
+
+def test_plain_tiff_read_does_not_emit_bioio_failure_warning(env, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        assert run_ok(env).exit_code == 0
+    assert not [rec for rec in caplog.records if "Attempted file" in rec.getMessage()]
+
+
+@pytest.mark.parametrize("which", ["nucleus", "sidecar"])
+def test_collision_on_any_one_label_file_refuses(env, monkeypatch, which):
+    calls = counting_segment(monkeypatch, env["seg"])
+    d = env["out"] / "labels"
+    d.mkdir(parents=True)
+    name = {"nucleus": f"{FID}.nucleus.npy", "sidecar": f"{FID}.provenance.json"}[which]
+    (d / name).write_bytes(b"precious")
+    r = invoke("segment", "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
+    assert r.exit_code == 1 and name in r.output
+    assert (d / name).read_bytes() == b"precious" and calls == []

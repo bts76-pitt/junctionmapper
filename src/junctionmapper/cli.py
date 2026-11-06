@@ -21,8 +21,11 @@ files back unchanged. This directory is the seam a human-in-the-loop editor writ
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
+import logging
+import os
 from collections.abc import Callable, Iterator
 from importlib import metadata
 from pathlib import Path
@@ -34,6 +37,7 @@ import typer
 import yaml
 from pydantic import ValidationError
 
+from junctionmapper import __version__
 from junctionmapper.config import Role, RunConfig
 from junctionmapper.errors import ConfigError, JunctionMapperError, SegmentationError
 from junctionmapper.io.reader import Field, read_fields
@@ -57,10 +61,11 @@ OutOpt = typer.Option(..., "--out", "-o", help="Output directory (created if abs
 # ---- small helpers -------------------------------------------------------------------
 
 def _version() -> str:
+    """Installed distribution metadata, else the package's own ``__version__``."""
     try:
         return metadata.version("junctionmapper")
     except metadata.PackageNotFoundError:
-        return "unknown"
+        return __version__ or "unknown"
 
 
 def _oneline(text: object) -> str:
@@ -129,6 +134,40 @@ def _duplicate(seen: set[str], field_id: str) -> bool:
     return False
 
 
+def _ensure_out_dir(out: Path) -> None:
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:      # FileExistsError, NotADirectoryError, PermissionError, ...
+        reason = "exists and is not a directory" if isinstance(exc, (FileExistsError, NotADirectoryError)) \
+            else (exc.strerror or str(exc))
+        raise ConfigError(f"output path {out}: cannot use as output directory ({reason})") from None
+    if not os.access(out, os.W_OK | os.X_OK):
+        raise ConfigError(f"output path {out}: cannot use as output directory (not writable)")
+
+
+def _refuse_label_overwrite(labels_dir: Path, files: list[Path], cfg: RunConfig) -> None:
+    """Refuse, before any segmentation, if writing would replace existing label files.
+
+    Existing labels may be hand-corrected work (the napari seam); that must never be lost
+    silently. Field ids are enumerated by reading the inputs, which is cheap next to Cellpose.
+    """
+    if not labels_dir.is_dir():
+        return
+    colliding: list[Path] = []
+    for field in _iter_fields(files, cfg, []):
+        for name in (_label_file(labels_dir, field.field_id, Role.JM1),
+                     _label_file(labels_dir, field.field_id, Role.NUCLEUS),
+                     labels_dir / f"{field.field_id}.provenance.json"):
+            if name.exists():
+                colliding.append(name)
+    if colliding:
+        raise ConfigError(
+            f"refusing to overwrite {len(colliding)} existing label file(s) in {labels_dir} "
+            f"(e.g. {colliding[0].name}); they may be hand-corrected. Nothing was changed. "
+            f"Use --labels {labels_dir} to re-measure the existing labels without re-segmenting, "
+            f"or pass --overwrite-labels to replace them")
+
+
 # ---- labels on disk -------------------------------------------------------------------
 
 def _label_file(directory: Path, field_id: str, role: Role) -> Path:
@@ -145,7 +184,7 @@ def _save_labels(directory: Path, field: Field, seg: Segmentation, cfg: RunConfi
     sidecar = {
         "junctionmapper_version": _version(),
         "field_id": field.field_id,
-        "source": str(field.source),
+        "source": str(Path(field.source).resolve()),
         "files": {Role.JM1.value: cells_path.name, Role.NUCLEUS.value: nuc_path.name},
         "shape": [int(n) for n in np.shape(seg.cells)],
         "params_used": seg.params_used,
@@ -168,20 +207,60 @@ def _load_label(directory: Path, field: Field, role: Role) -> np.ndarray:
     expected = tuple(np.shape(field.planes[Role.JM1]))
     if arr.dtype.kind not in "iu":
         raise SegmentationError(f"label file {path.name} must hold an integer array, got dtype {arr.dtype}")
+    if arr.dtype.kind == "i" and arr.size and int(arr.min()) < 0:
+        raise SegmentationError(f"label file {path.name} contains negative label ids "
+                                f"(min {int(arr.min())}); labels must be >= 0, 0 = background")
     if arr.shape != expected:
         raise SegmentationError(f"label file {path.name} has shape {arr.shape} but field "
                                 f"{field.field_id!r} planes have shape {expected}")
     return arr
 
 
+def _check_sidecar(directory: Path, field: Field) -> dict | None:
+    """Compare the sidecar's recorded source image with this field's. Warn, never refuse."""
+    side = directory / f"{field.field_id}.provenance.json"
+    if not side.is_file():
+        return None
+    try:
+        recorded = json.loads(side.read_text(encoding="utf-8")).get("source")
+    except (OSError, ValueError, AttributeError):
+        typer.echo(f"warning: {side} is unreadable; cannot verify which image these labels came from",
+                   err=True)
+        return None
+    here = str(Path(field.source).resolve())
+    if recorded is None or str(Path(recorded).resolve()) == here:
+        return None
+    typer.echo(f"WARNING: labels for field {field.field_id!r} were made from {recorded} but are being "
+               f"applied to {here}. If the image was only renamed or moved this is fine; otherwise "
+               f"these labels belong to a different image. Recorded in provenance.", err=True)
+    return {"field_id": field.field_id, "labels_made_from": recorded, "applied_to": here}
+
+
 def _load_labels(directory: Path, field: Field) -> Segmentation:
     cells = _load_label(directory, field, Role.JM1)
     nuclei = _load_label(directory, field, Role.NUCLEUS)
-    return Segmentation(cells=cells, nuclei=nuclei,
-                        params_used={"labels_source": "disk", "labels_dir": str(directory)})
+    params: dict[str, Any] = {"labels_source": "disk", "labels_dir": str(directory)}
+    mismatch = _check_sidecar(directory, field)
+    if mismatch:
+        params["source_mismatch"] = mismatch
+    return Segmentation(cells=cells, nuclei=nuclei, params_used=params)
 
 
 # ---- per-field driver -----------------------------------------------------------------
+
+@contextlib.contextmanager
+def _quiet_bioio(path: Path):
+    """bioio logs a warning when it declines a plain TIFF; the reader's fallback then succeeds,
+    so for .tif/.tiff the message only misleads. Silenced for the duration of the read only."""
+    log = logging.getLogger("bioio.bio_image")
+    old = log.level
+    if path.suffix.lower() in (".tif", ".tiff"):
+        log.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        log.setLevel(old)
+
 
 def _iter_fields(files: list[Path], cfg: RunConfig, failures: list[tuple[str, str]]) -> Iterator[Field]:
     """Yield fields; a file that cannot be read is recorded as a failure and skipped."""
@@ -189,7 +268,8 @@ def _iter_fields(files: list[Path], cfg: RunConfig, failures: list[tuple[str, st
         it = read_fields(f, cfg)
         while True:
             try:
-                field = next(it)
+                with _quiet_bioio(f):
+                    field = next(it)
             except StopIteration:
                 break
             except (JunctionMapperError, OSError, tifffile.TiffFileError, ValueError) as exc:
@@ -217,7 +297,7 @@ def _process(files: list[Path], cfg: RunConfig, work: Callable[[Field], Any]
 
 
 def _report_outcome(n_ok: int, failures: list[tuple[str, str]]) -> None:
-    typer.echo(f"{n_ok} succeeded, {len(failures)} failed")
+    typer.echo(f"{n_ok} succeeded, {len(failures)} failed", err=True)
     grouped: dict[str, list[str]] = {}
     for who, why in failures:
         grouped.setdefault(why, []).append(who)
@@ -262,12 +342,23 @@ def segment(
     flow_threshold: float = typer.Option(0.4),
     cellprob_threshold: float = typer.Option(0.0),
     gpu: bool = typer.Option(True, "--gpu/--no-gpu", help="Use a GPU if one is available."),
+    overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
+                                          "files in OUT/labels (default: refuse)."),
 ) -> None:
-    """Segment cells and nuclei and write label files to OUT/labels; measure nothing."""
+    """Segment cells and nuclei and write label files to OUT/labels; measure nothing.
+
+    \b
+    Exit codes: 0 every field succeeded; 1 command failed, or every field failed
+    (nothing written); 3 PARTIAL - some fields failed and the rest were written;
+    2 usage error. Do not treat 3 as success.
+    """
     cfg, raw = _load_config(config)
     files = _input_files(input)
     params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu)
     labels_dir = out / "labels"
+    _ensure_out_dir(out)
+    if not overwrite_labels:
+        _refuse_label_overwrite(labels_dir, files, cfg)
 
     def work(field: Field) -> None:
         _save_labels(labels_dir, field, segment_field(field, params), cfg, raw)
@@ -292,12 +383,25 @@ def run(
     flow_threshold: float = typer.Option(0.4),
     cellprob_threshold: float = typer.Option(0.0),
     gpu: bool = typer.Option(True, "--gpu/--no-gpu", help="Use a GPU if one is available."),
+    overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
+                                          "files in OUT/labels (default: refuse)."),
 ) -> None:
-    """Segment (or load labels), measure, write the five tables and report.html to OUT."""
+    """Segment (or load labels), measure, write the five tables and report.html to OUT.
+
+    \b
+    Exit codes: 0 every field succeeded; 1 command failed, or every field failed
+    (nothing written); 3 PARTIAL - some fields failed and the rest were written;
+    2 usage error. Do not treat 3 as success.
+    """
     cfg, raw = _load_config(config)
     files = _input_files(input)
     if labels is not None and not labels.is_dir():
         raise ConfigError(f"labels directory not found: {labels}")
+    if labels is not None:
+        labels = labels.resolve()
+    _ensure_out_dir(out)
+    if labels is None and not overwrite_labels:
+        _refuse_label_overwrite(out / "labels", files, cfg)
     params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu)
 
     def work(field: Field) -> tuple[FieldResult, dict, dict]:
@@ -330,6 +434,9 @@ def run(
         "config": cfg.model_dump_json(),
         "input": str(input),
     }
+    mism = [w[1]["source_mismatch"] for _, w in ok if "source_mismatch" in w[1]]
+    if mism:
+        prov["labels_source_mismatch"] = json.dumps(mism, sort_keys=True)
     if failures:
         prov["fields_failed"] = str(len(failures))
     write_tables(results, out)
