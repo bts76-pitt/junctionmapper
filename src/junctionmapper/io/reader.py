@@ -29,6 +29,10 @@ class Field:
     field_id: str
 
 
+def _oneline(text: object) -> str:
+    return " ".join(str(text).split())
+
+
 def read_fields(path: Path, cfg: RunConfig) -> Iterator[Field]:
     """Yield one Field per scene/time/Z combination in ``path``.
 
@@ -38,9 +42,15 @@ def read_fields(path: Path, cfg: RunConfig) -> Iterator[Field]:
     path = Path(path)
     try:
         yield from _read_bioio(path, cfg)
-    except UnsupportedFileFormatError:
+    except UnsupportedFileFormatError as exc:
+        # Plain (non-OME) TIFFs are expected to land here and are handled below. Anything
+        # else is a bad input, not a bug, so it must surface as a JunctionMapperError: left
+        # as bioio's own exception it escaped the CLI's per-field handling and ended the
+        # whole run with a traceback, discarding the fields that had already succeeded.
         if path.suffix.lower() not in (".tif", ".tiff"):
-            raise
+            raise FormatError(
+                f"{path}: no reader could open this file ({_oneline(exc)}); supported inputs "
+                f"are OME-TIFF (.tif/.tiff) and OME-Zarr (.zarr)") from None
         yield from _read_plain_tiff(path, cfg)
 
 
@@ -67,6 +77,8 @@ _SAFE_ID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
 def _read_plain_tiff(path: Path, cfg: RunConfig) -> Iterator[Field]:
     """Plain (non-OME) TIFF: no channel names or calibration, so cfg must supply them."""
     with tifffile.TiffFile(path) as tif:
+        if not tif.series:              # a truncated or non-TIFF file with a TIFF magic number
+            raise FormatError(f"{path}: the file has a TIFF header but holds no image series")
         series = tif.series[0]
         axes, data = series.axes, series.asarray()
     # Generic stacks come back as Q (unknown) or S (samples); treat as channels.

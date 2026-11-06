@@ -127,6 +127,44 @@ def test_default_run_proposes_one_threshold_carried_across_every_field(tmp_path)
     assert "median of Otsu" in html                              # the proposal is on the page
 
 
+def test_one_unsupported_file_fails_its_field_and_keeps_the_good_field(tmp_path):
+    """I4: UnsupportedFileFormatError was neither a JunctionMapperError nor in _iter_fields's
+    except tuple, so a directory holding one vendor file printed a traceback, exited 1 and wrote
+    nothing - losing the readable field's tables and report."""
+    cfg = write_cfg(tmp_path / "cfg.yaml")
+    d = tmp_path / "in"
+    d.mkdir()
+    seg = write_tif(d / "f1.tif")
+    (d / "x.czi").write_bytes(b"not an image")
+    labels = tmp_path / "labs"
+    save_labels(labels, "f1_t0_z0", seg)
+    out = tmp_path / "out"
+    r = invoke("run", "--config", cfg, "--input", d, "--labels", labels, "--out", out)
+    assert r.exit_code == 3, r.output                       # PARTIAL, not 1
+    assert "Traceback" not in r.output and "x.czi" in r.output
+    assert "out of scope" in r.output
+    assert "1 succeeded, 1 failed" in r.output
+    # the good field's outputs survived
+    assert set(pd.read_parquet(out / "cells.parquet").field_id) == {"f1_t0_z0"}
+    html = (out / "report.html").read_text()
+    assert (out / "report.html").exists() and "x.czi" in html
+
+
+def test_a_tif_no_reader_can_open_is_a_per_field_failure_not_a_crash(tmp_path):
+    cfg = write_cfg(tmp_path / "cfg.yaml")
+    d = tmp_path / "in"
+    d.mkdir()
+    seg = write_tif(d / "f1.tif")
+    (d / "broken.tif").write_bytes(b"II*\x00 not really a tiff")
+    labels = tmp_path / "labs"
+    save_labels(labels, "f1_t0_z0", seg)
+    out = tmp_path / "out"
+    r = invoke("run", "--config", cfg, "--input", d, "--labels", labels, "--out", out)
+    assert r.exit_code == 3, r.output
+    assert "Traceback" not in r.output and "broken.tif" in r.output
+    assert (out / "report.html").exists()
+
+
 def test_run_with_labels_dir_skips_segmentation(env, monkeypatch):
     forbid_cellpose(monkeypatch)
     r = run_ok(env)
@@ -642,6 +680,50 @@ def test_report_provenance_carries_thresholds_version_and_failures(env):
     assert "labels_dir" in html
 
 
+# ---- I3: a figure must name the code and the segmentation behind it -------------------
+
+def test_labels_run_report_names_the_model_parameters_device_and_code(env, monkeypatch):
+    """I3: on the supported --labels path the report said only "labels loaded from disk" and
+    stamped a constant 0.1.0.dev0, so two runs a month apart were indistinguishable. The
+    sidecar's params_used, the code identity and the library versions must all be on the page."""
+    def fake(field, params):
+        return Segmentation(cells=env["seg"].cells.copy(), nuclei=env["seg"].nuclei.copy(),
+                            params_used={"model": params.model, "diameter": 37.5,
+                                         "flow_threshold": params.flow_threshold,
+                                         "device": "cuda:0", "cellpose_version": "4.0.1"})
+    monkeypatch.setattr(cli, "segment_field", fake)
+    seg_out = env["tmp"] / "seg"
+    assert invoke("segment", "--config", env["cfg"], "--input", env["tif"], "--out", seg_out,
+                  "--flow-threshold", "0.55").exit_code == 0
+    side = json.loads((seg_out / "labels" / f"{FID}.provenance.json").read_text())
+    assert side["code_identity"] and side["created"] and side["library_versions"]
+
+    forbid_cellpose(monkeypatch)
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"],
+               "--labels", seg_out / "labels", "--out", env["out"])
+    assert r.exit_code == 0, r.output
+    html = (env["out"] / "report.html").read_text()
+    for s in ("cpsam", "0.55", "cuda:0", "37.5", "4.0.1",      # the segmentation behind it
+              "labels_created", side["created"],                # when the labels were made
+              "code_identity", "library_versions", "numpy"):    # and the code behind the figure
+        assert s in html, s
+    import junctionmapper.provenance as pv
+    ident = pv.code_identity()
+    assert ident.split(" (")[0] in html                         # git sha, or installed version
+    assert "0.1.0.dev0" != ident
+
+
+def test_labels_without_a_sidecar_are_reported_per_field_not_globally(env):
+    r = run_ok(env)                                  # env's labels are written without a sidecar
+    assert r.exit_code == 0, r.output
+    html = (env["out"] / "report.html").read_text()
+    assert "sidecar" in html and "absent" in html
+    assert FID in html
+    assert "labels_without_provenance" in html
+    # and the code identity is still recorded, because that does not depend on the labels
+    assert "code_identity" in html and "library_versions" in html
+
+
 # ---- sidecar --------------------------------------------------------------------------
 
 def _write_sidecar(env, source):
@@ -772,7 +854,7 @@ def _spy_reader(monkeypatch, seen, exc=None):
     monkeypatch.setattr(cli, "read_fields", fake)
 
 
-@pytest.mark.parametrize("name,quiet", [("x.tif", True), ("x.tiff", True), ("x.czi", False)])
+@pytest.mark.parametrize("name,quiet", [("x.tif", True), ("x.tiff", True), ("x.zarr", False)])
 def test_bioio_logger_level_restored_after_read(env, monkeypatch, name, quiet):
     import logging
     log = logging.getLogger("bioio.bio_image")

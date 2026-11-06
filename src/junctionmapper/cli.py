@@ -26,6 +26,7 @@ import functools
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from collections.abc import Callable, Iterator
 from importlib import metadata
 from pathlib import Path
@@ -41,6 +42,7 @@ from junctionmapper import __version__
 from junctionmapper.config import Role, RunConfig
 from junctionmapper.errors import ConfigError, JunctionMapperError, SegmentationError
 from junctionmapper.io.reader import Field, read_fields
+from junctionmapper.provenance import code_provenance
 from junctionmapper.pipeline import (
     CALIBRATION_FIELDS, FieldResult, RunThresholds, measure_field, propose_run_thresholds,
     resolve_thresholds,
@@ -53,7 +55,11 @@ app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="Cell-cell junction quantification (Junction Mapper, in Python).")
 
 EXIT_FAILED, EXIT_PARTIAL = 1, 3
-_INPUT_SUFFIXES = {".tif", ".tiff", ".czi", ".nd2", ".lif"}
+# What the design supports. Vendor formats are explicitly out of scope (spec, "File formats"),
+# so they are recognised in order to be REFUSED by name rather than opened and failed deep
+# inside a reader; a file with neither suffix is not an image and is ignored.
+_INPUT_SUFFIXES = {".tif", ".tiff", ".zarr"}
+_OUT_OF_SCOPE_SUFFIXES = {".czi", ".nd2", ".lif", ".oib", ".oif", ".ims", ".lsm", ".vsi"}
 _MAX_IDS_SHOWN = 5
 
 ConfigOpt = typer.Option(..., "--config", "-c", help="YAML run configuration.")
@@ -64,7 +70,11 @@ OutOpt = typer.Option(..., "--out", "-o", help="Output directory (created if abs
 # ---- small helpers -------------------------------------------------------------------
 
 def _version() -> str:
-    """Installed distribution metadata, else the package's own ``__version__``."""
+    """Installed distribution metadata, else the package's own ``__version__``.
+
+    Not an identification of the code: see ``provenance.code_identity``, which is recorded
+    beside it in every sidecar and report.
+    """
     try:
         return metadata.version("junctionmapper")
     except metadata.PackageNotFoundError:
@@ -120,7 +130,8 @@ def _load_config(path: Path) -> tuple[RunConfig, dict]:
 
 def _input_files(path: Path) -> list[Path]:
     if path.is_dir():
-        files = sorted(p for p in path.iterdir() if p.is_file() and p.suffix.lower() in _INPUT_SUFFIXES)
+        known = _INPUT_SUFFIXES | _OUT_OF_SCOPE_SUFFIXES
+        files = sorted(p for p in path.iterdir() if p.is_file() and p.suffix.lower() in known)
         if not files:
             raise ConfigError(f"{path}: no image files ({', '.join(sorted(_INPUT_SUFFIXES))}) found")
         return files
@@ -185,7 +196,8 @@ def _save_labels(directory: Path, field: Field, seg: Segmentation, cfg: RunConfi
     np.save(cells_path, np.asarray(seg.cells), allow_pickle=False)
     np.save(nuc_path, np.asarray(seg.nuclei), allow_pickle=False)
     sidecar = {
-        "junctionmapper_version": _version(),
+        **code_provenance(segmentation=True),
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "field_id": field.field_id,
         "source": str(Path(field.source).resolve()),
         "files": {Role.JM1.value: cells_path.name, Role.NUCLEUS.value: nuc_path.name},
@@ -219,17 +231,25 @@ def _load_label(directory: Path, field: Field, role: Role) -> np.ndarray:
     return arr
 
 
-def _check_sidecar(directory: Path, field: Field) -> dict | None:
-    """Compare the sidecar's recorded source image with this field's. Warn, never refuse."""
+def _read_sidecar(directory: Path, field: Field) -> dict | None:
+    """The label sidecar as a dict, or None when it is absent or unreadable."""
     side = directory / f"{field.field_id}.provenance.json"
     if not side.is_file():
         return None
     try:
-        recorded = json.loads(side.read_text(encoding="utf-8")).get("source")
-    except (OSError, ValueError, AttributeError):
-        typer.echo(f"warning: {side} is unreadable; cannot verify which image these labels came from",
-                   err=True)
+        data = json.loads(side.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        typer.echo(f"warning: {side} is unreadable; cannot verify which image these labels came "
+                   f"from, or what produced them", err=True)
         return None
+    return data if isinstance(data, dict) else None
+
+
+def _check_sidecar(directory: Path, field: Field, side: dict | None) -> dict | None:
+    """Compare the sidecar's recorded source image with this field's. Warn, never refuse."""
+    if side is None:
+        return None
+    recorded = side.get("source")
     here = str(Path(field.source).resolve())
     if recorded is None or str(Path(recorded).resolve()) == here:
         return None
@@ -240,10 +260,34 @@ def _check_sidecar(directory: Path, field: Field) -> dict | None:
 
 
 def _load_labels(directory: Path, field: Field) -> Segmentation:
+    """Load one field's labels, and the provenance of whatever produced them.
+
+    The sidecar written by ``segment`` (or by an editor that keeps it) holds the model, its
+    parameters, the device, when the labels were made and what code made them. Reading only its
+    ``source`` field, as this did, left the supported ``--labels`` path unable to say what
+    segmentation is behind a figure.
+    """
     cells = _load_label(directory, field, Role.JM1)
     nuclei = _load_label(directory, field, Role.NUCLEUS)
     params: dict[str, Any] = {"labels_source": "disk", "labels_dir": str(directory)}
-    mismatch = _check_sidecar(directory, field)
+    side = _read_sidecar(directory, field)
+    if side is None:
+        name = f"{field.field_id}.provenance.json"
+        why = "unreadable" if (directory / name).exists() else "absent"
+        params["model"] = f"unknown: label provenance sidecar {why}"
+        params["labels_provenance"] = (
+            f"the label provenance sidecar {name} is {why}, so the model, parameters and code "
+            f"that produced these labels are not recorded")
+    else:
+        used = side.get("params_used") if isinstance(side.get("params_used"), dict) else {}
+        params["model"] = used.get("model", "not recorded in the label sidecar")
+        for k in sorted(used):
+            if k != "model":
+                params[f"labels_{k}"] = used[k]
+        params["labels_created"] = side.get("created", "not recorded")
+        params["labels_code_identity"] = side.get("code_identity", "not recorded")
+        params["labels_junctionmapper_version"] = side.get("junctionmapper_version", "not recorded")
+    mismatch = _check_sidecar(directory, field, side)
     if mismatch:
         params["source_mismatch"] = mismatch
     return Segmentation(cells=cells, nuclei=nuclei, params_used=params)
@@ -268,6 +312,10 @@ def _quiet_bioio(path: Path):
 def _iter_fields(files: list[Path], cfg: RunConfig, failures: list[tuple[str, str]]) -> Iterator[Field]:
     """Yield fields; a file that cannot be read is recorded as a failure and skipped."""
     for f in files:
+        if f.suffix.lower() in _OUT_OF_SCOPE_SUFFIXES:
+            failures.append((f.name, f"{f}: {f.suffix.lower()} is a vendor format and is out of "
+                                     f"scope; convert it to OME-TIFF or OME-Zarr first"))
+            continue
         it = read_fields(f, cfg)
         while True:
             try:
@@ -456,24 +504,27 @@ def run(
         raise typer.Exit(EXIT_FAILED)
 
     results = [w[0] for _, w in ok]
-    if labels is not None:
-        used = {"model": "labels loaded from disk (no segmentation run)",
-                "labels_source": "disk", "labels_dir": str(labels)}
-    else:
-        used = _merge_params([w[1] for _, w in ok])
+    used = _merge_params([w[1] for _, w in ok])
     prov: dict[str, Any] = {
-        "junctionmapper_version": _version(),
+        **code_provenance(segmentation=labels is None),
         "params_used": used,
         "thresholds": json.dumps({f.field_id: w[2] for f, w in ok}, sort_keys=True),
         "threshold_proposal": run_t.describe(),
         "config": cfg.model_dump_json(),
         "input": str(input),
     }
+    no_side = [f.field_id for f, w in ok if "labels_provenance" in w[1]]
+    if no_side:
+        prov["labels_without_provenance"] = (
+            f"{len(no_side)} field(s) whose labels carry no provenance sidecar: "
+            f"{', '.join(no_side[:_MAX_IDS_SHOWN])}"
+            + (f" (+{len(no_side) - _MAX_IDS_SHOWN} more)" if len(no_side) > _MAX_IDS_SHOWN else ""))
     mism = [w[1]["source_mismatch"] for _, w in ok if "source_mismatch" in w[1]]
     if mism:
         prov["labels_source_mismatch"] = json.dumps(mism, sort_keys=True)
     if failures:
         prov["fields_failed"] = str(len(failures))
+        prov["fields_failed_detail"] = "; ".join(f"{who}: {why}" for who, why in failures)
     write_tables(results, out)
     build_report(results, cfg, prov, out / "report.html")
     typer.echo(f"wrote tables and report.html to {out}")
