@@ -95,3 +95,37 @@ only when it overlaps no cell at all.
 This matters for the biology the tool is aimed at. In discohesive tissue,
 nuclei straddle junctions and gaps far more often, so a centroid rule inflates
 the orphan and anucleate counts exactly in the condition under study.
+
+### 5. Corners are found by Douglas–Peucker on the boundary, not on the convex hull
+
+The original's own user guide cites Douglas & Peucker (1973) and describes
+corner detection as that algorithm applied to the cell outline. Its code does
+something else. `Cell_Membrane.getDouglasPeucker` takes the **convex hull** of
+the cell's edge pixels first and then runs Douglas–Peucker over the hull
+vertices, with a loop bound that never considers the last interior vertex of
+each range and a point-to-line distance computed from an integer-truncated
+slope.
+
+Three consequences, measured by driving the original's own classes over 148
+interfaces across rectilinear, jogged, staircase, Voronoi and hexagonal
+geometries:
+
+- A reflex (concave) vertex can never be a corner, because the hull discards
+  it. Cells in discohesive tissue are frequently concave.
+- A plain rectangle yields **three** corners rather than four, so one
+  "interface" spans two sides of the cell.
+- A regular hexagon yields eight to ten corners, **none of them at a vertex**.
+
+This project runs Douglas–Peucker on the traced boundary itself, as the guide
+describes, so a corner can fall on a concave turn and a rectangle has four of
+them. Interface decompositions therefore differ from the original's for any
+non-convex or oblique cell, and corner counts are not comparable between the
+two implementations.
+
+This divergence is about *which* interface gets measured, not about how it is
+measured. Given the same interface path, every metric in this project matches
+the original exactly — verified on all 148 interfaces above for both junction
+markers, including the integer pixel counts and intensity sums. The validation
+harness in `tests/validation/` is built on that distinction: it takes the
+original's corner coordinates as input and compares the measurements, while
+reporting corner-count differences as information rather than as failures.
