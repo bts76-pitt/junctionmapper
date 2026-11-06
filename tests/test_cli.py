@@ -97,6 +97,36 @@ def test_run_writes_tables_and_report(env, monkeypatch):
     assert (env["out"] / "labels" / f"{FID}.JM1.npy").exists()
 
 
+def test_default_run_proposes_one_threshold_carried_across_every_field(tmp_path):
+    """C2: with no threshold in the config the proposal is ONE value per marker role for the
+    whole run, so the report's red "threshold varied / not valid" banner does not fire on the
+    default path. Per-field Otsu returned 40.234375 and 40.341797 on two near-identical fields
+    and lit that banner, and marked most panels not comparable, on every default run."""
+    cfg = write_cfg(tmp_path / "cfg.yaml", threshold=...)        # no threshold key at all
+    d = tmp_path / "in"
+    d.mkdir()
+    labels = tmp_path / "labs"
+    for name, shift in (("a", 0.0), ("b", 0.3)):
+        f, seg = build()
+        planes = np.stack([f.planes[r] for r in list(f.planes)]).astype(np.float32)
+        planes[:2] += shift                                      # near-identical, not identical
+        tifffile.imwrite(d / f"{name}.tif", planes, photometric="minisblack")
+        save_labels(labels, f"{name}_t0_z0", seg)
+    out = tmp_path / "out"
+    r = invoke("run", "--config", cfg, "--input", d, "--labels", labels, "--out", out)
+    assert r.exit_code == 0, r.output
+    ifc = pd.read_parquet(out / "interfaces.parquet")
+    assert set(ifc.field_id) == {"a_t0_z0", "b_t0_z0"}
+    for role in ("JM1", "JM2"):
+        g = ifc[ifc.role == role]
+        assert g.threshold.nunique() == 1, role                  # one applied value for the run
+        assert g.threshold_field_otsu.nunique() == 2, role       # each field's own value kept
+    html = (out / "report.html").read_text()
+    assert 'id="threshold-warning"' not in html
+    assert "THRESHOLD VARIED" not in html
+    assert "median of Otsu" in html                              # the proposal is on the page
+
+
 def test_run_with_labels_dir_skips_segmentation(env, monkeypatch):
     forbid_cellpose(monkeypatch)
     r = run_ok(env)

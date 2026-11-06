@@ -6,7 +6,10 @@ import pytest
 
 from junctionmapper.config import Role
 from junctionmapper.errors import ConfigError
-from junctionmapper.pipeline import measure_field, resolve_thresholds
+from junctionmapper.pipeline import (
+    CALIBRATION_FIELDS, calibration_subset, field_otsu, measure_field, otsu_threshold,
+    propose_run_thresholds, resolve_thresholds, threshold_deviates,
+)
 from tests.fixtures13 import (
     PX, build, field_with_border_cell, field_with_isolated_cell, grid3, make_cfg, zoo,
 )
@@ -118,6 +121,104 @@ def test_resolve_thresholds_config_wins_otsu_and_flat_fallback(setup):
     assert resolve_thresholds(f, cfg2)[Role.JM2] == 0.0
     f.planes[Role.JM2] = np.full((40, 40), np.nan, np.float32)
     assert resolve_thresholds(f, cfg2)[Role.JM2] == 0.0
+
+
+# ---- C2: one threshold per run, proposed from a calibration subset -----------------
+
+def _shifted(fid, shift):
+    """A copy of the base field whose marker planes are shifted, so its own Otsu differs."""
+    f, seg = build(field_id=fid)
+    for role in (Role.JM1, Role.JM2):
+        f.planes[role] = (f.planes[role] + np.float32(shift)).astype(np.float32)
+    return f, seg
+
+
+def test_calibration_subset_is_sorted_evenly_spaced_and_bounded():
+    assert calibration_subset(["b", "a"]) == ["a", "b"]              # all of them when few
+    ids = [f"f{i:02d}" for i in range(20)]
+    sub = calibration_subset(ids)
+    assert len(sub) == CALIBRATION_FIELDS == 5
+    assert sub == sorted(sub) and sub[0] == "f00" and sub[-1] == "f19"
+    assert sub == ["f00", "f05", "f10", "f14", "f19"]               # spread, not the first five
+    assert calibration_subset(reversed(ids)) == sub                 # order of arrival is irrelevant
+
+
+def test_run_threshold_is_the_median_of_the_calibration_fields_not_the_mean():
+    cfg = make_cfg(threshold=None)
+    # five fields; one is saturated far above the rest. The median ignores it, a mean would not.
+    fields = [_shifted(f"f{i}", s)[0] for i, s in enumerate([0, 1, 2, 3, 1000])]
+    run = propose_run_thresholds(fields, cfg)
+    own = [field_otsu(f)[Role.JM1] for f in fields]
+    assert run.source[Role.JM1] == "calibration"
+    assert run.applied[Role.JM1] == pytest.approx(float(np.median(own)))
+    assert run.applied[Role.JM1] != pytest.approx(float(np.mean(own)))
+    assert run.calibration_fields == ("f0", "f1", "f2", "f3", "f4")
+    assert "median of Otsu on 5 calibration field(s)" in run.describe()
+
+
+def test_config_threshold_still_wins_per_role_over_the_run_proposal():
+    cfg = make_cfg(threshold={Role.JM1: 7.0})
+    f, seg = build()
+    run = propose_run_thresholds([f], cfg)
+    assert run.applied[Role.JM1] == 7.0 and run.source[Role.JM1] == "config"
+    assert run.source[Role.JM2] == "calibration"
+    t = resolve_thresholds(f, cfg, run)
+    assert t[Role.JM1] == 7.0 and t[Role.JM2] == run.applied[Role.JM2]
+
+
+def test_flat_calibration_fields_are_excluded_and_an_all_flat_run_falls_back_to_zero():
+    cfg = make_cfg(threshold=None)
+    good, _ = build("good")
+    flat, _ = build("flat")
+    for role in (Role.JM1, Role.JM2):
+        flat.planes[role] = np.full((40, 40), 3.0, np.float32)
+    nan, _ = build("nan")
+    for role in (Role.JM1, Role.JM2):
+        nan.planes[role] = np.full((40, 40), np.nan, np.float32)
+    run = propose_run_thresholds([good, flat, nan], cfg)
+    assert run.calibration_values[Role.JM1] == (otsu_threshold(good.planes[Role.JM1]),)
+    assert run.applied[Role.JM1] == pytest.approx(otsu_threshold(good.planes[Role.JM1]))
+    all_flat = propose_run_thresholds([flat, nan], cfg)
+    assert all_flat.applied[Role.JM1] == 0.0 and all_flat.source[Role.JM1] == "flat"
+    assert "fell back to 0.0" in all_flat.describe()
+
+
+def test_run_threshold_is_applied_to_every_field_and_each_field_records_its_own_otsu():
+    cfg = make_cfg(threshold=None)
+    pair = [_shifted("f1", 0), _shifted("f2", 7)]
+    run = propose_run_thresholds([f for f, _ in pair], cfg)
+    for (f, seg) in pair:
+        df = measure_field(f, seg, cfg, run_thresholds=run).interfaces
+        j1 = df[df.role == "JM1"]
+        assert j1.threshold.astype(float).to_numpy() == pytest.approx(run.applied[Role.JM1])
+        assert j1.threshold_field_otsu.astype(float).to_numpy() == pytest.approx(
+            field_otsu(f)[Role.JM1])
+    # the two fields' own Otsu values differ even though the applied value does not
+    assert field_otsu(pair[0][0])[Role.JM1] != field_otsu(pair[1][0])[Role.JM1]
+
+
+def test_threshold_deviates_flag_uses_the_stated_tolerance():
+    assert not threshold_deviates(None, 50.0)                    # nothing to compare
+    assert not threshold_deviates(50.4, 50.0)                    # inside the 1-grey-level floor
+    assert not threshold_deviates(54.0, 50.0)                    # inside 10% of 50
+    assert threshold_deviates(56.0, 50.0)
+    assert threshold_deviates(1.6, 0.0)                          # floor applies near zero
+    cfg = make_cfg(threshold=None)
+    near, far = _shifted("near", 0), _shifted("far", 60)
+    run = propose_run_thresholds([near[0]], cfg)                 # calibrated on "near" only
+    assert not measure_field(*near, cfg, run_thresholds=run).interfaces[
+        "threshold_deviates_from_run"].any()
+    assert measure_field(*far, cfg, run_thresholds=run).interfaces[
+        "threshold_deviates_from_run"].any()
+
+
+def test_single_field_without_a_run_proposal_still_uses_its_own_otsu(setup):
+    f, seg, _ = setup
+    cfg = make_cfg(threshold=None)
+    t = resolve_thresholds(f, cfg)
+    assert t[Role.JM1] == pytest.approx(otsu_threshold(f.planes[Role.JM1]))
+    # with one field the calibration subset IS that field, so the two agree
+    assert resolve_thresholds(f, cfg, propose_run_thresholds([f], cfg)) == t
 
 
 # ---- hand-computed straight interface ----------------------------------------------

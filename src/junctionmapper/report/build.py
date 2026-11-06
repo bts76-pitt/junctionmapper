@@ -31,6 +31,7 @@ from jinja2 import Environment, FileSystemLoader  # noqa: E402
 
 from junctionmapper.config import Role, RunConfig  # noqa: E402
 from junctionmapper.errors import ConfigError  # noqa: E402
+from junctionmapper.pipeline import THRESHOLD_SAME_TOL  # noqa: E402
 
 METHODS = ("dp", "tcj")
 ROLE_ORDER = {"JM1": 0, "JM2": 1}
@@ -238,21 +239,44 @@ def _groups(ifc: pd.DataFrame) -> list[tuple[str, str]]:
 
 
 def _threshold_info(ifc: pd.DataFrame) -> dict[str, dict[str, Any]]:
-    """Per role: distinct thresholds across fields, flagged ``varied`` when more than one."""
+    """Per role: the APPLIED threshold per field, and whether it genuinely varied.
+
+    ``varied`` means the applied values span more than ``THRESHOLD_SAME_TOL`` grey levels,
+    i.e. somebody overrode T for some field. The default path proposes one value for the
+    whole run (``pipeline.propose_run_thresholds``), so it does not trip this; a bare
+    difference in the last bits of a float never did mean "not comparable".
+    ``field_otsu`` carries, per field, what Otsu on that field's own plane would have given,
+    and ``deviating`` the fields where the two are far enough apart to be worth a look.
+    """
     info: dict[str, dict[str, Any]] = {}
     if not len(ifc):
         return info
+    has_otsu = "threshold_field_otsu" in ifc.columns
+    has_dev = "threshold_deviates_from_run" in ifc.columns
     for role in sorted(set(ifc["role"]), key=lambda r: ROLE_ORDER.get(r, 9)):
         g = ifc[ifc["role"] == role]
         by_field = {str(f): sorted({float(t) for t in gf["threshold"].dropna()})
                     for f, gf in g.groupby("field_id")}
+        own = {str(f): sorted({float(t) for t in gf["threshold_field_otsu"].dropna()})
+               for f, gf in g.groupby("field_id")} if has_otsu else {}
+        deviating = sorted({str(f) for f, gf in g.groupby("field_id")
+                            if bool(gf["threshold_deviates_from_run"].any())}) if has_dev else []
         distinct = sorted({t for ts in by_field.values() for t in ts})
+        varied = bool(distinct) and (distinct[-1] - distinct[0]) > THRESHOLD_SAME_TOL
+        run_value = float(np.median([v for ts in by_field.values() for v in ts])) if distinct else 0.0
+        differing = [f for f, ts in sorted(by_field.items())
+                     if any(abs(t - run_value) > THRESHOLD_SAME_TOL for t in ts)]
         info[str(role)] = {
             "role": str(role), "markers": sorted(set(map(str, g["marker"]))),
-            "by_field": by_field, "distinct": distinct, "varied": len(distinct) > 1,
+            "by_field": by_field, "distinct": distinct, "varied": varied,
             "distinct_txt": " vs ".join(_fmt(x) for x in distinct),
             "shown": [(f, ", ".join(_fmt(x) for x in v)) for f, v in sorted(by_field.items())[:BANNER_CAP]],
             "more": max(0, len(by_field) - BANNER_CAP),
+            "run_value": _fmt(run_value), "tol": _fmt(THRESHOLD_SAME_TOL),
+            "differing": differing[:BANNER_CAP],
+            "differing_more": max(0, len(differing) - BANNER_CAP),
+            "n_differing": len(differing),
+            "field_otsu": own, "deviating": deviating,
         }
     return info
 
@@ -436,8 +460,11 @@ def _provenance(cfg: RunConfig, prov: dict, cells, ifc, tinfo, use_um):
     thresholds = []
     for role, t in tinfo.items():
         thresholds.append({"role": role, "marker": ", ".join(t["markers"]), "varied": t["varied"],
-                           "by_field": [{"field": f, "vals": ", ".join(_fmt(x) for x in v) or "–"}
+                           "by_field": [{"field": f, "vals": ", ".join(_fmt(x) for x in v) or "–",
+                                         "otsu": ", ".join(_fmt(x) for x in t["field_otsu"].get(f, ())) or "–",
+                                         "deviates": f in t["deviating"]}
                                         for f, v in sorted(t["by_field"].items())],
+                           "n_deviating": len(t["deviating"]),
                            "summary": ", ".join(_fmt(x) for x in t["distinct"])})
     cfg_t = {r.value: _fmt(float(v)) for r, v in sorted((cfg.threshold or {}).items(), key=lambda kv: kv[0].value)}
     version = prov.get("junctionmapper_version")
@@ -460,8 +487,10 @@ def _provenance(cfg: RunConfig, prov: dict, cells, ifc, tinfo, use_um):
         "roles": roles, "thresholds": thresholds, "cfg_thresholds": cfg_t,
         "scalars": [{"name": n, "observed": ", ".join(o) or "–", "cfg": c} for n, o, c in scalars],
         "timestamp": _scrub(prov["timestamp"]) if prov.get("timestamp") else None,
+        "threshold_proposal": _scrub(prov["threshold_proposal"]) if prov.get("threshold_proposal") else None,
         "extra": [{"key": str(k), "value": _scrub(prov[k])} for k in sorted(prov, key=str)
-                  if k not in ("params_used", "junctionmapper_version", "timestamp")],
+                  if k not in ("params_used", "junctionmapper_version", "timestamp",
+                               "threshold_proposal")],
         "num_intra_cells": cfg.num_intra_cells, "all_pairs": cfg.all_pairs,
         "dilation_px": cfg.dilation_px, "dilation_um": cfg.dilation_um,
     }

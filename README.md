@@ -37,6 +37,24 @@ pip install -e '.[dev,segmentation]' # adds Cellpose-SAM
 Five tidy tables per run (`interfaces`, `cells`, `nuclei`, `nuclei_distances`, `flags`), each
 written as both `.parquet` and `.csv`, all keyed by `field_id` so several fields concatenate.
 
+### Intensity thresholds: one value per marker, carried across the run
+
+Four of the measured parameters depend on an intensity threshold T per marker channel. Unless
+`threshold` is set in the run configuration, T is **proposed once for the whole run** and
+applied to every field: Otsu is computed on each of up to five fields chosen deterministically
+and spread across the run (sorted `field_id`, evenly spaced; all of them when there are five or
+fewer), and the run value is the **median** of those values, so one saturated or empty field
+cannot drag it. Fields whose plane is flat or non-finite contribute nothing, and if every
+calibration field is like that the run value falls back to 0.0 and the report says so.
+
+`threshold` in `interfaces` is the value applied; `threshold_field_otsu` is what Otsu on that
+field's own plane would have given, and `threshold_deviates_from_run` is true when the two are
+further apart than 10% of the applied value (never less than one grey level) — information for
+diagnosing a bad field, not an error. A `threshold` in the configuration still wins outright,
+per role, and the report's red *threshold varied, not comparable* banner fires only when the
+**applied** values differ across fields by more than one grey level, i.e. when T was genuinely
+overridden somewhere; it names the fields that differ.
+
 ### `nuclei_distances` — one row per *ordered* nucleus pair
 
 The table is long: a row is `(nucleus_id, neighbour_nucleus_id, rank_from_nucleus,

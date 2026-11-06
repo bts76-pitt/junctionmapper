@@ -10,6 +10,10 @@ Units and formulas (``s`` = ``pixel_size_um``):
   * ``coverage_index``   = fragmented contour / interface contour.
   * ``interface_occupancy_pct`` = 100 * marker area / interface area (pixel counts, unitless).
   * ``marker_intensity`` = sum of above-threshold values in the band (raw intensity units).
+  * ``threshold`` is the value actually applied (one per role for the whole run unless it
+    was overridden); ``threshold_field_otsu`` is what Otsu on this field's own plane would
+    have given (NaN where Otsu cannot run), and ``threshold_deviates_from_run`` flags the
+    pair being further apart than the tolerance in ``pipeline.threshold_deviates``.
   * ``intensity_per_px2``         = marker_intensity / interface_area_px   (per px^2).
   * ``intensity_per_um2``         = intensity_per_px2 / s**2.
   * ``cluster_density_per_px2``   = marker_intensity / marker_area_px     (per px^2).
@@ -37,7 +41,8 @@ from junctionmapper.errors import ConfigError
 # Intensity sums, per-pixel intensity ratios and dimensionless ratios are unscaled.
 INTERFACE_COLUMNS = [
     "field_id", "cell_id", "neighbour_id", "corner_method", "role", "marker",
-    "start_idx", "end_idx", "threshold", "dilation_cycles",
+    "start_idx", "end_idx", "threshold", "threshold_field_otsu",
+    "threshold_deviates_from_run", "dilation_cycles",
     "interface_contour_px", "interface_contour_um",
     "straight_line_length_px", "straight_line_length_um",
     "linearity_index",  # straight / contour, <= 1 (inverse of the Java distance ratio)
@@ -79,7 +84,8 @@ SCHEMAS = {
     "nuclei_distances": NUCLEUS_DISTANCE_COLUMNS,
 }
 _NULLABLE_INT = ["neighbour_id", "n_corners_dp", "n_corners_tcj", "cell_id"]
-_BOOL = ["border_touching", "isolated", "degenerate", "corner_methods_disagree",
+_BOOL = ["threshold_deviates_from_run",
+         "border_touching", "isolated", "degenerate", "corner_methods_disagree",
          "all_contacts_filtered", "multinucleate", "anucleate", "measured", "orphan"]
 _INT = ["start_idx", "end_idx", "dilation_cycles", "interface_area_px", "marker_area_px",
         "area_px", "n_neighbours", "n_interfaces_dp", "n_interfaces_tcj", "n_nuclei", "tcj_min_run",

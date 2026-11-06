@@ -312,6 +312,23 @@ def test_threshold_warning_names_fields_values_role_and_explains(results_varying
     assert not re.search(r'data-param="interface_contour_um"[^>]*data-threshold-varied="1"', html)
 
 
+def test_threshold_varied_banner_needs_more_than_a_grey_level_of_difference(cfg, tmp_path):
+    """C2: the banner is for a human override, so float-level differences must not trip it."""
+    base = measure_field(*build("f1"), cfg)
+    def pair(delta):
+        other = base.interfaces.assign(field_id="f2")
+        other["threshold"] = np.where(other["role"] == "JM1", T1 + delta, T2)
+        tabs = {n: getattr(base, n).assign(field_id="f2") for n in
+                ("cells", "nuclei", "flags", "nuclei_distances")}
+        return [base, FieldResult(interfaces=other, **tabs)]
+    small = build_report(pair(0.1), cfg, PROV, tmp_path / "small.html").read_text()
+    assert 'id="threshold-warning"' not in small and "THRESHOLD VARIED" not in small
+    big = build_report(pair(10.0), cfg, PROV, tmp_path / "big.html").read_text()
+    assert 'id="threshold-warning"' in big
+    w = re.search(r'<section id="threshold-warning".*?</section>', big, re.S).group(0)
+    assert "Differing from the run value" in w and 'data-differing="JM1"' in w
+
+
 def test_no_threshold_warning_when_constant(results, cfg, tmp_path):
     html = build_report(results, cfg, PROV, tmp_path / "r.html").read_text()
     assert "threshold varied" not in html.lower()

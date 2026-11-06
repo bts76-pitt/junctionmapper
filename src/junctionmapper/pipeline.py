@@ -22,6 +22,38 @@ from junctionmapper.tables import make_frame
 
 METHODS = ("dp", "tcj")
 
+# ---- thresholds ---------------------------------------------------------------------
+# The design (spec, "Intensity thresholds") asks for "a single value derived from a
+# calibration subset [...] carried across the run, so the common path is 'accept', with
+# per-field override where review shows it is needed". Per-field Otsu is not that: Otsu on
+# two near-identical fields returns 40.234375 and 40.341797, which made the report's
+# "threshold varied, not comparable" banner fire on every multi-field run and so taught the
+# operator to ignore the one warning that matters.
+
+CALIBRATION_FIELDS = 5
+"""How many fields the run threshold is proposed from (see ``calibration_subset``)."""
+
+THRESHOLD_SAME_TOL = 1.0
+"""Grey levels within which two APPLIED thresholds count as the same value.
+
+The Java's threshold control is an integer slider on a 0-255 scale, so one grey level is the
+smallest difference an operator could have asked for; anything smaller is float noise, not an
+override. Used by the report to decide whether a threshold genuinely varied across fields.
+"""
+
+THRESHOLD_DEVIATION_FRACTION = 0.10
+THRESHOLD_DEVIATION_FLOOR = 1.0
+"""Tolerance for ``threshold_deviates_from_run``: 10% of the applied value, never less than
+one grey level.
+
+Relative rather than a flat grey-level bound because the planes are not necessarily 8-bit: a
+16-bit marker plane has Otsu values in the thousands, where any absolute bound chosen for
+8-bit data would flag every field or none. The floor keeps it sane as T approaches 0, and is
+one grey level for the reason given above (it also covers skimage's 256-bin quantisation of
+Otsu, which is one bin = range/256). 10% is the scale at which the measured marker area
+changes materially, T sitting in the shoulder of the intensity distribution.
+"""
+
 
 @dataclass
 class FieldResult:
@@ -32,11 +64,131 @@ class FieldResult:
     nuclei_distances: pd.DataFrame
 
 
-def resolve_thresholds(field: Field, cfg: RunConfig) -> dict[Role, float]:
-    """Threshold T per marker role present in ``field``.
+@dataclass(frozen=True)
+class RunThresholds:
+    """The threshold applied to every field of one run, per marker role.
 
-    ``cfg.threshold[role]`` wins. Otherwise Otsu on that role's plane; a flat, empty or
-    non-finite plane (Otsu cannot run) falls back to 0.0.
+    ``applied``: the value used. ``source[role]`` is ``"config"`` (``cfg.threshold``),
+    ``"calibration"`` (the median over the calibration subset) or ``"flat"`` (every
+    calibration field was flat or non-finite, so 0.0). ``calibration_fields`` is the subset
+    that was used, and ``calibration_values[role]`` the Otsu values it contributed.
+    """
+    applied: dict[Role, float]
+    source: dict[Role, str]
+    calibration_fields: tuple[str, ...]
+    calibration_values: dict[Role, tuple[float, ...]]
+
+    def describe(self) -> str:
+        """One human line per role, for provenance and the report."""
+        parts = []
+        for role in (Role.JM1, Role.JM2):
+            if role not in self.applied:
+                continue
+            src, vals = self.source[role], self.calibration_values.get(role, ())
+            if src == "config":
+                why = "from the run configuration"
+            elif src == "flat":
+                why = (f"every calibration field ({', '.join(self.calibration_fields)}) had a "
+                       f"flat or non-finite plane, so Otsu could not run and T fell back to 0.0")
+            else:
+                why = (f"median of Otsu on {len(vals)} calibration field(s) "
+                       f"({', '.join(self.calibration_fields)}): "
+                       f"{', '.join(format(v, '.6g') for v in vals)}")
+            parts.append(f"{role.value} = {self.applied[role]:.6g} ({why})")
+        return "; ".join(parts) or "no marker role resolved"
+
+
+def otsu_threshold(plane) -> float | None:
+    """Otsu's threshold of one marker plane, or None when Otsu cannot run.
+
+    None means the plane is empty, all non-finite, or flat (one finite value): there is no
+    threshold that separates anything. Callers decide what to do with that; the per-field
+    fallback is 0.0 and the calibration subset excludes such planes.
+    """
+    vals = np.asarray(plane, dtype=np.float64).ravel()
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0 or vals.min() == vals.max():
+        return None
+    try:
+        return float(threshold_otsu(vals))
+    except ValueError:
+        return None
+
+
+def field_otsu(field: Field) -> dict[Role, float | None]:
+    """Otsu per marker role present in ``field`` (None where Otsu cannot run)."""
+    return {role: otsu_threshold(field.planes[role])
+            for role in (Role.JM1, Role.JM2) if role in field.planes}
+
+
+def calibration_subset(field_ids, n: int = CALIBRATION_FIELDS) -> list[str]:
+    """Up to ``n`` field ids spread evenly over ``sorted(field_ids)``.
+
+    Deterministic and independent of the order the fields were read: the ids are sorted,
+    then ``n`` positions evenly spaced from the first to the last are taken (all of the ids
+    when there are ``n`` or fewer). Spreading rather than taking the first ``n`` so that a
+    plate acquired in order is sampled from its start, middle and end, not just its start.
+    """
+    ids = sorted(set(map(str, field_ids)))
+    if len(ids) <= n:
+        return ids
+    return [ids[int(round(i))] for i in np.linspace(0, len(ids) - 1, n)]
+
+
+def propose_run_thresholds(fields, cfg: RunConfig) -> RunThresholds:
+    """One threshold per marker role for the WHOLE run, from a calibration subset.
+
+    ``cfg.threshold[role]`` wins outright, per role. Otherwise: Otsu is computed on each of
+    up to ``CALIBRATION_FIELDS`` (5) fields chosen by ``calibration_subset`` (sorted
+    ``field_id``, evenly spaced, all of them when there are five or fewer), and the run value
+    is the **median** of those values -- median, not mean, so one saturated or empty field
+    cannot drag it. Fields whose plane is flat or non-finite contribute nothing (Otsu cannot
+    run on them); if every calibration field is like that the run value falls back to 0.0 and
+    ``source[role]`` records it as ``"flat"``.
+
+    ``fields`` is an iterable of ``Field`` and is consumed lazily, one field at a time.
+    """
+    by_field = {str(f.field_id): field_otsu(f) for f in fields}
+    chosen = calibration_subset(by_field)
+    applied: dict[Role, float] = {}
+    source: dict[Role, str] = {}
+    values: dict[Role, tuple[float, ...]] = {}
+    for role in (Role.JM1, Role.JM2):
+        if cfg.threshold and role in cfg.threshold:
+            applied[role], source[role], values[role] = float(cfg.threshold[role]), "config", ()
+            continue
+        if not any(role in by_field[f] for f in chosen):
+            continue                            # the role has no plane in this run
+        vs = tuple(by_field[f][role] for f in chosen
+                   if by_field[f].get(role) is not None)
+        values[role] = vs
+        applied[role] = float(np.median(vs)) if vs else 0.0
+        source[role] = "calibration" if vs else "flat"
+    return RunThresholds(applied, source, tuple(chosen), values)
+
+
+def threshold_deviates(own: float | None, applied: float) -> bool:
+    """True when a field's own Otsu is far enough from the applied value to be worth a look.
+
+    Tolerance: ``max(THRESHOLD_DEVIATION_FLOOR, THRESHOLD_DEVIATION_FRACTION * |applied|)``.
+    A field whose own plane cannot be thresholded (``own is None``) never deviates: there is
+    nothing to compare.
+    """
+    if own is None:
+        return False
+    tol = max(THRESHOLD_DEVIATION_FLOOR, THRESHOLD_DEVIATION_FRACTION * abs(float(applied)))
+    return bool(abs(float(own) - float(applied)) > tol)
+
+
+def resolve_thresholds(field: Field, cfg: RunConfig,
+                       run: RunThresholds | None = None) -> dict[Role, float]:
+    """Threshold T per marker role present in ``field``, in precedence order.
+
+    1. ``cfg.threshold[role]`` -- an explicit operator override, per role.
+    2. ``run.applied[role]`` -- the run value proposed from the calibration subset, which is
+       the default path for a multi-field run (see ``propose_run_thresholds``).
+    3. Otsu on this field's own plane, 0.0 when Otsu cannot run. This is the single-field
+       fallback: with one field the calibration subset IS that field, so the two agree.
     """
     out: dict[Role, float] = {}
     for role in (Role.JM1, Role.JM2):
@@ -46,26 +198,30 @@ def resolve_thresholds(field: Field, cfg: RunConfig) -> dict[Role, float]:
         if cfg.threshold and role in cfg.threshold:
             out[role] = float(cfg.threshold[role])
             continue
-        vals = np.asarray(plane, dtype=np.float64)
-        vals = vals[np.isfinite(vals)]
-        if vals.size == 0 or vals.min() == vals.max():
-            out[role] = 0.0
+        if run is not None and role in run.applied:
+            out[role] = float(run.applied[role])
             continue
-        try:
-            out[role] = float(threshold_otsu(vals))
-        except ValueError:
-            out[role] = 0.0
+        t = otsu_threshold(plane)
+        out[role] = 0.0 if t is None else t
     return out
 
 
 def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
-                  epsilon: float | None = None) -> FieldResult:
+                  epsilon: float | None = None,
+                  run_thresholds: RunThresholds | None = None) -> FieldResult:
     """Measure every non-border, non-degenerate cell of ``field``.
 
     Both corner methods are run; JM1 and (if present) JM2 are measured identically.
     The Douglas-Peucker tolerance is ``cfg.epsilon_px`` unless ``epsilon`` is passed, and the
     value used is recorded in ``cells.epsilon``. ``cfg.tcj_min_run`` and
     ``cfg.neighbour_radius_px`` are passed to the geometry layer and recorded in ``cells``.
+
+    ``run_thresholds`` is the run-level proposal from ``propose_run_thresholds``; passing it
+    applies one threshold per role to every field of the run. Without it the field falls back
+    to Otsu on its own plane. Either way every interface row records both the threshold
+    actually applied (``threshold``) and the value this field's own plane would have given
+    (``threshold_field_otsu``), plus ``threshold_deviates_from_run`` when they are far apart --
+    that pair is what makes a bad run diagnosable after the fact.
     """
     if epsilon is None:
         epsilon = cfg.epsilon_px
@@ -79,7 +235,8 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
     px = float(field.pixel_size_um)
     fid = field.field_id
     cycles = cfg.resolved_dilation_px(px)
-    thresholds = resolve_thresholds(field, cfg)
+    thresholds = resolve_thresholds(field, cfg, run_thresholds)
+    own_otsu = field_otsu(field)
     roles = [r for r in (Role.JM1, Role.JM2) if r in field.planes and r in thresholds
              and any(c.role == r for c in cfg.channels)]
 
@@ -117,7 +274,11 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                             "corner_method": itf.method, "role": role.value,
                             "marker": cfg.marker_for(role),
                             "start_idx": itf.start_idx, "end_idx": itf.end_idx,
-                            "threshold": t, "dilation_cycles": cycles,
+                            "threshold": t,
+                            "threshold_field_otsu": (float("nan") if own_otsu.get(role) is None
+                                                     else own_otsu[role]),
+                            "threshold_deviates_from_run": threshold_deviates(own_otsu.get(role), t),
+                            "dilation_cycles": cycles,
                             "interface_contour_px": contour, "interface_contour_um": contour * px,
                             "straight_line_length_px": straight,
                             "straight_line_length_um": straight * px,

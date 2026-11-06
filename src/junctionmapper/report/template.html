@@ -28,7 +28,8 @@ Read QC first (can this run be trusted), then Quantification (what it shows); Pr
 {% if varied %}
 <section id="threshold-warning" class="warn">
 <h2 style="border:0;margin-top:0">Threshold varied across fields</h2>
-<p>The marker threshold was not the same in every field. Comparing absolute intensity metrics
+<p>The marker threshold applied was not the same in every field, by more than one grey level, so it was
+overridden somewhere: the default path proposes one value per marker for the whole run. Comparing absolute intensity metrics
 (marker area, marker intensity, intensity per area, cluster density, occupancy, fragmented and junction
 contours, coverage) across fields measured at different thresholds is not valid: a field measured at a
 lower threshold counts more pixels as marker. Geometry-only metrics (interface contour, straight-line length,
@@ -37,6 +38,7 @@ linearity, interface area) are unaffected.</p>
 {% for t in varied %}
 <li data-role="{{ t.role }}"><strong>{{ t.role }} ({{ t.markers | join(", ") }})</strong>: thresholds {{ t.distinct_txt }}.
 {% for f, v in t.shown %}<code>{{ f }}</code> = {{ v }}{{ "; " if not loop.last }}{% endfor %}{% if t.more %}; and {{ t.more }} more field{{ "" if t.more == 1 else "s" }} (all listed under Provenance){% endif %}
+<br><span class="muted">Differing from the run value {{ t.run_value }} by more than {{ t.tol }}: {% for f in t.differing %}<code data-differing="{{ t.role }}">{{ f }}</code>{{ ", " if not loop.last }}{% endfor %}{% if t.differing_more %} and {{ t.differing_more }} more{% endif %} ({{ t.n_differing }} field{{ "" if t.n_differing == 1 else "s" }} in all).</span>
 </li>
 {% endfor %}
 </ul>
@@ -155,11 +157,17 @@ Per-field strips omit field labels beyond {{ tick_max }} fields.</p>
 </tbody></table>
 
 <h3>Resolved thresholds</h3>
+{% if prov.threshold_proposal %}
+<p>Proposal for the run: {{ prov.threshold_proposal }}. One value per marker role is carried across
+every field; <code>threshold</code> in the tables is the value applied and
+<code>threshold_field_otsu</code> what Otsu on that field's own plane would have given.</p>
+{% endif %}
 {% if prov.thresholds %}
 {% for t in prov.thresholds %}
-<p><strong>{{ t.role }} ({{ t.marker }})</strong>: {{ t.summary }}{% if t.varied %} <span class="badge">threshold varied</span>{% endif %}</p>
-<div class="scroll"><table><thead><tr><th class="l">Field</th><th>Threshold</th></tr></thead><tbody>
-{% for f in t.by_field %}<tr data-threshold-role="{{ t.role }}"><td class="l">{{ f.field }}</td><td>{{ f.vals }}</td></tr>
+<p><strong>{{ t.role }} ({{ t.marker }})</strong>: {{ t.summary }}{% if t.varied %} <span class="badge">threshold varied</span>{% endif %}
+{% if t.n_deviating %}<br><span class="muted">{{ t.n_deviating }} field{{ "" if t.n_deviating == 1 else "s" }} whose own Otsu deviates from the applied value (<code>threshold_deviates_from_run</code>); this is information, not an error: a run measured at one threshold is comparable, but a field far from the proposal is worth looking at.</span>{% endif %}</p>
+<div class="scroll"><table><thead><tr><th class="l">Field</th><th>Threshold applied</th><th>This field's own Otsu</th><th>Deviates</th></tr></thead><tbody>
+{% for f in t.by_field %}<tr data-threshold-role="{{ t.role }}"><td class="l">{{ f.field }}</td><td>{{ f.vals }}</td><td data-field-otsu="1">{{ f.otsu }}</td><td>{{ "yes" if f.deviates else "no" }}</td></tr>
 {% endfor %}
 </tbody></table></div>
 {% endfor %}

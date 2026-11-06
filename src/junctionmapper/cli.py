@@ -41,7 +41,10 @@ from junctionmapper import __version__
 from junctionmapper.config import Role, RunConfig
 from junctionmapper.errors import ConfigError, JunctionMapperError, SegmentationError
 from junctionmapper.io.reader import Field, read_fields
-from junctionmapper.pipeline import FieldResult, measure_field, resolve_thresholds
+from junctionmapper.pipeline import (
+    CALIBRATION_FIELDS, FieldResult, RunThresholds, measure_field, propose_run_thresholds,
+    resolve_thresholds,
+)
 from junctionmapper.report.build import build_report
 from junctionmapper.segment.cellpose import Segmentation, SegmentationParams, segment_field
 from junctionmapper.tables import write_tables
@@ -318,6 +321,35 @@ def _seg_params(model: str, diameter: float | None, flow: float, cellprob: float
                               cellprob_threshold=cellprob, gpu=gpu)
 
 
+def _calibration_files(files: list[Path], n: int = CALIBRATION_FIELDS) -> list[Path]:
+    """Up to ``n`` input files spread evenly over ``files`` (which ``_input_files`` sorted).
+
+    The threshold proposal is over up to ``n`` FIELDS chosen by sorted ``field_id``
+    (``pipeline.calibration_subset``); this picks which files the calibration pass has to open
+    to offer that choice. It is done per file because a field id does not exist until the file
+    has been read, so the alternative is reading every input twice. One file usually holds one
+    field, and then the two selections coincide; a multi-scene file contributes all its fields
+    to the subset, which ``calibration_subset`` then narrows to ``n``.
+    """
+    if len(files) <= n:
+        return list(files)
+    return [files[int(round(i))] for i in np.linspace(0, len(files) - 1, n)]
+
+
+def _calibrate(files: list[Path], cfg: RunConfig) -> RunThresholds:
+    """Propose one threshold per marker role for the whole run.
+
+    Reads the marker planes of the calibration files only; a file that cannot be read is
+    skipped silently here because the measurement pass reports it as a per-field failure.
+    Skipped entirely when the configuration already fixes a threshold for every marker role,
+    since then nothing would be proposed.
+    """
+    roles = [c.role for c in cfg.channels if c.role in (Role.JM1, Role.JM2)]
+    if cfg.threshold and all(r in cfg.threshold for r in roles):
+        return propose_run_thresholds([], cfg)
+    return propose_run_thresholds(_iter_fields(_calibration_files(files), cfg, []), cfg)
+
+
 def _merge_params(all_params: list[dict]) -> dict:
     """Keep the parameters every field agrees on; name the ones that varied per field."""
     if not all_params:
@@ -404,14 +436,16 @@ def run(
         _refuse_label_overwrite(out / "labels", files, cfg)
     params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu)
 
+    run_t = _calibrate(files, cfg)
+
     def work(field: Field) -> tuple[FieldResult, dict, dict]:
         if labels is not None:
             seg = _load_labels(labels, field)
         else:
             seg = segment_field(field, params)
             _save_labels(out / "labels", field, seg, cfg, raw)
-        result = measure_field(field, seg, cfg)
-        thresholds = {r.value: t for r, t in resolve_thresholds(field, cfg).items()}
+        result = measure_field(field, seg, cfg, run_thresholds=run_t)
+        thresholds = {r.value: t for r, t in resolve_thresholds(field, cfg, run_t).items()}
         return result, seg.params_used, thresholds
 
     ok, failures = _process(files, cfg, work)
@@ -431,6 +465,7 @@ def run(
         "junctionmapper_version": _version(),
         "params_used": used,
         "thresholds": json.dumps({f.field_id: w[2] for f, w in ok}, sort_keys=True),
+        "threshold_proposal": run_t.describe(),
         "config": cfg.model_dump_json(),
         "input": str(input),
     }
