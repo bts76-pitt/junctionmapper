@@ -63,7 +63,7 @@ HEADER = [
     "interface_contour_px", "straight_line_length_px", "java_distance_ratio",
     "fragmented_contour_px", "coverage_index", "interface_area_px", "marker_area_px",
     "marker_intensity", "junction_contour_px", "junction_straight_line_px",
-    "java_corner", "java_paired_with", "notes",
+    "java_corner", "java_paired_with", "seed_row", "seed_col", "notes",
 ]
 
 DRIVER_SOURCE = r'''package uk.ac.imperial.cisbio.imaging.cell_metric.gui;
@@ -229,7 +229,12 @@ def choose_cells(view: np.ndarray, dilation: int, wanted: list[int] | None, n: i
 
 
 def seed_for(view: np.ndarray, cid: int) -> tuple[int, int]:
-    """(x, y) = (col, row) of the pixel deepest inside the cell: a click that surely floods it."""
+    """(x, y) = (col, row) of the pixel deepest inside the cell: a click that surely floods it.
+
+    The Java's flood, and so its edge pixels, convex hull and corners, depend on the click
+    (README.md "Why the click matters"); this fixed rule makes the generator deterministic and
+    the click is written to every row as seed_row / seed_col.
+    """
     dt = ndimage.distance_transform_edt(view == cid)
     r, c = np.unravel_index(int(dt.argmax()), dt.shape)
     return int(c), int(r)
@@ -275,7 +280,7 @@ def rows_from_java(java_rows: list[dict], cell_ids: list[int], image: str, label
             "java_corner_row": jr["cy"], "java_corner_col": jr["cx"],
             "java_paired_row": jr["py"], "java_paired_col": jr["px"],
             "java_n_corners": jr["ncorners"], "java_corner": jr["corner"],
-            "java_paired_with": jr["paired"],
+            "java_paired_with": jr["paired"], "seed_row": jr["seedy"], "seed_col": jr["seedx"],
             "interface_contour_px": jr["contour"], "straight_line_length_px": jr["euclid"],
             "java_distance_ratio": jr["ratio"], "interface_area_px": jr["iarea"],
             "notes": "java_reference.py",

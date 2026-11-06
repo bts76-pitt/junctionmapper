@@ -62,9 +62,14 @@ Each row is classified from the geometry, never from a hand-typed flag:
   -12 to +6 px; intensity worst 14.0%; linearity within 0.31) and are an **artefact of the
   edge-map seam, not a tolerance on the port**. They apply only to rows that are not exactly
   comparable. Do not widen them to make a run pass: the *straight* rows are the evidence.
-* **Straight rows are rare in real segmentations**, so the generator's `--control` adds a
-  synthetic grid of rectangles. A reference with no straight row fails
-  (`test_integer_metrics_match_java_exactly`: "the exact assertions were never applied").
+* **Few rows are exactly comparable.** In the real-Java run behind these tolerances, 10 of 208
+  interfaces (about 5%, 20 of 416 rows) were *straight*; the other 396 rows agreed only within
+  the tolerances above, and contour and junction lengths on them were merely recorded. 416
+  rows of agreement is therefore **not** 416 exact comparisons. The exact (zero-tolerance)
+  assertion in practice runs on the synthetic rectilinear control grid that `--control` adds
+  deliberately, and on the frozen golden slice. To keep that honest, the harness **refuses a
+  reference that contains no straight row** (`test_integer_metrics_match_java_exactly`: "the
+  exact assertions were never applied").
 * A **corner-count comparison** (the Java's count against our Douglas-Peucker count on the same
   boundary) is written to `divergence.md` as information. The Java hulls first, so the counts
   differ by construction; it is never a failure.
@@ -160,14 +165,25 @@ machine with a display (or X forwarding / VNC), a JDK 17 and the Java checkout (
    script (never re-save it in an image editor). You are at step 3; do not edit; press
    **Finish**.
 
-7. **Select the cell (steps 4 and 5).** Click inside the cell, **Finish**, click it again.
+7. **Select the cell (steps 4 and 5) at the recorded click.** The Java's output depends on
+   where you click (see "Why the click matters"), so use the generator's rule: click the pixel
+   **farthest from the cell's boundary**, that is, the centre of the largest circle that fits
+   inside the cell on the Java's view of the labels (the cell without its edge-map line). To
+   find it, take the generator's value: run it for this cell
+   (`--cells <id>`) and read `seed_row` / `seed_col` from the CSV (row = the Java's `y`, column
+   = its `x`), or compute `scipy.ndimage.distance_transform_edt(java_view == cell)` and take the
+   argmax. Click there, press **Finish**, click the same pixel again. Write the pixel in
+   `seed_row` / `seed_col`. A click elsewhere in the same cell is legitimate but gives a
+   different edge-pixel set and usually different corners, so it will not reproduce the
+   generator's numbers.
 
 8. **Step 6.** Set **Epsilon** to your epsilon (it returns to 0 each time you re-enter step 6),
    **# Dilations applied to edge** to your cycles, and the two thresholds. Release each slider.
    Do **not** add or remove corners with the mouse.
 
 9. **Step 7.** Press **Measure**, then **Show Edge** repeatedly: each press prints one corner's
-   console line, `# n :: java.awt.Point[x=X,y=Y] :: neighbour m :: java.awt.Point[x=X2,y=Y2] :: ...`.
+   line in the application's status text area (the text box at the bottom of the window, not a
+   terminal), `# n :: java.awt.Point[x=X,y=Y] :: neighbour m :: java.awt.Point[x=X2,y=Y2] :: ...`.
    `x` is the column and `y` the row. Then press **Save as Spreadsheet** (Measure alone saves
    nothing, and only the selected cell is written).
 
@@ -182,7 +198,7 @@ machine with a display (or X forwarding / VNC), a JDK 17 and the Java checkout (
     | reference.csv column | JM1 table | JM2 table |
     |---|---|---|
     | `java_corner`, `java_paired_with` (optional) | A "Corner #", B "Paired With #" | A, B |
-    | `java_corner_row/col`, `java_paired_row/col` | from the Show Edge lines: corner A's `y`, `x`; its paired corner's `y`, `x` | same |
+    | `java_corner_row/col`, `java_paired_row/col` | from the Show Edge text: corner A's `y`, `x`; its paired corner's `y`, `x` | same |
     | `interface_contour_px` | C "Interface Contour" | C |
     | `straight_line_length_px` | D "Interface Straight-line Length" | D |
     | `java_distance_ratio` | E "Interface Linearity Index" **as printed** (may be `Infinity` or `NaN`) | E |
@@ -204,13 +220,14 @@ machine with a display (or X forwarding / VNC), a JDK 17 and the Java checkout (
     header:
 
     ```
-    image,labels,jm1_channel,jm2_channel,nucleus_channel,cell_id,role,corner_method,epsilon,dilation_cycles,threshold,interior,java_corner_row,java_corner_col,java_paired_row,java_paired_col,java_n_corners,interface_contour_px,straight_line_length_px,java_distance_ratio,fragmented_contour_px,coverage_index,interface_area_px,marker_area_px,marker_intensity,junction_contour_px,junction_straight_line_px,java_corner,java_paired_with,notes
+    image,labels,jm1_channel,jm2_channel,nucleus_channel,cell_id,role,corner_method,epsilon,dilation_cycles,threshold,interior,java_corner_row,java_corner_col,java_paired_row,java_paired_col,java_n_corners,interface_contour_px,straight_line_length_px,java_distance_ratio,fragmented_contour_px,coverage_index,interface_area_px,marker_area_px,marker_intensity,junction_contour_px,junction_straight_line_px,java_corner,java_paired_with,seed_row,seed_col,notes
     ```
 
 12. **Compare with the generator.** Run the generator for the same cell
     (`--cells <id> --epsilon ... --dilation ... --threshold-jm1 ... --threshold-jm2 ...`, no
-    `--control`) and diff the two files: the Java corner coordinates and every metric column for
-    that cell must be identical. Then run `./scripts/jm pytest tests/validation -v`.
+    `--control`) and diff the two files. **When the cell was clicked at the generator's recorded
+    seed**, the Java corner coordinates and every metric column for that cell must be identical;
+    with any other click they may legitimately differ. Then run `./scripts/jm pytest tests/validation -v`.
 
 ## Schema
 
@@ -229,6 +246,7 @@ machine with a display (or X forwarding / VNC), a JDK 17 and the Java checkout (
 | `java_n_corners` | the Java's corner count for the cell (`# Corners`), consistent across a cell's rows; information only |
 | `interface_contour_px` ... `marker_intensity` | the Java's numbers; the last three must be whole numbers; none may be blank |
 | `junction_contour_px`, `junction_straight_line_px` | JM1 rows only, may be blank |
+| `seed_row`, `seed_col` | optional, together or not at all: the pixel clicked to flood the cell (row = the Java's `y`, col = its `x`). The generator always writes them and the harness checks the pixel lies in the cell. A hand-transcribed row may omit them, but then the click is unknown and the row cannot be reproduced exactly: the Java's edge pixels, hull and corners depend on it |
 | `java_corner`, `java_paired_with`, `notes` | optional, never compared |
 
 The loader validates every row (types, ranges, paths, one row per image/cell/Java interface/role,
@@ -244,6 +262,18 @@ with no JDK, compares the port with real Java numbers: the straight side exactly
 corner-rounded sides at their stated tolerances. The test that runs the generator itself
 (`test_generator_runs_the_real_java_on_the_control_grid_and_the_port_agrees`) skips, naming
 what is missing, when there is no JDK or no Java checkout visible.
+
+## Why the click matters
+
+The Java builds a cell's edge pixels by flooding from the pixel you click (`selectCell`): the
+set of pixels it reaches, and the "edge points" it records along the line, differ slightly with
+the starting point (acute tips and one-pixel necks are reached or not). A different edge-pixel
+set gives a different **convex hull**, and the hull is what the Java runs Douglas-Peucker on
+(recorded divergence 5), so the corner set, the corner count and the edge-pixel count all change
+with the click. On the control grid's centre cell, clicks at different pixels of the same cell
+gave 154 to 158 edge pixels and 3 or 4 corners. The harness stays valid because the Java's
+corner pixels are inputs and the path is shared, but reproducibility needs the click recorded,
+hence `seed_row` / `seed_col`.
 
 ## If numbers differ
 

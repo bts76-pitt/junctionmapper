@@ -329,7 +329,7 @@ REQUIRED_COLUMNS = (
     "interface_area_px", "marker_area_px", "marker_intensity",
 )
 OPTIONAL_COLUMNS = ("junction_contour_px", "junction_straight_line_px",
-                    "java_corner", "java_paired_with", "notes")
+                    "java_corner", "java_paired_with", "seed_row", "seed_col", "notes")
 INT_COLUMNS = ("jm1_channel", "jm2_channel", "nucleus_channel", "cell_id", "java_corner_row",
                "java_corner_col", "java_paired_row", "java_paired_col", "java_n_corners")
 FLOAT_COLUMNS = ("interface_contour_px", "straight_line_length_px", "fragmented_contour_px",
@@ -494,6 +494,17 @@ def load_reference(path: Path) -> list[dict]:
                                          f"{raw[name]!r} is not a whole number")
             row[name] = int(row[name])
         row["notes"] = raw.get("notes", "")
+        # The click that flooded the cell. Optional for a hand-transcribed row, but then the
+        # row cannot be reproduced exactly: the Java's edge pixels, hull and corners depend
+        # on where it was clicked (README.md "Why the click matters").
+        sr, sc = raw.get("seed_row", ""), raw.get("seed_col", "")
+        if (sr == "") != (sc == ""):
+            raise _ref_error(lineno, "seed_row and seed_col must be given together or not at all")
+        row["seed"] = None
+        if sr != "":
+            row["seed"] = (_parse_int(sr, "seed_row", lineno), _parse_int(sc, "seed_col", lineno))
+            if min(row["seed"]) < 0:
+                raise _ref_error(lineno, "seed_row and seed_col must be >= 0")
 
         for name in ("image", "labels"):
             p = (path.parent / raw[name]).resolve()
@@ -530,8 +541,8 @@ def load_reference(path: Path) -> list[dict]:
 
 # ---- measurement -----------------------------------------------------------------------------
 
-#: radius used to name the neighbour along a path on the Java's view of the labels (information
-#: only). The injected edge map is two pixels thick between cells, so eroded cells are 3 px apart.
+#: neighbour-search radius passed to the run config. Nothing reads neighbours any more; kept so
+#: the config is the one the pipeline would build for the Java's view (cells 3 px apart).
 JAVA_VIEW_NEIGHBOUR_RADIUS = 3
 
 
@@ -604,7 +615,6 @@ class Measured:
     why: str                    # one-line reason for the class
     context: str                # both endpoint pairs and snap distances, for messages
     our_corners: int
-    neighbour: "int | None"
 
 
 def _geometry(row: dict) -> Geometry:
@@ -616,6 +626,10 @@ def _geometry(row: dict) -> Geometry:
     cid = row["cell_id"]
     if not (labels == cid).any():
         raise AssertionError(f"cell {cid} is not a label in {row['labels'].name}")
+    seed = row.get("seed")
+    if seed is not None and not (0 <= seed[0] < labels.shape[0] and 0 <= seed[1] < labels.shape[1]
+                                 and labels[seed] == cid):
+        raise AssertionError(f"cell {cid}: the recorded click {seed} is not inside that cell")
     if any((labels[s] == cid).any() for s in (np.s_[0, :], np.s_[-1, :], np.s_[:, 0], np.s_[:, -1])):
         raise RowSkip(f"cell {cid} touches the image border; it is not measured (the Java "
                       "clips its dilation band there; README.md divergence 2)")
@@ -718,15 +732,8 @@ def measure_arc(row: dict, geo: Geometry, arc: np.ndarray) -> Measured:
         metrics["junction_contour_px"] = mi.junction_contour(arc, plane, t)
         metrics["junction_straight_line_px"] = mi.junction_straight_line(arc, plane, t)
     straight, why = exactly_comparable(geo, cid, arc)
-    ids = []
-    for y, x in arc:
-        h, w = geo.view.shape
-        win = geo.view[max(y - 3, 0):y + 4, max(x - 3, 0):x + 4]
-        ids += [int(v) for v in np.unique(win) if v not in (0, cid)]
-    vals, counts = np.unique(ids, return_counts=True) if ids else ([], [])
-    nb = int(vals[counts.argmax()]) if len(vals) else None
     return Measured(metrics, straight, why, _context(geo, arc),
-                    len(dp_corners(geo.boundary, float(row["epsilon"]))), nb)
+                    len(dp_corners(geo.boundary, float(row["epsilon"]))))
 
 
 def measure_one(row: dict) -> Measured:
@@ -1809,9 +1816,25 @@ def test_generator_turns_java_output_into_valid_reference_rows(tmp_path):
     assert jm1["junction_contour_px"] == 18.0 and jm2["junction_contour_px"] is None
     assert (jm1["java_corner_row"], jm1["java_corner_col"]) == (12, 10)       # (y, x) -> (row, col)
     assert math.isclose(jm1["coverage_index"], 0.25) and math.isclose(jm2["coverage_index"], 0.45)
+    assert jm1["seed"] == (20, 20) and loaded[4]["seed"] == (50, 50)         # (seedy, seedx)
     assert math.isinf(loaded[2]["java_distance_ratio"]) and math.isnan(loaded[2]["coverage_index"])
     assert [r["cell_id"] for r in loaded] == [7, 7, 7, 7, 8, 8]               # seeds map to cell ids
     assert loaded[0]["interior"] is True and loaded[4]["interior"] is False   # minx 3 - 2 < 2
+
+
+def test_seed_columns_are_optional_paired_validated_and_must_lie_in_the_cell(synth):
+    tmp, tif, npy = synth
+    rows = _good_rows(synth)[:1]
+    assert load_reference(write_csv(tmp / "n.csv", rows))[0]["seed"] is None      # hand-transcribed
+    rows[0].update(seed_row=30, seed_col=20)
+    assert load_reference(write_csv(tmp / "s.csv", rows))[0]["seed"] == (30, 20)
+    for bad, match in (({"seed_row": 30, "seed_col": ""}, "together"), ({"seed_row": -1, "seed_col": 3}, ">= 0"),
+                       ({"seed_row": 1.5, "seed_col": 3}, "whole number")):
+        with pytest.raises(ReferenceFormatError, match=match):
+            load_reference(write_csv(tmp / "b.csv", [dict(rows[0], **bad)]))
+    rows[0].update(seed_row=50, seed_col=50)                   # background, not cell 1
+    res = compare_reference(load_reference(write_csv(tmp / "o.csv", rows)))
+    assert res.errors and "recorded click (50, 50) is not inside" in res.errors[0]
 
 
 def test_generator_chooses_interior_cells_and_seeds_inside_them():
