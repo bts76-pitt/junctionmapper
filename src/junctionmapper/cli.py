@@ -428,8 +428,10 @@ def _calibration_fields(files: list[Path], cfg: RunConfig,
     A file that cannot be read used to shrink the calibration set silently, and if all ``n``
     failed the run reverted to per-field Otsu while the report blamed a human override. So the
     spread order is walked past a failure to the next candidate until ``n`` files have been
-    read or the candidates run out, bounded at ``_CALIBRATION_ATTEMPTS`` opens. The failures
-    are not reported here: the measurement pass reads the same files and names each one.
+    read or the candidates run out, bounded at ``_CALIBRATION_ATTEMPTS`` opens. A file counts
+    as read only if it yielded fields and raised nothing, so a multi-scene file that dies part
+    way through is skipped whole rather than contributing a truncated set. The failures are not
+    reported here beyond the note: the measurement pass reads the same files and names each one.
     """
     candidates = _calibration_candidates(files, n)[:_CALIBRATION_ATTEMPTS]
     fields: list[Field] = []
@@ -451,8 +453,8 @@ def _calibration_fields(files: list[Path], cfg: RunConfig,
     more = f" (+{len(unreadable) - _MAX_IDS_SHOWN} more)" if len(unreadable) > _MAX_IDS_SHOWN else ""
     return fields, (
         f"degraded: {len(unreadable)} of the {len(candidates)} calibration file(s) opened could "
-        f"not be read ({shown}{more}), so the proposal used the next candidate(s) in the spread "
-        f"order instead; {used} file(s) were read for it")
+        f"not be read cleanly ({shown}{more}), so the proposal used the next candidate(s) in the "
+        f"spread order instead; {used} file(s) were read for it")
 
 
 def _calibrate(files: list[Path], cfg: RunConfig) -> tuple[RunThresholds, str | None]:
