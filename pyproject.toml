@@ -32,7 +32,10 @@ dependencies = [
 # Heavy, GPU-dependent. The library imports cellpose lazily so the rest
 # installs and tests without it.
 segmentation = ["cellpose>=4.0"]
-dev = ["pytest>=8.0", "pytest-cov>=4.1"]
+# zarr is imported directly by tests/test_reader.py and tests/test_cli.py (which build real
+# OME-Zarr stores); it also arrives transitively with bioio-ome-zarr, but a test dependency
+# that is load-bearing must be declared, not inherited.
+dev = ["pytest>=8.0", "pytest-cov>=4.1", "zarr>=3.0"]
 
 [project.scripts]
 junctionmapper = "junctionmapper.cli:app"

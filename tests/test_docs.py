@@ -47,3 +47,40 @@ def test_the_readme_records_the_click_dependence_of_the_java_corner_count():
     assert "seed_row" in flat and "Why the click matters" in flat
     # the old unconditional claim is gone
     assert "A plain rectangle yields **three** corners rather than four" not in flat
+
+
+# ---- claims about the threshold machinery ---------------------------------------------
+
+DEF = (ROOT / "container" / "junctionmapper.def").read_text(encoding="utf-8")
+PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_the_readme_says_the_deviation_flag_can_fire_on_a_default_low_valued_run():
+    """N9: "the default path does not trip the flag" is not true for a low-valued plane, where
+    the one-grey-level floor dominates. The behaviour is correct; the claim was not."""
+    flat = _flat(README)
+    assert "low-valued" in flat.lower()
+    assert "the flag sets on the outer fields of an ordinary *default* run" in flat
+    assert "informational" in flat
+
+
+def test_the_readme_says_a_zarr_store_is_a_directory_and_a_valid_input():
+    flat = _flat(README)
+    assert "An OME-Zarr store is a *directory* whose name ends `.zarr`" in flat
+    assert "taken as one input in its own right" in flat
+
+
+def test_the_container_def_does_not_claim_more_than_its_pins_give():
+    """N10: the 18 direct pins do match the live image, but transitive dependencies are
+    unpinned, so a rebuild can drift and "reconstructible" overstated it."""
+    flat = _flat(DEF)
+    assert "reconstructible" not in flat
+    for name in ("zarr", "dask", "numcodecs", "bioio-base"):
+        assert name in flat, name
+
+
+def test_zarr_is_declared_as_a_test_dependency_not_only_present_transitively():
+    """N10: tests/test_reader.py imports zarr and the N1 tests add more, so it cannot stay an
+    undeclared transitive dependency of bioio-ome-zarr."""
+    assert "zarr>=" in PYPROJECT.replace("bioio-ome-zarr>=", "")
+    assert '"zarr==' in DEF
