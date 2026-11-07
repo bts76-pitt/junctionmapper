@@ -452,7 +452,7 @@ def _calibration_fields(files: list[Path], cfg: RunConfig,
     shown = ", ".join(unreadable[:_MAX_IDS_SHOWN])
     more = f" (+{len(unreadable) - _MAX_IDS_SHOWN} more)" if len(unreadable) > _MAX_IDS_SHOWN else ""
     return fields, (
-        f"degraded: {len(unreadable)} of the {len(candidates)} calibration file(s) opened could "
+        f"degraded: {len(unreadable)} of the {len(unreadable) + used} calibration file(s) opened could "
         f"not be read cleanly ({shown}{more}), so the proposal used the next candidate(s) in the "
         f"spread order instead; {used} file(s) were read for it")
 

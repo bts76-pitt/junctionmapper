@@ -1094,6 +1094,26 @@ def test_calibration_attempts_are_bounded_when_every_file_is_unreadable(tmp_path
     assert note and note.startswith("degraded")
 
 
+def test_degraded_note_counts_the_files_actually_opened_not_the_candidate_list(tmp_path, monkeypatch):
+    """Thirteen inputs, only f00 corrupt: ten candidates are listed but the walk stops once
+    five read cleanly, so six files are opened. The note used to say "of the 10"."""
+    cfg, _ = cli._load_config(write_cfg(tmp_path / "cfg.yaml", threshold=...))
+    d = _spread_corrupt_batch(tmp_path, total=13, corrupt=(0,))
+    files = cli._input_files(d)
+    opened = []
+    real = cli._iter_fields
+
+    def counting(fs, c, fl):
+        opened.append([p.name for p in fs])
+        return real(fs, c, fl)
+    monkeypatch.setattr(cli, "_iter_fields", counting)
+    _, note = cli._calibrate(files, cfg)
+    assert len(opened) == 6                                      # 1 unreadable + 5 read
+    assert note and "1 of the 6 calibration file(s) opened" in note, note
+    assert "of the 10" not in note
+    assert "5 file(s) were read for it" in note
+
+
 def test_a_run_whose_calibration_resolved_nothing_does_not_blame_a_human(tmp_path):
     """N3, the load-bearing half: when every calibration candidate fails, no run value is
     resolved, every field falls back to Otsu on its own plane, the applied values then differ
