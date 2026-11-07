@@ -16,6 +16,13 @@ cell boundary into interfaces with neighbouring cells, and measures the
 published junction parameters for up to two junction markers plus nuclei.
 Emits tidy tables and a self-contained HTML report.
 
+`--input` takes a single image, or a directory of them. An OME-Zarr store is a
+*directory* whose name ends `.zarr`, so it is taken as one input in its own
+right rather than scanned for files inside it; a directory may hold stores,
+`.tif`/`.tiff` files, or both, and is read in sorted order. Vendor formats
+(`.czi`, `.nd2`, `.lif`, …) are out of scope by design and are refused by name
+rather than opened and failed deep inside a reader.
+
 Marker identity is configuration, never an assumption: the protein occupying
 each of the `JM1`, `JM2`, and `nucleus` roles is declared per sample and
 travels with every row of output.
@@ -72,16 +79,29 @@ and spread across the run (sorted `field_id`, evenly spaced; all of them when th
 fewer), and the run value is the **median** of those values, so one saturated or empty field
 cannot drag it. (A field id does not exist until its file has been read, so the CLI opens up to
 five input files, spread over the sorted input list, to offer that choice; with one field per
-file the two selections are the same.) Fields whose plane is flat or non-finite contribute nothing, and if every
+file the two selections are the same. A multi-scene or multi-Z file contributes all of its
+fields to the choice, but Otsu is computed only on the up-to-five that are finally chosen, so
+the cost is bounded by five fields whatever those files hold. A calibration file that cannot
+be read is walked past, up to ten opens in all, and the report records that the proposal was
+degraded.) Fields whose plane is flat or non-finite contribute nothing, and if every
 calibration field is like that the run value falls back to 0.0 and the report says so.
 
 `threshold` in `interfaces` is the value applied; `threshold_field_otsu` is what Otsu on that
 field's own plane would have given, and `threshold_deviates_from_run` is true when the two are
 further apart than 10% of the applied value (never less than one grey level) — information for
-diagnosing a bad field, not an error. A `threshold` in the configuration still wins outright,
-per role, and the report's red *threshold varied, not comparable* banner fires only when the
-**applied** values differ across fields by more than one grey level, i.e. when T was genuinely
-overridden somewhere; it names the fields that differ.
+diagnosing a bad field, not an error. Note what the floor does on a **low-valued** plane: when
+the run value is, say, 2.28, one grey level is already a large relative disagreement, so the
+flag sets on the outer fields of an ordinary *default* run where nothing was overridden. That
+is correct and deliberate — the floor is there so a 16-bit plane does not trip on noise — and
+the flag stays informational: read it as "this field's own plane would have been thresholded
+elsewhere", never as an error.
+
+A `threshold` in the configuration still wins outright, per role, and the report's red
+*threshold varied, not comparable* banner fires only when the **applied** values differ across
+fields by more than one grey level. That means one of two things, and the banner says which
+per marker role: T was overridden for some field, or no single run value was resolved for that
+role at all (every calibration file unreadable), leaving each field on its own Otsu. Either
+way it names the fields that establish the difference.
 
 ### `nuclei_distances` — one row per *ordered* nucleus pair
 

@@ -364,6 +364,56 @@ def test_threshold_varied_banner_needs_more_than_a_grey_level_of_difference(cfg,
     assert "Differing from the run value" in w and 'data-differing="JM1"' in w
 
 
+def _banner(html):
+    m = re.search(r'<section id="threshold-warning".*?</section>', html, re.S)
+    assert m, "no threshold banner"
+    return m.group(0)
+
+
+def _two_fields_differing_by(base, delta):
+    other = base.interfaces.assign(field_id="f2")
+    other["threshold"] = np.where(other["role"] == "JM1", T1 + delta, T2)
+    tabs = {n: getattr(base, n).assign(field_id="f2") for n in
+            ("cells", "nuclei", "flags", "nuclei_distances")}
+    return [base, FieldResult(interfaces=other, **tabs)]
+
+
+@pytest.mark.parametrize("delta", [1.01, 1.5, 2.0, 2.5, 10.0])
+def test_a_fired_banner_always_names_the_fields_that_establish_the_span(cfg, tmp_path, delta):
+    """N2: `varied` is decided on the SPAN of the applied values, but the named set was built
+    by comparing each field to their MEDIAN. For a span in (1.0, 2.0] every field is within
+    one grey level of the median, so the banner fired and then contradicted itself:
+    "Differing from the run value 50.5 by more than 1: (0 fields in all)"."""
+    base = measure_field(*build("f1"), cfg)
+    res = _two_fields_differing_by(base, delta)
+    html = build_report(res, cfg, PROV, tmp_path / f"r{delta}.html").read_text()
+    w = _banner(html)
+    named = re.findall(r'<code data-differing="JM1">([\w.]+)</code>', w)
+    assert set(named) == {"f1", "f2"}, (delta, w)
+    assert "(2 fields in all)" in w and "(0 fields in all)" not in w
+
+
+@pytest.mark.parametrize("roles,attribution,phrase", [
+    ("JM1, JM2", "override", "overridden per field"),
+    ("none", "fallback", "Not an override"),
+    (None, "unknown", "did not record"),
+])
+def test_the_banner_attributes_a_varied_threshold_to_the_right_cause(
+        results_varying_t, cfg, tmp_path, roles, attribution, phrase):
+    """N3: with no run value resolved (every calibration file unreadable) each field falls back
+    to its own Otsu, and the banner's "so it was overridden somewhere" was then false."""
+    prov = PROV if roles is None else {**PROV, "threshold_run_roles": roles}
+    html = build_report(results_varying_t, cfg, prov,
+                        tmp_path / f"r_{attribution}.html").read_text()
+    w = _banner(html)
+    assert f'data-attribution="{attribution}"' in w, w
+    assert phrase in w
+    assert "either T was overridden somewhere" in w          # the top line no longer asserts it
+    others = {"override", "fallback", "unknown"} - {attribution}
+    for other in others:
+        assert f'data-attribution="{other}"' not in w
+
+
 def test_no_threshold_warning_when_constant(results, cfg, tmp_path):
     html = build_report(results, cfg, PROV, tmp_path / "r.html").read_text()
     assert "threshold varied" not in html.lower()

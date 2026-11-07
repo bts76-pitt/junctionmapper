@@ -128,10 +128,31 @@ def _load_config(path: Path) -> tuple[RunConfig, dict]:
         raise ConfigError(f"{path}: invalid config: {_oneline('; '.join(parts))}") from None
 
 
+def _is_input(path: Path) -> bool:
+    """True if ``path`` names an input in its own right, decided by suffix alone.
+
+    An OME-Zarr store is a DIRECTORY whose name ends ``.zarr``, so "is this an input" cannot
+    be decided with ``is_file()``: that left every zarr invocation unreachable from the CLI
+    even though the reader supports the format. Out-of-scope suffixes count here too, so a
+    vendor file is picked up and then refused BY NAME in ``_iter_fields`` rather than ignored.
+    """
+    return path.suffix.lower() in (_INPUT_SUFFIXES | _OUT_OF_SCOPE_SUFFIXES)
+
+
 def _input_files(path: Path) -> list[Path]:
+    """The input leaves of ``path``: ``path`` itself, or the recognised entries inside it.
+
+    A recognised suffix wins over ``is_dir()``, so ``--input store.ome.zarr`` is taken as the
+    store rather than scanned for files inside it. A path with no recognised suffix behaves
+    exactly as before: a directory is scanned (sorted, so deterministic) and now admits a
+    zarr store alongside files, anything else is returned as a single leaf.
+    """
+    if _is_input(path):                 # a .zarr store is a directory; a .tif file is not
+        if not path.exists():
+            raise ConfigError(f"input path not found: {path}")
+        return [path]
     if path.is_dir():
-        known = _INPUT_SUFFIXES | _OUT_OF_SCOPE_SUFFIXES
-        files = sorted(p for p in path.iterdir() if p.is_file() and p.suffix.lower() in known)
+        files = sorted(p for p in path.iterdir() if _is_input(p))
         if not files:
             raise ConfigError(f"{path}: no image files ({', '.join(sorted(_INPUT_SUFFIXES))}) found")
         return files
@@ -384,22 +405,78 @@ def _calibration_files(files: list[Path], n: int = CALIBRATION_FIELDS) -> list[P
     return [files[int(round(i))] for i in np.linspace(0, len(files) - 1, n)]
 
 
-def _calibrate(files: list[Path], cfg: RunConfig) -> RunThresholds:
-    """Propose one threshold per marker role for the whole run.
+_CALIBRATION_ATTEMPTS = 2 * CALIBRATION_FIELDS
+"""How many files the calibration pass may OPEN before giving up (see ``_calibration_fields``).
 
-    Reads the marker planes of the calibration files only; a file that cannot be read is
-    skipped silently here because the measurement pass reports it as a per-field failure.
-    Skipped entirely when the configuration already fixes a threshold for every marker role,
-    since then nothing would be proposed.
+Twice the subset size: enough to replace every one of the chosen files once, and small enough
+that a run of entirely unreadable inputs is not read twice over before the measurement pass
+reports them properly.
+"""
+
+
+def _calibration_candidates(files: list[Path], n: int = CALIBRATION_FIELDS) -> list[Path]:
+    """The spread picks first, then the remaining files in sorted order as replacements."""
+    chosen = _calibration_files(files, n)
+    picked = {str(p) for p in chosen}
+    return chosen + [f for f in files if str(f) not in picked]
+
+
+def _calibration_fields(files: list[Path], cfg: RunConfig,
+                        n: int = CALIBRATION_FIELDS) -> tuple[list[Field], str | None]:
+    """Fields of up to ``n`` READABLE calibration files, and a note when that was degraded.
+
+    A file that cannot be read used to shrink the calibration set silently, and if all ``n``
+    failed the run reverted to per-field Otsu while the report blamed a human override. So the
+    spread order is walked past a failure to the next candidate until ``n`` files have been
+    read or the candidates run out, bounded at ``_CALIBRATION_ATTEMPTS`` opens. The failures
+    are not reported here: the measurement pass reads the same files and names each one.
+    """
+    candidates = _calibration_candidates(files, n)[:_CALIBRATION_ATTEMPTS]
+    fields: list[Field] = []
+    unreadable: list[str] = []
+    used = 0
+    for f in candidates:
+        failed: list[tuple[str, str]] = []
+        got = list(_iter_fields([f], cfg, failed))
+        if failed or not got:
+            unreadable.append(f.name)
+            continue
+        fields.extend(got)
+        used += 1
+        if used >= n:
+            break
+    if not unreadable:
+        return fields, None
+    shown = ", ".join(unreadable[:_MAX_IDS_SHOWN])
+    more = f" (+{len(unreadable) - _MAX_IDS_SHOWN} more)" if len(unreadable) > _MAX_IDS_SHOWN else ""
+    return fields, (
+        f"degraded: {len(unreadable)} of the {len(candidates)} calibration file(s) opened could "
+        f"not be read ({shown}{more}), so the proposal used the next candidate(s) in the spread "
+        f"order instead; {used} file(s) were read for it")
+
+
+def _calibrate(files: list[Path], cfg: RunConfig) -> tuple[RunThresholds, str | None]:
+    """Propose one threshold per marker role for the whole run, and note any degradation.
+
+    Reads the marker planes of the calibration files only. Skipped entirely when the
+    configuration already fixes a threshold for every marker role, since then nothing would
+    be proposed.
     """
     roles = [c.role for c in cfg.channels if c.role in (Role.JM1, Role.JM2)]
     if cfg.threshold and all(r in cfg.threshold for r in roles):
-        return propose_run_thresholds([], cfg)
-    return propose_run_thresholds(_iter_fields(_calibration_files(files), cfg, []), cfg)
+        return propose_run_thresholds([], cfg), None
+    fields, note = _calibration_fields(files, cfg)
+    return propose_run_thresholds(fields, cfg), note
 
 
-def _merge_params(all_params: list[dict]) -> dict:
-    """Keep the parameters every field agrees on; name the ones that varied per field."""
+def _merge_params(all_params: list[dict], sidecar_dir: Path) -> dict:
+    """Keep the parameters every field agrees on; name the ones that varied per field.
+
+    ``sidecar_dir`` is where the per-field provenance sidecars actually are: ``OUT/labels``
+    when this run segmented, the operator's ``--labels`` directory when it did not. The text
+    used to say ``labels/<field_id>.provenance.json`` unconditionally, which named a directory
+    that does not exist on the supported path.
+    """
     if not all_params:
         return {}
     keys = list(all_params[0])
@@ -407,7 +484,8 @@ def _merge_params(all_params: list[dict]) -> dict:
             if all(k in p and p[k] == all_params[0][k] for p in all_params)}
     varying = sorted({k for p in all_params for k in p} - set(same))
     if varying:
-        same["varies_by_field"] = ", ".join(varying) + " (see labels/<field_id>.provenance.json)"
+        same["varies_by_field"] = (", ".join(varying)
+                                   + f" (see {sidecar_dir}/<field_id>.provenance.json)")
     return same
 
 
@@ -484,7 +562,7 @@ def run(
         _refuse_label_overwrite(out / "labels", files, cfg)
     params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu)
 
-    run_t = _calibrate(files, cfg)
+    run_t, calib_note = _calibrate(files, cfg)
 
     def work(field: Field) -> tuple[FieldResult, dict, dict]:
         if labels is not None:
@@ -504,15 +582,21 @@ def run(
         raise typer.Exit(EXIT_FAILED)
 
     results = [w[0] for _, w in ok]
-    used = _merge_params([w[1] for _, w in ok])
+    used = _merge_params([w[1] for _, w in ok], labels if labels is not None else out / "labels")
     prov: dict[str, Any] = {
         **code_provenance(segmentation=labels is None),
         "params_used": used,
         "thresholds": json.dumps({f.field_id: w[2] for f, w in ok}, sort_keys=True),
         "threshold_proposal": run_t.describe(),
+        # Which roles a single run-level value was carried for. The report needs it to say why
+        # the applied threshold varied: a per-field override, or a proposal that resolved
+        # nothing (every calibration file unreadable) and left each field on its own Otsu.
+        "threshold_run_roles": ", ".join(sorted(r.value for r in run_t.applied)) or "none",
         "config": cfg.model_dump_json(),
         "input": str(input),
     }
+    if calib_note:
+        prov["threshold_calibration"] = calib_note
     no_side = [f.field_id for f, w in ok if "labels_provenance" in w[1]]
     if no_side:
         prov["labels_without_provenance"] = (

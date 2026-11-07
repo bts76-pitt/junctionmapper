@@ -256,7 +256,7 @@ _ACCOUNT_KEYS = [k for k, _ in QC_COLUMNS if not k.startswith("excl_")]
 
 
 def _qc_figure(pooled: dict[str, int], units: dict[str, int]) -> str | None:
-    """One PNG, three panels, because the quantities are not comparable.
+    """One PNG, four panels, because the quantities are not comparable.
 
     Panel 1 counts cells and does not add up (a cell can be measured and contributing);
     panel 2 is a partition of the non-contributing cells, so those bars DO sum to it;
@@ -303,15 +303,37 @@ def _groups(ifc: pd.DataFrame) -> list[tuple[str, str]]:
     return sorted(pairs, key=lambda p: (ROLE_ORDER.get(p[0], 9), p[1]))
 
 
-def _threshold_info(ifc: pd.DataFrame) -> dict[str, dict[str, Any]]:
+def _run_roles(provenance: dict) -> "set[str] | None":
+    """The marker roles a single run-level threshold was carried for, if the run recorded it.
+
+    ``None`` means the caller recorded nothing (a library consumer building a report directly),
+    which is NOT the same as "nothing resolved": the two cases read differently in the banner.
+    """
+    raw = provenance.get("threshold_run_roles")
+    if raw is None:
+        return None
+    return {s for s in (part.strip() for part in str(raw).split(",")) if s and s != "none"}
+
+
+def _threshold_info(ifc: pd.DataFrame, run_roles: "set[str] | None" = None
+                    ) -> dict[str, dict[str, Any]]:
     """Per role: the APPLIED threshold per field, and whether it genuinely varied.
 
-    ``varied`` means the applied values span more than ``THRESHOLD_SAME_TOL`` grey levels,
-    i.e. somebody overrode T for some field. The default path proposes one value for the
-    whole run (``pipeline.propose_run_thresholds``), so it does not trip this; a bare
-    difference in the last bits of a float never did mean "not comparable".
-    ``field_otsu`` carries, per field, what Otsu on that field's own plane would have given,
-    and ``deviating`` the fields where the two are far enough apart to be worth a look.
+    ``varied`` means the applied values span more than ``THRESHOLD_SAME_TOL`` grey levels. The
+    default path proposes one value for the whole run (``pipeline.propose_run_thresholds``), so
+    it does not trip this; a bare difference in the last bits of a float never did mean "not
+    comparable". ``differing`` names the fields that establish the span -- those holding an
+    extreme applied value, plus any field more than the tolerance from the run value -- so a
+    fired banner can never name zero fields: at a span in (1.0, 2.0] every field is within the
+    tolerance of the median, and the banner used to contradict itself with "(0 fields in all)".
+
+    ``attribution`` says what a varied threshold means, from ``run_roles``: ``"override"`` when
+    a single run value WAS carried for the role (so a differing field was overridden),
+    ``"fallback"`` when it was not (the proposal resolved nothing and every field fell back to
+    Otsu on its own plane -- nobody overrode anything), ``"unknown"`` when the run did not
+    record which it was. ``field_otsu`` carries, per field, what Otsu on that field's own plane
+    would have given, and ``deviating`` the fields where the two are far enough apart to be
+    worth a look.
     """
     info: dict[str, dict[str, Any]] = {}
     if not len(ifc):
@@ -329,8 +351,15 @@ def _threshold_info(ifc: pd.DataFrame) -> dict[str, dict[str, Any]]:
         distinct = sorted({t for ts in by_field.values() for t in ts})
         varied = bool(distinct) and (distinct[-1] - distinct[0]) > THRESHOLD_SAME_TOL
         run_value = float(np.median([v for ts in by_field.values() for v in ts])) if distinct else 0.0
+        # The banner fires on the SPAN, so the fields it names must be the ones that establish
+        # the span: the holders of the extreme values, plus anything beyond the tolerance from
+        # the run value. Comparing to the median alone named nobody for a span <= 2 * tol.
+        extremes = {distinct[0], distinct[-1]} if varied else set()
         differing = [f for f, ts in sorted(by_field.items())
-                     if any(abs(t - run_value) > THRESHOLD_SAME_TOL for t in ts)]
+                     if any(abs(t - run_value) > THRESHOLD_SAME_TOL for t in ts)
+                     or any(t in extremes for t in ts)]
+        attribution = ("unknown" if run_roles is None
+                       else "override" if str(role) in run_roles else "fallback")
         info[str(role)] = {
             "role": str(role), "markers": sorted(set(map(str, g["marker"]))),
             "by_field": by_field, "distinct": distinct, "varied": varied,
@@ -341,6 +370,7 @@ def _threshold_info(ifc: pd.DataFrame) -> dict[str, dict[str, Any]]:
             "differing": differing[:BANNER_CAP],
             "differing_more": max(0, len(differing) - BANNER_CAP),
             "n_differing": len(differing),
+            "attribution": attribution,
             "field_otsu": own, "deviating": deviating,
         }
     return info
@@ -591,7 +621,7 @@ def build_report(results: Iterable, cfg: RunConfig, provenance: dict | None, out
             df["field_id"] = df["field_id"].astype(str)
 
     use_um = _has_pixel_size(cells, cfg)
-    tinfo = _threshold_info(ifc)
+    tinfo = _threshold_info(ifc, _run_roles(provenance))
     varied_roles = {r for r, t in tinfo.items() if t["varied"]}
     qc_rows, qc_warnings = _qc(fields, cells, flags, nuclei, ifc) if results else ([], [])
     unit_rows = _units(fields, ifc) if results else []

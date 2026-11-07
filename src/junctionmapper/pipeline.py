@@ -52,6 +52,13 @@ Relative rather than a flat grey-level bound because the planes are not necessar
 one grey level for the reason given above (it also covers skimage's 256-bin quantisation of
 Otsu, which is one bin = range/256). 10% is the scale at which the measured marker area
 changes materially, T sitting in the shoulder of the intensity distribution.
+
+On a LOW-VALUED plane the floor dominates and the flag fires on an ordinary DEFAULT run: with
+a run value of 2.28, 10% is 0.23 and the floor of 1.0 is what applies, so a field whose own
+Otsu is 1.1 grey levels away is flagged although nobody overrode anything. That is the
+intended reading -- against a threshold of 2.28 one grey level really is a large relative
+disagreement -- and it is why the flag is informational and never an error. Do not retune the
+floor to hide it: the floor is what stops a 16-bit plane tripping on noise.
 """
 
 
@@ -165,10 +172,18 @@ def propose_run_thresholds(fields, cfg: RunConfig) -> RunThresholds:
     run on them); if every calibration field is like that the run value falls back to 0.0 and
     ``source[role]`` records it as ``"flat"``.
 
-    ``fields`` is an iterable of ``Field`` and is consumed lazily, one field at a time.
+    ``fields`` is an iterable of ``Field``, consumed once. The subset is chosen FIRST and Otsu
+    is computed only on the fields in it, so the cost is bounded by ``CALIBRATION_FIELDS`` and
+    not by how many fields the caller hands over: one multi-scene or multi-Z file can hold a
+    dozen, and computing Otsu on all of them only to discard all but five was wasted work and
+    made the "constant cost" claim true only for one field per file. The price is that the
+    fields handed over are held until the subset is known (the subset is defined over the full
+    sorted id set, so it cannot be decided while streaming): pass a calibration pass's handful
+    of files, as the CLI does, not every field of a run.
     """
-    by_field = {str(f.field_id): field_otsu(f) for f in fields}
-    chosen = calibration_subset(by_field)
+    held = {str(f.field_id): f for f in fields}
+    chosen = calibration_subset(held)
+    by_field = {fid: field_otsu(held[fid]) for fid in chosen}
     applied: dict[Role, float] = {}
     source: dict[Role, str] = {}
     values: dict[Role, tuple[float, ...]] = {}
@@ -192,6 +207,11 @@ def threshold_deviates(own: float | None, applied: float) -> bool:
     Tolerance: ``max(THRESHOLD_DEVIATION_FLOOR, THRESHOLD_DEVIATION_FRACTION * |applied|)``.
     A field whose own plane cannot be thresholded (``own is None``) never deviates: there is
     nothing to compare.
+
+    This is NOT a flag that only a configured or overridden threshold can trip. On a plane
+    whose values are small the absolute floor dominates, so the outer fields of a default run
+    -- one value proposed and carried, nothing overridden -- are flagged too. Informational by
+    design: it says this field's own plane would have been thresholded elsewhere, nothing more.
     """
     if own is None:
         return False

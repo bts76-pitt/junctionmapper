@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from junctionmapper import cli
 from junctionmapper.cli import app
-from junctionmapper.errors import SegmentationError
+from junctionmapper.errors import ConfigError, SegmentationError
 from junctionmapper.segment.cellpose import Segmentation
 from tests.fixtures13 import build
 
@@ -713,9 +713,14 @@ def test_labels_run_report_names_the_model_parameters_device_and_code(env, monke
               "code_identity", "library_versions", "numpy"):    # and the code behind the figure
         assert s in html, s
     import junctionmapper.provenance as pv
+    from tests.test_provenance import RESOLVED_PREFIXES
     ident = pv.code_identity()
     assert ident.split(" (")[0] in html                         # git sha, or installed version
     assert "0.1.0.dev0" != ident
+    # and what reached the page is a RESOLVED identity: "unresolvable: ... no installed
+    # distribution ..." also satisfies the substring check above.
+    assert ident.startswith(RESOLVED_PREFIXES), ident
+    assert "unresolvable" not in html
 
 
 def test_labels_without_a_sidecar_are_reported_per_field_not_globally(env):
@@ -898,3 +903,232 @@ def test_unreadable_sidecar_warns_and_the_run_proceeds(env):
     assert "unreadable" in r.stderr and f"{FID}.provenance.json" in r.stderr
     assert set(pd.read_parquet(env["out"] / "cells.parquet").field_id) == {FID}
     assert "labels_source_mismatch" not in (env["out"] / "report.html").read_text()
+
+
+# ---- N1: an OME-Zarr store is a DIRECTORY, so the single entry point must accept one ---
+
+def write_zarr(path, planes=None):
+    """A minimal OME-Zarr store (a directory) holding the fixture's three channels."""
+    import zarr
+    f, seg = build()
+    if planes is None:
+        planes = np.stack([f.planes[r] for r in list(f.planes)]).astype(np.float32)
+    group = zarr.open_group(path, mode="w", zarr_format=2)
+    group.create_array("0", data=planes, chunks=(1, *planes.shape[1:]))
+    axes = [{"name": "c", "type": "channel"}] + [
+        {"name": n, "type": "space", "unit": "micrometer"} for n in "yx"]
+    group.attrs["multiscales"] = [
+        {"version": "0.4", "name": path.name, "axes": axes,
+         "datasets": [{"path": "0", "coordinateTransformations": [
+             {"type": "scale", "scale": [1, 0.5, 0.5]}]}]}]
+    group.attrs["omero"] = {"channels": [{"label": n} for n in ("Na/K-ATPase", "p120", "DAPI")]}
+    return seg
+
+
+def test_a_zarr_store_is_a_leaf_input_not_a_directory_to_scan(tmp_path):
+    """N1: README and the design claim OME-Zarr, the reader supports it, but _input_files
+    filtered on is_file() and scanned INSIDE the store, so no invocation could reach it."""
+    store = tmp_path / "img.ome.zarr"
+    write_zarr(store)
+    assert store.is_dir() and store.suffix == ".zarr"
+    assert cli._input_files(store) == [store]
+
+
+def test_a_directory_of_stores_and_tifs_is_scanned_in_sorted_order(tmp_path):
+    d = tmp_path / "in"
+    d.mkdir()
+    write_zarr(d / "b.ome.zarr")
+    write_zarr(d / "d.ome.zarr")
+    write_tif(d / "a.tif")
+    write_tif(d / "c.tif")
+    (d / "notes.txt").write_text("not an image")
+    (d / "sub").mkdir()                             # a plain directory is not an input
+    assert [p.name for p in cli._input_files(d)] == ["a.tif", "b.ome.zarr", "c.tif", "d.ome.zarr"]
+
+
+def test_a_directory_holding_only_stores_is_accepted(tmp_path):
+    d = tmp_path / "in"
+    d.mkdir()
+    write_zarr(d / "s2.ome.zarr")
+    write_zarr(d / "s1.ome.zarr")
+    assert [p.name for p in cli._input_files(d)] == ["s1.ome.zarr", "s2.ome.zarr"]
+
+
+def test_a_directory_with_neither_stores_nor_images_still_raises(tmp_path):
+    d = tmp_path / "in"
+    d.mkdir()
+    (d / "notes.txt").write_text("x")
+    (d / "sub").mkdir()
+    with pytest.raises(ConfigError) as exc:
+        cli._input_files(d)
+    assert "no image files" in str(exc.value) and ".zarr" in str(exc.value)
+
+
+def test_a_vendor_suffix_is_still_admitted_so_it_can_be_refused_by_name(tmp_path):
+    d = tmp_path / "in"
+    d.mkdir()
+    (d / "x.czi").write_bytes(b"not an image")
+    assert [p.name for p in cli._input_files(d)] == ["x.czi"]
+    assert cli._input_files(d / "x.czi") == [d / "x.czi"]
+
+
+def test_a_zarr_path_that_is_a_file_is_a_clean_failure_not_a_crash(env):
+    bogus = env["tmp"] / "f.ome.zarr"
+    bogus.write_bytes(b"not a zarr store")
+    assert cli._input_files(bogus) == [bogus]
+    r = invoke("run", "--config", env["cfg"], "--input", bogus, "--labels", env["labels"],
+               "--out", env["out"])
+    assert r.exit_code != 0 and "Traceback" not in r.output
+    assert "f.ome.zarr" in r.output
+
+
+def test_a_missing_zarr_store_is_reported_as_a_missing_input(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        cli._input_files(tmp_path / "gone.ome.zarr")
+    assert "input path not found" in str(exc.value)
+
+
+def test_run_reads_an_ome_zarr_store_end_to_end(tmp_path, monkeypatch):
+    """The claim demonstrated, not asserted: the real reader, on a store written by zarr,
+    driven from the CLI."""
+    cfg = write_cfg(tmp_path / "cfg.yaml")
+    store = tmp_path / "img.ome.zarr"
+    seg = write_zarr(store)
+    stub_segment(monkeypatch, seg)
+    out = tmp_path / "out"
+    r = invoke("run", "--config", cfg, "--input", store, "--out", out)
+    assert r.exit_code == 0, r.output
+    cells = pd.read_parquet(out / "cells.parquet")
+    assert len(cells) and all(str(f).startswith("img.ome") for f in cells.field_id)
+    assert len(pd.read_parquet(out / "interfaces.parquet")) > 0
+    assert (out / "report.html").exists()
+
+
+def test_run_reads_a_directory_of_zarr_stores_end_to_end(tmp_path, monkeypatch):
+    cfg = write_cfg(tmp_path / "cfg.yaml")
+    d = tmp_path / "in"
+    d.mkdir()
+    seg = write_zarr(d / "s1.ome.zarr")
+    write_zarr(d / "s2.ome.zarr")
+    stub_segment(monkeypatch, seg)
+    out = tmp_path / "out"
+    r = invoke("run", "--config", cfg, "--input", d, "--out", out)
+    assert r.exit_code == 0, r.output
+    fids = set(pd.read_parquet(out / "cells.parquet").field_id)
+    assert len(fids) == 2, fids
+    assert all(str(f).startswith(("s1.ome", "s2.ome")) for f in fids)
+
+
+# ---- N8: WHICH files the calibration pass opens ---------------------------------------
+
+def test_calibration_files_are_spread_over_the_sorted_inputs_not_the_first_five(tmp_path):
+    """N8: nothing tested _calibration_files, so `return list(files[:n])` passed the whole
+    suite. With one field per file the library's field-id rule gives the same answer, which
+    is exactly why a CLI-side regression would be invisible; this pins the FILE selection."""
+    files = [tmp_path / f"f{i:02d}.tif" for i in range(20)]
+    picked = cli._calibration_files(files)
+    assert [p.name for p in picked] == ["f00.tif", "f05.tif", "f10.tif", "f14.tif", "f19.tif"]
+    assert picked != files[:cli.CALIBRATION_FIELDS]          # not the first five
+    assert picked == sorted(picked)                          # and in input order
+    assert picked[0] == files[0] and picked[-1] == files[-1]  # spanning the run
+
+
+@pytest.mark.parametrize("n", [1, 2, 5])
+def test_five_or_fewer_inputs_are_all_calibration_files(tmp_path, n):
+    files = [tmp_path / f"f{i}.tif" for i in range(n)]
+    assert cli._calibration_files(files) == files
+
+
+def test_calibration_file_count_is_bounded_at_five(tmp_path):
+    for total in (6, 13, 20, 300):
+        files = [tmp_path / f"f{i:03d}.tif" for i in range(total)]
+        picked = cli._calibration_files(files)
+        assert len(picked) == cli.CALIBRATION_FIELDS == 5, total
+        assert len(set(picked)) == len(picked), total
+
+
+# ---- N3: a failed calibration must try other files, and must not blame a human --------
+
+def _spread_corrupt_batch(tmp_path, total=13, corrupt=(0, 3, 6, 9, 12)):
+    """``total`` inputs of which the files the spread picks are unreadable."""
+    d = tmp_path / "in"
+    d.mkdir()
+    for i in range(total):
+        p = d / f"f{i:02d}.tif"
+        if i in corrupt:
+            p.write_bytes(b"II*\x00 not really a tiff")
+        else:
+            write_tif(p)
+    return d
+
+
+def test_calibration_walks_past_unreadable_files_to_the_next_candidates(tmp_path):
+    """N3: the five chosen files failing left propose_run_thresholds with nothing, so every
+    field silently fell back to its own Otsu. The spread order is now walked on."""
+    from junctionmapper.config import Role
+    cfg, _ = cli._load_config(write_cfg(tmp_path / "cfg.yaml", threshold=...))
+    d = _spread_corrupt_batch(tmp_path)
+    files = cli._input_files(d)
+    assert [p.name for p in cli._calibration_files(files)] == [
+        "f00.tif", "f03.tif", "f06.tif", "f09.tif", "f12.tif"]       # all five corrupt
+    run_t, note = cli._calibrate(files, cfg)
+    assert len(run_t.calibration_fields) == cli.CALIBRATION_FIELDS
+    assert run_t.source[Role.JM1] == "calibration" and run_t.applied[Role.JM1] > 0
+    assert note and "could not be read" in note and "f00.tif" in note
+
+
+def test_calibration_attempts_are_bounded_when_every_file_is_unreadable(tmp_path, monkeypatch):
+    cfg, _ = cli._load_config(write_cfg(tmp_path / "cfg.yaml", threshold=...))
+    d = _spread_corrupt_batch(tmp_path, total=13, corrupt=tuple(range(13)))
+    files = cli._input_files(d)
+    opened = []
+    real = cli._iter_fields
+
+    def counting(fs, c, fl):
+        opened.append([p.name for p in fs])
+        return real(fs, c, fl)
+    monkeypatch.setattr(cli, "_iter_fields", counting)
+    run_t, note = cli._calibrate(files, cfg)
+    assert len(opened) == cli._CALIBRATION_ATTEMPTS == 10        # not all 13, not 13 twice
+    assert not run_t.applied and run_t.calibration_fields == ()
+    assert note and note.startswith("degraded")
+
+
+def test_a_run_whose_calibration_resolved_nothing_does_not_blame_a_human(tmp_path):
+    """N3, the load-bearing half: when every calibration candidate fails, no run value is
+    resolved, every field falls back to Otsu on its own plane, the applied values then differ
+    across fields -- and the red banner used to say the threshold "was overridden somewhere",
+    which is false and contradicts the Provenance section's "no marker role resolved".
+
+    Reachable with more inputs than the calibration pass may open: the first ten candidates in
+    the spread order are corrupt, so the proposal gets nothing, while the measurement pass
+    still reads the three readable files.
+    """
+    cfg = write_cfg(tmp_path / "cfg.yaml", threshold=...)       # no threshold: propose one
+    d = tmp_path / "in"
+    d.mkdir()
+    labels = tmp_path / "labs"
+    candidates = (0, 1, 2, 3, 4, 5, 6, 7, 9, 12)                # the ten _calibrate may open
+    for i in range(13):
+        p = d / f"f{i:02d}.tif"
+        if i in candidates:
+            p.write_bytes(b"II*\x00 not really a tiff")
+            continue
+        f, seg = build()
+        planes = np.stack([f.planes[r] for r in list(f.planes)]).astype(np.float32)
+        planes[:2] += 30.0 * i                                  # so the own-Otsu values differ
+        tifffile.imwrite(p, planes, photometric="minisblack")
+        save_labels(labels, f"f{i:02d}_t0_z0", seg)
+    out = tmp_path / "out"
+    r = invoke("run", "--config", cfg, "--input", d, "--labels", labels, "--out", out)
+    assert r.exit_code == 3, r.output                           # the corrupt files failed
+    ifc = pd.read_parquet(out / "interfaces.parquet")
+    assert ifc[ifc.role == "JM1"].threshold.nunique() == 3      # per-field fallback, not one T
+    html = (out / "report.html").read_text()
+    assert "threshold_calibration" in html and "degraded" in html
+    assert "no marker role resolved" in html
+    w = html[html.index('id="threshold-warning"'):]
+    w = w[:w.index("</section>")]
+    assert 'data-attribution="fallback"' in w, w
+    assert "Not an override" in w
+    assert "overridden per field" not in w

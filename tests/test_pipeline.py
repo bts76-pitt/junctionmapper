@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from junctionmapper import pipeline as pipeline_mod
 from junctionmapper.config import Role
 from junctionmapper.errors import ConfigError
 from junctionmapper.pipeline import (
@@ -141,6 +142,26 @@ def test_calibration_subset_is_sorted_evenly_spaced_and_bounded():
     assert sub == sorted(sub) and sub[0] == "f00" and sub[-1] == "f19"
     assert sub == ["f00", "f05", "f10", "f14", "f19"]               # spread, not the first five
     assert calibration_subset(reversed(ids)) == sub                 # order of arrival is irrelevant
+
+
+def test_otsu_is_computed_only_for_the_calibration_fields_not_for_every_field(monkeypatch):
+    """N4: Otsu ran on EVERY field handed over and the subset was taken only afterwards, so
+    with a multi-scene or multi-Z file the calibration pass's cost was proportional to the
+    fields in those files, not bounded by the five it keeps (12 fields -> 12 Otsu pairs).
+
+    The chosen ids must not change: this is a reordering, not a new rule.
+    """
+    cfg = make_cfg(threshold=None)
+    fields = [_shifted(f"f{i:02d}", i)[0] for i in range(12)]
+    seen = []
+    real = pipeline_mod.field_otsu
+    monkeypatch.setattr(pipeline_mod, "field_otsu",
+                        lambda f: (seen.append(str(f.field_id)), real(f))[1])
+    run = pipeline_mod.propose_run_thresholds(fields, cfg)
+    assert len(fields) == 12
+    assert len(seen) == CALIBRATION_FIELDS == 5                  # bounded by the subset size
+    assert sorted(seen) == list(run.calibration_fields)          # and they are the ones used
+    assert run.calibration_fields == ("f00", "f03", "f06", "f08", "f11")
 
 
 def test_run_threshold_is_the_median_of_the_calibration_fields_not_the_mean():
