@@ -493,6 +493,30 @@ def test_dp_interface_mostly_free_edge_is_flagged_and_a_contact_dp_drops_is_visi
     assert only_tcj[0].contact_fraction == 1.0
 
 
+def test_contact_fraction_counts_only_the_labelled_neighbour_not_any_other_cell():
+    """N7: with two labels, "adjacent to the labelled neighbour" and "adjacent to anything
+    that is not background" are the same number, so every I2 test was blind to the case the
+    Interface docstring calls out: the rest of the run is free edge OR ANOTHER CELL.
+
+    Cell 1's right side is 20 boundary pixels (19 run positions); cell 2 touches 12 rows of it
+    and cell 3 the other 8. dp labels the whole side with its plurality neighbour, 2, so the
+    fraction must be 12/19 -- not 1.0, which is what counting "anything non-background" gives.
+    """
+    lab = np.zeros((34, 34), np.int32)
+    lab[7:27, 7:27] = 1
+    lab[7:19, 27:30] = 2                                         # 12 rows
+    lab[19:27, 27:30] = 3                                        # 8 rows
+    dp = extract_interfaces(lab, 1, "dp", epsilon=2.0)
+    assert [i.neighbour_id for i in dp] == [2]
+    assert len(dp[0].pixels) == 20
+    assert dp[0].contact_fraction == pytest.approx(12 / 19)      # 0.6316, not 1.0
+    assert dp[0].contact_fraction < LOW_CONTACT_FRACTION         # so the row is flagged
+    # tcj cuts where the identity changes, so each neighbour gets its own interface at 1.0
+    tcj = extract_interfaces(lab, 1, "tcj")
+    assert sorted(i.neighbour_id for i in tcj) == [2, 3]
+    assert [i.contact_fraction for i in tcj] == [1.0, 1.0]
+
+
 def test_contact_fraction_is_one_when_the_whole_run_touches_the_neighbour():
     lab = np.zeros((20, 20), np.int32)
     lab[5:12, 5:12] = 1

@@ -11,10 +11,28 @@ from junctionmapper import __version__
 from junctionmapper import provenance as pv
 
 
+#: A resolved identity STARTS with one of these. Substring matching is not enough: the
+#: total-failure string "unresolvable: no git checkout and no installed distribution; package
+#: says 0.1.0.dev0" contains "installed distribution", so `"installed distribution" in ident`
+#: was satisfied by the one string that means nothing was identified at all.
+RESOLVED_PREFIXES = ("git ", "installed distribution ")
+
+
 def test_code_identity_is_not_just_the_static_version_string():
     ident = pv.code_identity()
     assert ident != __version__ and "0.1.0.dev0" != ident
-    assert ("git " in ident) or ("installed distribution" in ident)
+    assert ident.startswith(RESOLVED_PREFIXES), ident
+    assert not ident.startswith("unresolvable"), ident
+
+
+def test_an_identity_with_no_commit_and_no_distribution_is_not_mistaken_for_resolved(monkeypatch):
+    """The negative assertion above is only meaningful if the degraded string is reachable."""
+    monkeypatch.setattr(pv, "git_commit", lambda *a, **k: None)
+    monkeypatch.setattr(pv, "distribution_version", lambda: None)
+    ident = pv.code_identity()
+    assert ident.startswith("unresolvable")
+    assert not ident.startswith(RESOLVED_PREFIXES), ident
+    assert "installed distribution" in ident       # the substring that used to pass the pin
 
 
 def test_the_commit_is_recovered_without_the_git_binary(monkeypatch):
