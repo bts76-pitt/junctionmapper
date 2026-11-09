@@ -14,7 +14,7 @@ From: python:3.11.18-slim
 
 %labels
     Name junctionmapper
-    Description Runtime for the junctionmapper library and test suite
+    Description Runtime for the junctionmapper library, test suite and Cellpose-SAM segmentation
 
 %post
     set -eux
@@ -57,10 +57,28 @@ From: python:3.11.18-slim
     # committed .sif already holds, so this adds nothing new to the image.
     pip install --no-cache-dir "pytest==9.2.0" "pytest-cov==7.1.0" "zarr==3.1.6"
 
-    # NOTE: cellpose (and torch) are deliberately NOT in this image. The
-    # library imports cellpose lazily and the test suite stubs it, so the
-    # whole suite runs without it. Build a separate image with
-    # `pip install 'cellpose>=4.0'` for real segmentation runs on a GPU node.
+    # Cellpose-SAM, and torch underneath it. cellpose 4.x IS Cellpose-SAM; its model name is
+    # `cpsam`, the CLI's default --model. Pinned exactly, because the segmentation decides which
+    # pixels are a cell and so every number downstream of it.
+    #
+    # This image used to leave cellpose and torch out, on the grounds that the suite stubs
+    # cellpose and a ~3 GB CUDA wheel has no business in front of a CPU test run. One image is
+    # worth that cost: two images meant writing the 15 runtime pins above into a second def and
+    # keeping the lists in step by hand, and if they ever drifted, label images and the
+    # measurements taken from them would come from different numpy/scikit-image versions. That
+    # is the exact failure the pinning exists to prevent, so the duplication is the worse risk.
+    #
+    # torch and torchvision are pinned to what pip resolved against this cellpose and what the
+    # built image therefore holds, read back out of it (the same practice as the runtime list
+    # above). The default linux wheels bundle their own CUDA libraries -- this torch reports
+    # CUDA 13.2 -- so no CUDA base image and no apt packages are needed; the host driver is
+    # reached by running with `apptainer --nv` (or APPTAINER_NV=1, which scripts/jm passes
+    # through). Without --nv, torch sees no GPU and the library falls back to CPU rather than
+    # failing, so a missing --nv shows up as a very slow run, not an error.
+    pip install --no-cache-dir \
+        "cellpose==4.2.1.1" \
+        "torch==2.15.0" \
+        "torchvision==0.29.2"
 
 %environment
     export PYTHONPATH=/project/src:${PYTHONPATH}
@@ -75,3 +93,5 @@ From: python:3.11.18-slim
     python -c "import bioio; print('bioio OK')"
     python -c "import pytest; print('pytest', pytest.__version__)"
     python -c "import zarr; print('zarr', zarr.__version__)"
+    python -c "import torch; print('torch', torch.__version__, '| cuda built:', torch.version.cuda)"
+    python -c "import cellpose; print('cellpose', cellpose.version)"

@@ -1,6 +1,7 @@
 """CLI tests. Cellpose is not installed here, so measurement tests go through ``--labels`` and
 ``segment`` is tested with ``segment_field`` stubbed. Inputs are real TIFFs and real YAML."""
 import json
+import sys
 
 import numpy as np
 import pandas as pd
@@ -80,6 +81,21 @@ def forbid_cellpose(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("segmentation must not run")
     monkeypatch.setattr(cli, "segment_field", boom)
+
+
+def uninstall_cellpose(monkeypatch):
+    """Make ``import cellpose`` fail, whether or not cellpose is installed.
+
+    These tests assert what the CLI does when the optional segmentation dependency is absent.
+    They used to get that for free, because the container image deliberately had no cellpose --
+    an environment fact the tests did not control. The image now carries cellpose (one image,
+    so labels and measurements share a pinned runtime), so absence has to be simulated. A
+    ``None`` in ``sys.modules`` is the documented way to make an import fail: the import system
+    raises ImportError rather than returning the sentinel.
+    """
+    for name in [n for n in sys.modules if n == "cellpose" or n.startswith("cellpose.")]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, "cellpose", None)
 
 
 # ---- run ----------------------------------------------------------------------------
@@ -173,7 +189,8 @@ def test_run_with_labels_dir_skips_segmentation(env, monkeypatch):
     assert set(pd.read_parquet(env["out"] / "cells.parquet").field_id) == {FID}
 
 
-def test_run_without_cellpose_gives_actionable_message_not_traceback(env):
+def test_run_without_cellpose_gives_actionable_message_not_traceback(env, monkeypatch):
+    uninstall_cellpose(monkeypatch)
     r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
     assert r.exit_code != 0
     assert "segmentation" in r.output and "pip install" in r.output
@@ -307,7 +324,8 @@ def test_segment_output_feeds_run_labels(env, monkeypatch):
     assert r.exit_code == 0, r.output
 
 
-def test_segment_without_cellpose_is_clean(env):
+def test_segment_without_cellpose_is_clean(env, monkeypatch):
+    uninstall_cellpose(monkeypatch)
     r = invoke("segment", "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
     assert r.exit_code != 0 and "pip install" in r.output and "Traceback" not in r.output
 
@@ -449,7 +467,8 @@ def test_all_fields_failed_writes_nothing_and_says_so(env):
     assert not (env["out"] / "interfaces.parquet").exists()
 
 
-def test_failure_reasons_are_grouped_not_repeated(env):
+def test_failure_reasons_are_grouped_not_repeated(env, monkeypatch):
+    uninstall_cellpose(monkeypatch)
     d = make_batch(env, good=())
     r = invoke("run", "--config", env["cfg"], "--input", d, "--out", env["out"])  # no cellpose
     assert r.exit_code == 1

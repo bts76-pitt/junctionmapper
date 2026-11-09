@@ -453,3 +453,17 @@ being cosmetic when it leaves the central claim of a correctness fix unpinned. T
 did — code identity, and the CLI half of the run-level threshold, where `files[:n]` passed the
 entire suite.
 *Cost if wrong:* four tests' worth of work on a branch that was otherwise finishable.
+
+**Cellpose-SAM and torch live in the one image, not a second one.** The container definition
+originally excluded them: the library imports cellpose lazily and the suite stubs it, so a
+~340 MB image ran the whole suite, and the def told the reader to build a separate image for
+GPU segmentation. That separate image was written and then abandoned, because it had to repeat
+all fifteen runtime pins and keep the two lists in step by hand.
+*Why:* the duplication is a worse risk than the size. If the two pin lists ever drifted, a
+label image and the measurements taken from it would come from different numpy and
+scikit-image versions, which is precisely the failure the exact pinning exists to prevent. One
+image makes the two steps share a runtime by construction instead of by discipline.
+*Cost if wrong:* every `pytest` run and every CPU node pulls a ~3 GB CUDA stack it cannot use,
+and the image takes appreciably longer to build and to stage. Reversible by splitting the def
+again, at which point the pin duplication has to be solved properly — layering the second
+image on the first with `Bootstrap: localimage` rather than copying the list.
