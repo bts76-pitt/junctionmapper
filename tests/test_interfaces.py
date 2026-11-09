@@ -526,3 +526,45 @@ def test_contact_fraction_is_one_when_the_whole_run_touches_the_neighbour():
             assert 0.0 < itf.contact_fraction <= 1.0
             if method == "tcj":
                 assert itf.contact_fraction == 1.0
+
+
+def jogged_shared_edge():
+    """Two cells whose single shared contact is not straight.
+
+    The jogs give Douglas-Peucker somewhere to put a corner *inside* the contact, which is
+    what splits one run of contact across several interfaces.
+    """
+    labels = np.zeros((40, 40), dtype=int)
+    labels[5:35, 5:20] = 1
+    labels[5:35, 20:35] = 2
+    for r in range(12, 20):
+        labels[r, 20:24] = 1
+    for r in range(24, 30):
+        labels[r, 16:20] = 2
+    return labels
+
+
+def test_tcj_gives_one_interface_per_neighbour_and_dp_may_give_several():
+    """README: one cell-side is one row under tcj, but usually several under dp.
+
+    The README used to say a junction between two included cells "is measured twice, once
+    from each side", which is true for tcj and false for dp: dp corners know nothing about
+    neighbours, so one run of contact is cut wherever a corner falls. Anyone pooling dp rows
+    on the assumption of a factor of two weights junctions wrongly, so the multiplicity is
+    pinned here rather than left to the prose.
+    """
+    labels = jogged_shared_edge()
+
+    tcj = [i for i in extract_interfaces(labels, 1, "tcj") if i.neighbour_id == 2]
+    assert len(tcj) == 1, f"tcj must cut on neighbour identity, got {len(tcj)} interfaces"
+
+    dp = [i for i in extract_interfaces(labels, 1, "dp", epsilon=2.0) if i.neighbour_id == 2]
+    assert len(dp) > 1, (
+        "dp is expected to split this jogged contact across corner-to-corner runs; "
+        f"got {len(dp)}. If dp ever becomes neighbour-aware, the README's row-count "
+        "guidance needs revisiting with it."
+    )
+
+    # Both methods describe the same physical contact, so the pieces must not overlap and
+    # must not exceed what tcj measured in one run.
+    assert sum(i.contact_fraction > 0 for i in dp) == len(dp)

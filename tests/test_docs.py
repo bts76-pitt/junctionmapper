@@ -84,3 +84,19 @@ def test_zarr_is_declared_as_a_test_dependency_not_only_present_transitively():
     undeclared transitive dependency of bioio-ome-zarr."""
     assert "zarr>=" in PYPROJECT.replace("bioio-ome-zarr>=", "")
     assert '"zarr==' in DEF
+
+
+def test_the_readme_does_not_claim_a_junction_is_always_two_rows():
+    """The README said a junction "is therefore measured twice, once from each side".
+
+    True for tcj, false for dp: Douglas-Peucker corners are not neighbour-aware, so one run
+    of contact is split wherever a corner falls. On a real Cellpose run, dp gave a median of
+    3 rows per pair_id and a maximum of 10, while tcj gave at most 2. The factor-of-two
+    claim would make anyone pooling dp rows weight junctions wrongly.
+    """
+    flat = _flat(README)
+    assert "measured twice, once from each side" not in flat
+    assert "junctions therefore count twice" not in flat
+    # and it must say what is actually true
+    assert "pair_id" in flat
+    assert "never\nby counting rows" in README or "never by counting rows" in flat

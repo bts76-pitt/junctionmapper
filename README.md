@@ -49,18 +49,29 @@ Each run writes five tidy tables (`interfaces`, `cells`, `nuclei`,
 
 The unit of measurement is a cell-side interface, as in the original, which
 measures the interfaces of the single cell the operator selected. A junction
-between two cells that are both included is therefore measured twice, once from
-each side, each side with its own dilated band and its own numbers. A junction
-whose neighbour touches the field border or is degenerate is measured once,
-because that neighbour never gets measured at all. The tables are not
+between two cells that are both included is therefore measured from both sides,
+each side with its own dilated band and its own numbers. A junction whose
+neighbour touches the field border or is degenerate is measured from one side
+only, because that neighbour never gets measured at all. The tables are not
 deduplicated: each side is a real measurement of that cell's junction, and
 dropping one would drop that cell's own view of it.
 
+**One side is not always one row, and under `dp` it usually is not.** The `tcj`
+method cuts the boundary where the neighbouring identity changes, so a cell has
+exactly one interface per neighbour and a junction between two included cells is
+exactly two rows. Douglas-Peucker corners know nothing about neighbours, so a
+single run of contact can be split across several corner-to-corner intervals:
+under `dp` one cell's contact with one neighbour routinely yields two to five
+rows, and a single junction ten or more. Count junctions with `pair_id`, never
+by counting rows or by assuming a factor of two.
+
 What this means downstream:
 
-- An `n` over rows counts cell-side interfaces, not junctions. Interior
-  junctions therefore count twice in any pooled distribution where
-  edge-adjacent ones count once.
+- An `n` over rows counts cell-side interfaces, not junctions, and the ratio
+  between the two is not a constant: it is 2 for an interior `tcj` junction but
+  varies per junction under `dp`, so interior junctions are over-weighted in a
+  pooled distribution by an amount that differs from junction to junction.
+  Collapse on `pair_id` before pooling if each junction should count once.
 - `pair_id` (`field|method|lo-hi`, the two cell ids sorted) identifies the cell
   pair and groups its two sides. Count junctions with `df.pair_id.nunique()`.
   For one row per junction, use `df.groupby("pair_id").mean()` or `.first()`,
