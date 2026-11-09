@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Junction Mapper report</title>
+<style>
+:root { --bg:#fff; --fg:#1b1f23; --muted:#5a6570; --line:#d5dbe1; --card:#f6f8fa; --warn-bg:#fdecea; --warn-fg:#8e1b10; --accent:#2c5d8f; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#14181c; --fg:#e4e8ec; --muted:#9aa5b0; --line:#323a42; --card:#1d2329; --warn-bg:#3a1b18; --warn-fg:#ffb4a8; --accent:#7fb2e5; } }
+body { background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; margin:0 auto; max-width:1100px; padding:16px; }
+h1 { font-size:1.6rem; } h2 { font-size:1.3rem; border-bottom:1px solid var(--line); padding-bottom:4px; margin-top:2.2rem; }
+h3 { font-size:1.05rem; } p.note, .muted { color:var(--muted); }
+table { border-collapse:collapse; font-size:13px; margin:8px 0; } th, td { border:1px solid var(--line); padding:3px 7px; text-align:right; }
+th:first-child, td:first-child, td.l, th.l { text-align:left; } thead th { background:var(--card); }
+.scroll { overflow-x:auto; max-width:100%; }
+img { max-width:100%; height:auto; background:#fff; }
+.warn { background:var(--warn-bg); color:var(--warn-fg); border:1px solid var(--warn-fg); border-radius:6px; padding:8px 14px; margin:12px 0; }
+.badge { display:inline-block; background:var(--warn-bg); color:var(--warn-fg); border-radius:4px; padding:0 6px; font-size:12px; }
+details { margin:6px 0 14px; } summary { cursor:pointer; color:var(--accent); }
+code { background:var(--card); padding:0 3px; }
+</style>
+</head>
+<body>
+<h1>Junction Mapper report</h1>
+<p class="note">{{ n_fields }} field{{ "" if n_fields == 1 else "s" }}. Method: doi:{{ doi }}.
+Read QC first (can this run be trusted), then Quantification (what it shows); Provenance records how it was produced.</p>
+
+{% if varied %}
+<section id="threshold-warning" class="warn">
+<h2 style="border:0;margin-top:0">Threshold varied across fields</h2>
+<p>The marker threshold applied was not the same in every field, by more than one grey level. The default path
+proposes one value per marker role for the whole run, so either T was overridden somewhere or no run-level value
+was resolved for that role at all; which of the two it was is stated per marker role below. Comparing absolute intensity metrics
+(marker area, marker intensity, intensity per area, cluster density, occupancy, fragmented and junction
+contours, coverage) across fields measured at different thresholds is not valid: a field measured at a
+lower threshold counts more pixels as marker. Geometry-only metrics (interface contour, straight-line length,
+linearity, interface area) are unaffected.</p>
+<ul>
+{% for t in varied %}
+<li data-role="{{ t.role }}"><strong>{{ t.role }} ({{ t.markers | join(", ") }})</strong>: thresholds {{ t.distinct_txt }}.
+{% for f, v in t.shown %}<code>{{ f }}</code> = {{ v }}{{ "; " if not loop.last }}{% endfor %}{% if t.more %}; and {{ t.more }} more field{{ "" if t.more == 1 else "s" }} (all listed under Provenance){% endif %}
+<br><span class="muted">Differing from the run value {{ t.run_value }} by more than {{ t.tol }}, or holding one of the extreme applied values: {% for f in t.differing %}<code data-differing="{{ t.role }}">{{ f }}</code>{{ ", " if not loop.last }}{% endfor %}{% if t.differing_more %} and {{ t.differing_more }} more{% endif %} ({{ t.n_differing }} field{{ "" if t.n_differing == 1 else "s" }} in all).</span>
+{% if t.attribution == "fallback" %}
+<br><span class="muted" data-attribution="fallback">Not an override: no single run-level value was resolved for this marker role, so every field fell back to Otsu on its own plane. See the calibration note under Provenance.</span>
+{% elif t.attribution == "override" %}
+<br><span class="muted" data-attribution="override">One run-level value WAS carried for this marker role, so the fields above were overridden per field.</span>
+{% else %}
+<br><span class="muted" data-attribution="unknown">This run did not record whether a run-level value was carried for this marker role, so the difference may be a per-field override or a proposal that resolved nothing.</span>
+{% endif %}
+</li>
+{% endfor %}
+</ul>
+<p>Affected panels below are drawn in red and marked <em>THRESHOLD VARIED</em>; their pooled distributions mix incomparable values.</p>
+</section>
+{% endif %}
+
+<section id="qc">
+<h2>1. Quality control</h2>
+{% if not n_fields %}
+<p>No fields were supplied, so there is nothing to report.</p>
+{% else %}
+<p><em>Cells found</em> is every labelled cell. <em>Measured</em> excludes border-touching and degenerate (untraceable) cells.
+<em>Contributing</em> is the number of cells that produce at least one interface row, counted for either method and for each
+corner method separately. The two methods can contribute different cells: a cell with a neighbour whose every contact is too
+short for the tricellular (tcj) method still yields Douglas-Peucker (dp) interfaces but none for tcj, so the dp and tcj
+distributions below are over different sets of cells and are not the same cells measured two ways.</p>
+<p><strong>Exclusion accounting.</strong> Each cell that contributes no interface under either method is counted
+under exactly one reason, taking the first that applies: degenerate, then border-touching, then isolated, then all contacts
+filtered, then other. The reason columns therefore add up to <em>Not contributing</em>, and
+<em>Cells found</em> = <em>Contributing (any method)</em> + <em>Not contributing</em>. <em>Usable</em> is Contributing divided by Cells found.</p>
+{% if no_px_fields %}
+<p class="warn">Fields without a pixel size ({{ no_px_fields | join(", ") }}) have no micrometre values and are absent from the µm panels; their data are in the px columns of the tables only.</p>
+{% endif %}
+{% if qc_warnings %}
+<section id="qc-warnings" class="warn">
+<strong>Fields that lost most of their cells</strong> (fewer than {{ lost_pct }}% of cells yielded interfaces):
+<ul>
+{% for w in qc_warnings %}<li><code>{{ w.field }}</code>: {{ w.usable }} of {{ w.found }} cells contributed interfaces; the {{ w.lost }} that did not are counted once each as: {{ w.why }}.</li>
+{% endfor %}
+</ul></section>
+{% endif %}
+<div class="scroll"><table>
+<thead><tr><th class="l">Field</th>{% for k, lab in qc_columns %}<th>{{ lab }}</th>{% endfor %}<th>Usable</th></tr></thead>
+<tbody>
+{% for r in qc_rows %}
+<tr id="{{ r.id }}"><td class="l">{{ r.label }}</td>{% for k, lab in qc_columns %}<td data-col="{{ k }}">{{ r.counts[k] }}</td>{% endfor %}<td>{{ r.usable_pct }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+
+<h3>Flag counts (overlapping; not exclusion reasons)</h3>
+<p>These count each QC flag over all cells, so one cell can appear in several columns and the columns do not add up to anything.
+<em>Border-touching</em>, <em>isolated</em> and <em>degenerate</em> here include cells that the exclusion table above assigned to a
+different reason. <em>Corner methods disagree</em> counts cells where the tricellular method found at least one corner and the
+Douglas-Peucker and tricellular corner counts differ by more than one; the flag is silent (false) for isolated cells, cells enclosed
+by a single neighbour, degenerate cells and cells whose contacts were all filtered, because the methods are not measuring the same thing
+there. <em>All contacts filtered</em> counts cells that have a neighbour but whose every contact was too short for the tricellular method:
+such a cell can still contribute dp interfaces. <em>dp interface mostly free edge</em> counts cells with at least one Douglas-Peucker interface
+fewer than four fifths of whose positions actually touch the neighbour it is labelled with: dp corners know nothing about neighbours, so a corner-to-corner
+run is assigned its plurality neighbour and the rest of the run, free edge included, sits inside the measured band. Read those cells'
+<code>contact_fraction</code> before their band metrics (interface area, marker area, intensity, occupancy, coverage). Conversely,
+<em>contact found by tcj, dropped by dp</em> counts cells where the tricellular method found a neighbour that the dp partition produced no
+interface for at all (its runs lost the plurality vote to background) - a short real contact that dp does not report, which is the phenotype in
+discohesive tissue. <em>Closed-loop interface</em> counts cells with a whole-boundary interface (an engulfed cell, or a single corner):
+its straight-line length is ~0, so its <em>linearity index</em> is ~0 by geometry, not by tortuosity, and it should not be read as a tortuous junction.
+Multinucleate, anucleate and orphan nuclei (nuclei in no cell) are warnings, not exclusions.</p>
+<div class="scroll"><table>
+<thead><tr><th class="l">Field</th>{% for k, lab in flag_columns %}<th>{{ lab }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for r in qc_rows %}
+<tr id="{{ r.flag_id }}"><td class="l">{{ r.label }}</td>{% for k, lab in flag_columns %}<td data-col="{{ k }}">{{ r.counts[k] }}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody></table></div>
+<h3>Unit of measurement: cell-side interfaces and junctions</h3>
+<p>A row of the <code>interfaces</code> table is <strong>one measured cell-side interface</strong>, as in the original, which measures the
+interfaces of one selected cell. A junction between two cells that are both included is therefore measured <strong>twice</strong>, once from each
+side, with its own dilated band and its own numbers; a junction whose neighbour touches the border or is degenerate is measured once, because that
+neighbour is never measured. So every <em>n</em> on this page counts cell-side interfaces, not junctions, and interior junctions carry twice the
+weight of edge-adjacent ones in the pooled distributions. The two counts are given separately below: <code>pair_id</code> in the tables
+(<code>field|method|lo-hi</code>) is the canonical key of the cell pair and groups the two sides, so a junction count is the number of distinct
+<code>pair_id</code> and a downstream analysis that wants one row per junction groups by it.</p>
+<div class="scroll"><table>
+<thead><tr><th class="l">Field</th>{% for k, lab in unit_columns %}<th>{{ lab }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for r in unit_rows %}
+<tr id="{{ r.id }}"><td class="l">{{ r.label }}</td>{% for k, lab in unit_columns %}<td data-col="{{ k }}">{{ r.counts[k] }}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody></table></div>
+{% if qc_img %}<img src="data:image/png;base64,{{ qc_img }}" alt="QC counts, all fields pooled: cell accounting, exclusion reasons, overlapping flags and measured units, in four panels with separate axes">{% endif %}
+{% endif %}
+</section>
+
+<section id="quantification">
+<h2>2. Quantification</h2>
+{% if not has_interfaces %}
+<p>No interfaces were measured, so there is no distribution to show. See the QC section for why cells were excluded
+(every cell may have touched the border, been degenerate or isolated).</p>
+{% else %}
+<p>Each figure is a distribution, not a mean: a histogram of every <strong>cell-side interface</strong> pooled over all fields (dashed line = median),
+then one strip per field (points are individual interfaces, the bar is Q1 to Q3, the circle is the median).
+The two corner methods (<code>dp</code>, <code>tcj</code>) are different decompositions of the same cells and the
+markers are different molecules, so every panel is one (marker, corner method) group and none is pooled with another.
+The tables give n (cell-side interfaces - a junction between two included cells contributes two of them, see the unit of measurement in QC),
+the number of distinct cells behind them, minimum, Q1, median, Q3 and maximum.
+Histogram bins are chosen per marker and shared by dp and tcj within a marker, so the two methods of one marker are directly comparable
+but the x-axes of different markers differ. A cell can contribute to dp and not to tcj (see QC), so the two panels of a marker may
+cover different cells; the cells behind each panel are listed under every figure.
+Per-field strips omit field labels beyond {{ tick_max }} fields.</p>
+{% if use_um %}
+<p class="muted">Lengths in µm, areas in µm², using each field's pixel size.</p>
+{% else %}
+<p class="warn">No pixel size is available, so everything is in pixels (px, px²); no physical units are reported.</p>
+{% endif %}
+{% for q in quant %}
+<h3>{{ q.label }} <span class="muted">({{ q.col }}{{ ", " ~ q.unit if q.unit }})</span>
+{% if q.varied %}<span class="badge">threshold varied</span>{% endif %}</h3>
+<img src="data:image/png;base64,{{ q.pooled_img }}" alt="Pooled distribution of {{ q.label }}">
+<p class="muted">Cells contributing: {% for c in q.cells_caption %}{{ c.role }} {{ c.marker }} {{ c.method }} = {{ c.cells }}{{ "; " if not loop.last }}{% endfor %}. Histogram bins are per marker, shared by dp and tcj within a marker.</p>
+<details><summary>Per-field distribution</summary>
+<img src="data:image/png;base64,{{ q.field_img }}" alt="Per-field distribution of {{ q.label }}">
+</details>
+<details><summary>Summary statistics</summary>
+<div class="scroll"><table>
+<thead><tr><th class="l">Scope</th><th class="l">Role</th><th class="l">Marker</th><th class="l">Corner method</th><th>n</th><th>cells</th><th>min</th><th>Q1</th><th>median</th><th>Q3</th><th>max</th></tr></thead>
+<tbody>
+{% for r in q.pooled_rows + q.field_rows %}
+<tr class="dist" data-scope="{{ r.scope }}" data-param="{{ r.param }}" data-method="{{ r.method }}" data-role="{{ r.role }}" data-marker="{{ r.marker }}" data-n="{{ r.n }}" data-cells="{{ r.cells }}"{% if r.varied %} data-threshold-varied="1"{% endif %}><td class="l">{{ r.scope }}</td><td class="l">{{ r.role }}</td><td class="l">{{ r.marker }}</td><td class="l">{{ r.method }}</td><td>{{ r.n }}</td><td>{{ r.cells }}</td><td>{{ r.min }}</td><td>{{ r.q1 }}</td><td>{{ r.median }}</td><td>{{ r.q3 }}</td><td>{{ r.max }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+</details>
+{% endfor %}
+{% endif %}
+{% if extras %}
+<h3>Cell and nucleus size distributions (all fields pooled)</h3>
+{% for e in extras %}
+{% if e.img %}<img src="data:image/png;base64,{{ e.img }}" alt="Distribution of {{ e.label }}">
+<p class="muted">{{ e.label }}: n={{ e.n }}, min {{ e.min }}, Q1 {{ e.q1 }}, median {{ e.median }}, Q3 {{ e.q3 }}, max {{ e.max }} ({{ e.unit }}).</p>
+{% else %}<p>{{ e.label }}: no values (none were found).</p>{% endif %}
+{% endfor %}
+{% endif %}
+</section>
+
+<section id="provenance">
+<h2>3. Provenance</h2>
+<h3>Marker in each role</h3>
+<table><thead><tr><th class="l">Role</th><th class="l">Marker</th><th class="l">Channel</th></tr></thead><tbody>
+{% for r in prov.roles %}
+<tr><td class="l">{{ r.role }}</td><td class="l">{% if r.marker is none %}not configured (no {{ r.role }} measurements in this run){% else %}{{ r.marker }}{% endif %}</td><td class="l">{{ r.channel if r.channel is not none else "–" }}</td></tr>
+{% endfor %}
+</tbody></table>
+
+<h3>Resolved thresholds</h3>
+{% if prov.threshold_proposal %}
+<p>Proposal for the run: {{ prov.threshold_proposal }}. One value per marker role is carried across
+every field; <code>threshold</code> in the tables is the value applied and
+<code>threshold_field_otsu</code> what Otsu on that field's own plane would have given.</p>
+{% endif %}
+{% if prov.thresholds %}
+{% for t in prov.thresholds %}
+<p><strong>{{ t.role }} ({{ t.marker }})</strong>: {{ t.summary }}{% if t.varied %} <span class="badge">threshold varied</span>{% endif %}
+{% if t.n_deviating %}<br><span class="muted">{{ t.n_deviating }} field{{ "" if t.n_deviating == 1 else "s" }} whose own Otsu deviates from the applied value (<code>threshold_deviates_from_run</code>); this is information, not an error: a run measured at one threshold is comparable, but a field far from the proposal is worth looking at. The tolerance is 10% of the applied value with a floor of one grey level, so on a low-valued plane the floor dominates and this can be set on a default run where nothing was overridden.</span>{% endif %}</p>
+<div class="scroll"><table><thead><tr><th class="l">Field</th><th>Threshold applied</th><th>This field's own Otsu</th><th>Deviates</th></tr></thead><tbody>
+{% for f in t.by_field %}<tr data-threshold-role="{{ t.role }}"><td class="l">{{ f.field }}</td><td>{{ f.vals }}</td><td data-field-otsu="1">{{ f.otsu }}</td><td>{{ "yes" if f.deviates else "no" }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% endfor %}
+{% else %}
+<p>No interfaces were measured, so no resolved thresholds are recorded in the tables.
+{% if prov.cfg_thresholds %}Configured thresholds: {% for r, v in prov.cfg_thresholds.items() %}{{ r }} = {{ v }}{{ ", " if not loop.last }}{% endfor %}.{% endif %}</p>
+{% endif %}
+
+<h3>Parameters</h3>
+<table><thead><tr><th class="l">Parameter</th><th class="l">Value in tables</th><th class="l">Configured</th></tr></thead><tbody>
+{% for s in prov.scalars %}<tr><td class="l">{{ s.name }}</td><td class="l">{{ s.observed }}</td><td class="l">{{ s.cfg }}</td></tr>
+{% endfor %}
+</tbody></table>
+<p class="muted">Dilation (config): {{ prov.dilation_px }} px{% if prov.dilation_um %}, or {{ prov.dilation_um }} µm{% endif %}.
+Nearest nuclei per nucleus: {{ prov.num_intra_cells }}{{ " (all pairs)" if prov.all_pairs }}.</p>
+{% if not use_um %}<p>No pixel size was available for this run; values are in pixels.</p>{% endif %}
+
+<h3>Segmentation</h3>
+<p>Model: <strong>{{ prov.model }}</strong></p>
+<table><thead><tr><th class="l">params_used</th><th class="l">Value</th></tr></thead><tbody>
+{% for p in prov.params %}<tr><td class="l">{{ p.key }}</td><td class="l">{{ p.value }}</td></tr>
+{% else %}<tr><td class="l" colspan="2">none recorded</td></tr>
+{% endfor %}
+</tbody></table>
+
+<h3>Software</h3>
+<table><tbody>
+<tr><td class="l">junctionmapper version</td><td class="l">{{ prov.version }}</td></tr>
+{% if prov.timestamp %}<tr><td class="l">generated</td><td class="l">{{ prov.timestamp }}</td></tr>{% endif %}
+{% for e in prov.extra %}<tr><td class="l">{{ e.key }}</td><td class="l">{{ e.value }}</td></tr>
+{% endfor %}
+</tbody></table>
+</section>
+</body>
+</html>

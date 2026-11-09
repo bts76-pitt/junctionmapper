@@ -22,7 +22,10 @@ if ! command -v apptainer >/dev/null 2>&1; then
     module load apptainer/1.4.0
 fi
 
+# --cleanenv does not hide ~/.local from the interpreter; a stale user-site
+# botocore there breaks bioio-ome-zarr, so disable user site-packages.
 exec apptainer exec --cleanenv \
+    --env PYTHONNOUSERSITE=1 \
     --bind "$REPO:/project" \
     --pwd /project \
     "$IMAGE" "$@"

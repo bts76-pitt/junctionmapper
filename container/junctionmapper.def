@@ -1,5 +1,16 @@
 Bootstrap: docker
-From: python:3.11-slim
+From: python:3.11.18-slim
+# Pinned to the patch version the current .sif was built from (its interpreter reports
+# 3.11.18). NOT pinned by digest: a digest cannot be verified here without rebuilding the
+# image.
+#
+# What the pins below give, exactly: every DIRECT dependency is pinned to the version the
+# committed .sif holds, so a rebuild installs the same direct set. They do NOT make the image
+# bit-for-bit reproducible -- the transitive set (zarr's own deps, dask, numcodecs,
+# bioio-base, and what pip resolves under them) is unpinned, so a rebuild months later can
+# still drift underneath. What closes that gap is not this file: every run records the library
+# versions it actually used (provenance.library_versions and code_identity), which is the
+# check that matters for a figure.
 
 %labels
     Name junctionmapper
@@ -7,32 +18,44 @@ From: python:3.11-slim
 
 %post
     set -eux
-    apt-get update
-    apt-get install -y --no-install-recommends git
-    rm -rf /var/lib/apt/lists/*
 
-    pip install --no-cache-dir --upgrade pip
+    # No apt-get here on purpose. CRC has no fakeroot binary and this user is
+    # not in /etc/subuid, so apt cannot drop privileges to _apt and dies with
+    # "setgroups (1: Operation not permitted)". Everything below is pure pip,
+    # which runs fine in the root-mapped namespace. Keep it that way.
 
-    # Runtime dependencies. Kept in sync with pyproject.toml [project.dependencies].
+    pip install --no-cache-dir "pip==26.3"
+
+    # Runtime dependencies, pinned to EXACT versions, which is what a rebuild reproduces: a
+    # measured number depends on the versions of numpy, scipy, scikit-image (Otsu, morphology)
+    # and pandas, and a `>=` floor means a rebuild months later is a different environment with
+    # no record of the difference. The versions below are the ones the current .sif holds, read
+    # back out of it; the report and every label sidecar record them per run as well
+    # (provenance.library_versions), so a figure can be matched to the environment that made it.
+    # pyproject.toml keeps its `>=` floors on purpose: it states what the library supports,
+    # while this file states what was actually run.
     pip install --no-cache-dir \
-        "numpy>=1.26" \
-        "scipy>=1.11" \
-        "scikit-image>=0.22" \
-        "pandas>=2.1" \
-        "pyarrow>=14" \
-        "pydantic>=2.5" \
-        "jinja2>=3.1" \
-        "matplotlib>=3.8" \
-        "typer>=0.12" \
-        "pyyaml>=6.0" \
-        "bioio>=1.1" \
-        "bioio-ome-tiff>=1.0" \
-        "bioio-ome-zarr>=1.0" \
-        "tifffile>=2024.1.30" \
-        "pillow>=10.0"
+        "numpy==2.4.6" \
+        "scipy==1.17.1" \
+        "scikit-image==0.26.0" \
+        "pandas==3.1.1" \
+        "pyarrow==26.0.1" \
+        "pydantic==2.14.3" \
+        "jinja2==3.1.6" \
+        "matplotlib==3.11.2" \
+        "typer==0.27.3" \
+        "pyyaml==6.0.3" \
+        "bioio==3.6.0" \
+        "bioio-ome-tiff==1.4.1" \
+        "bioio-ome-zarr==3.8.1" \
+        "tifffile==2026.3.3" \
+        "pillow==13.0.0"
 
-    # Test tooling.
-    pip install --no-cache-dir "pytest>=8.0" "pytest-cov>=4.1"
+    # Test tooling. zarr is imported directly by the reader and CLI tests, which build real
+    # OME-Zarr stores, so it is declared here (and in pyproject's dev extra) rather than being
+    # relied on as a transitive dependency of bioio-ome-zarr. Pinned to the version the
+    # committed .sif already holds, so this adds nothing new to the image.
+    pip install --no-cache-dir "pytest==9.2.0" "pytest-cov==7.1.0" "zarr==3.1.6"
 
     # NOTE: cellpose (and torch) are deliberately NOT in this image. The
     # library imports cellpose lazily and the test suite stubs it, so the
@@ -51,3 +74,4 @@ From: python:3.11-slim
     python -c "import numpy, scipy, skimage, pandas, pydantic, jinja2, matplotlib, typer, yaml, tifffile, PIL; print('core imports OK')"
     python -c "import bioio; print('bioio OK')"
     python -c "import pytest; print('pytest', pytest.__version__)"
+    python -c "import zarr; print('zarr', zarr.__version__)"
