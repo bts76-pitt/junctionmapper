@@ -177,6 +177,17 @@ shows up.
 *Cost if wrong:* a real neighbour pair is absent from the TCJ output. The DP corner path is
 unaffected and the two are compared downstream.
 
+**Cells are segmented on a dedicated `segment` channel that is never measured, and a config
+whose `segment` channel is also `JM1` or `JM2` is refused.** Segmentation without a `segment`
+plane is refused too; there is no fallback to `JM1`. Supplied labels (`run --labels`) need no
+`segment` channel.
+*Why:* a boundary drawn on a marker's own signal makes that marker's occupancy ~100% by
+construction. Seen on E-cadherin (AJ staining, AO0025) and afadin (MCF7 test, 2026-11-11). The
+Java measures its boundary marker by design, because the operator drew the boundary; with
+Cellpose drawing it, the same choice is circular.
+*Cost if wrong:* a two-stain field yields one measured marker rather than two, and configs
+written for segmentation on `JM1` must add a `segment` channel.
+
 ---
 
 ## 2. Output schema

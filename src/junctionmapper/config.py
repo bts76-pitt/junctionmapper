@@ -26,6 +26,10 @@ class Role(StrEnum):
     JM1 = "JM1"
     JM2 = "JM2"
     NUCLEUS = "nucleus"
+    # The channel Cellpose draws cell outlines on. Never measured, and never the same
+    # channel as JM1 or JM2: a boundary placed on a marker makes that marker's occupancy
+    # ~100% by construction.
+    SEGMENT = "segment"
 
 
 class ChannelSpec(BaseModel):
@@ -76,9 +80,17 @@ class RunConfig(BaseModel):
             raise ValueError(f"required channel roles missing: {missing}")
         # A threshold for the nucleus role is never read (only JM1/JM2 are measured against
         # one), so accepting it silently would promise something that does not happen.
-        if self.threshold and Role.NUCLEUS in self.threshold:
-            raise ValueError("threshold is only used for the JM1 and JM2 roles; "
-                             "remove the 'nucleus' entry")
+        for unmeasured in (Role.NUCLEUS, Role.SEGMENT):
+            if self.threshold and unmeasured in self.threshold:
+                raise ValueError("threshold is only used for the JM1 and JM2 roles; "
+                                 f"remove the '{unmeasured.value}' entry")
+        by_role = {c.role: c.channel for c in self.channels}
+        if Role.SEGMENT in by_role:
+            for measured in (Role.JM1, Role.JM2):
+                if by_role.get(measured) == by_role[Role.SEGMENT]:
+                    raise ValueError(
+                        f"the segment channel {by_role[Role.SEGMENT]!r} is also the {measured.value} "
+                        f"channel; segment on a marker that is not measured in the same run")
         return self
 
     def role_for(self, r: Role) -> ChannelSpec:

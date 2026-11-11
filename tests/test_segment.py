@@ -12,11 +12,11 @@ from junctionmapper.io.reader import Field
 from junctionmapper.segment.cellpose import SegmentationParams, segment_field
 
 # Each plane is filled with a distinct constant so the stub can tell which one it got.
-FILL = {Role.JM1: 1.0, Role.JM2: 2.0, Role.NUCLEUS: 3.0}
-NAME_OF_FILL = {1.0: "JM1", 2.0: "JM2", 3.0: "NUCLEUS"}
+FILL = {Role.JM1: 1.0, Role.JM2: 2.0, Role.NUCLEUS: 3.0, Role.SEGMENT: 4.0}
+NAME_OF_FILL = {1.0: "JM1", 2.0: "JM2", 3.0: "NUCLEUS", 4.0: "SEGMENT"}
 
 
-def synthetic_field(roles=(Role.JM1, Role.NUCLEUS), shape=(16, 20)) -> Field:
+def synthetic_field(roles=(Role.SEGMENT, Role.NUCLEUS), shape=(16, 20)) -> Field:
     return Field(
         planes={r: np.full(shape, FILL[r], dtype=np.float32) for r in roles},
         pixel_size_um=0.325,
@@ -44,7 +44,7 @@ def stub_cellpose(monkeypatch, *, version="4.0.1", diams=None, device=None, muta
                 plane -= plane.min()
                 top = plane.max()
                 plane /= top if top else 1.0
-            if name == "JM1":
+            if name == "SEGMENT":
                 masks = np.zeros(plane.shape, dtype=np.uint16)
                 masks[2:6, 2:6] = 1
                 masks[8:12, 8:12] = 2
@@ -84,10 +84,10 @@ def stub_no_gpu(monkeypatch):
     return rec
 
 
-def test_segment_field_calls_cellpose_on_jm1_and_nucleus_planes(monkeypatch):
+def test_segment_field_calls_cellpose_on_segment_and_nucleus_planes(monkeypatch):
     seen = record_eval_calls(monkeypatch)
     segment_field(synthetic_field(), SegmentationParams())
-    assert [c["plane"] for c in seen] == ["JM1", "NUCLEUS"]
+    assert [c["plane"] for c in seen] == ["SEGMENT", "NUCLEUS"]
 
 
 def test_params_used_records_everything_needed_to_reproduce(monkeypatch):
@@ -131,7 +131,7 @@ def test_thresholds_and_model_passed_to_cellpose(monkeypatch):
         assert call["cellprob_threshold"] == -1.0
 
 
-def test_cells_are_jm1_labels_and_nuclei_are_nucleus_labels(monkeypatch):
+def test_cells_are_segment_labels_and_nuclei_are_nucleus_labels(monkeypatch):
     stub_cellpose(monkeypatch)
     seg = segment_field(synthetic_field(shape=(16, 20)), SegmentationParams())
     exp_cells = np.zeros((16, 20), dtype=np.uint16)
@@ -155,27 +155,27 @@ def test_diameter_none_records_reported_estimate(monkeypatch):
     stub_cellpose(monkeypatch, diams=31.5)
     used = segment_field(synthetic_field(), SegmentationParams()).params_used
     assert used["diameter"] is None
-    assert used["diameter_used"] == {"JM1": 31.5, "NUCLEUS": 31.5}
+    assert used["diameter_used"] == {"SEGMENT": 31.5, "NUCLEUS": 31.5}
 
 
 def test_missing_nucleus_gives_zero_array_and_is_skipped(monkeypatch):
     rec = stub_cellpose(monkeypatch)
-    seg = segment_field(synthetic_field(roles=(Role.JM1,)), SegmentationParams())
-    assert [c["plane"] for c in rec["eval"]] == ["JM1"]
+    seg = segment_field(synthetic_field(roles=(Role.SEGMENT,)), SegmentationParams())
+    assert [c["plane"] for c in rec["eval"]] == ["SEGMENT"]
     assert seg.nuclei.shape == seg.cells.shape and not seg.nuclei.any()
     assert seg.nuclei.dtype == seg.cells.dtype == np.uint16
-    assert seg.params_used["roles_segmented"] == ["JM1"]
+    assert seg.params_used["roles_segmented"] == ["SEGMENT"]
 
 
-def test_jm2_is_never_segmented(monkeypatch):
+def test_measured_planes_are_never_segmented(monkeypatch):
     rec = stub_cellpose(monkeypatch)
-    segment_field(synthetic_field(roles=(Role.JM1, Role.JM2, Role.NUCLEUS)), SegmentationParams())
-    assert [c["plane"] for c in rec["eval"]] == ["JM1", "NUCLEUS"]
+    segment_field(synthetic_field(roles=(Role.SEGMENT, Role.JM1, Role.JM2, Role.NUCLEUS)), SegmentationParams())
+    assert [c["plane"] for c in rec["eval"]] == ["SEGMENT", "NUCLEUS"]
 
 
-def test_missing_jm1_raises_segmentation_error(monkeypatch):
+def test_nucleus_only_field_raises_segmentation_error(monkeypatch):
     stub_cellpose(monkeypatch)
-    with pytest.raises(SegmentationError, match="JM1"):
+    with pytest.raises(SegmentationError, match="segment"):
         segment_field(synthetic_field(roles=(Role.NUCLEUS,)), SegmentationParams())
 
 
@@ -268,3 +268,21 @@ def test_segment_field_does_not_mutate_the_callers_planes(monkeypatch):
         np.testing.assert_array_equal(
             plane, before[role], err_msg=f"{role} plane was mutated by segmentation"
         )
+
+
+# ---- cells come from the segmentation channel, never from a measured one ----------------
+
+def test_cells_are_segmented_from_the_segment_plane(monkeypatch):
+    rec = stub_cellpose(monkeypatch)
+    seg = segment_field(synthetic_field(roles=(Role.SEGMENT, Role.JM1, Role.JM2, Role.NUCLEUS)),
+                        SegmentationParams())
+    assert [c["plane"] for c in rec["eval"]] == ["SEGMENT", "NUCLEUS"]
+    assert seg.params_used["roles_segmented"] == ["SEGMENT", "NUCLEUS"]
+    assert seg.cells.max() == 2  # the cell masks the stub returns for SEGMENT
+
+
+def test_segmenting_without_a_segment_plane_is_refused(monkeypatch):
+    rec = stub_cellpose(monkeypatch)
+    with pytest.raises(SegmentationError, match="segment"):
+        segment_field(synthetic_field(roles=(Role.JM1, Role.NUCLEUS)), SegmentationParams())
+    assert rec["eval"] == []  # refused before any Cellpose call

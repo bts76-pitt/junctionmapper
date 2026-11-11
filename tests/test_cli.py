@@ -22,6 +22,9 @@ CFG = {
         {"role": "JM1", "channel": 0, "marker": "Na/K-ATPase"},
         {"role": "JM2", "channel": 1, "marker": "p120"},
         {"role": "nucleus", "channel": 2, "marker": "DAPI"},
+        # Segmentation is stubbed in these tests; the 3-channel fixture has no spare membrane
+        # plane, so the nucleus plane stands in for the segment channel.
+        {"role": "segment", "channel": 2, "marker": "DAPI (stand-in)"},
     ],
     "pixel_size_um": 0.5,
     "threshold": {"JM1": 50.0, "JM2": 20.0},
@@ -1171,3 +1174,23 @@ def test_a_run_whose_calibration_resolved_nothing_does_not_blame_a_human(tmp_pat
     assert 'data-attribution="fallback"' in w, w
     assert "Not an override" in w
     assert "overridden per field" not in w
+
+
+# ---- segmenting needs a segment channel, refused before any field is read -------------
+
+@pytest.mark.parametrize("command", ["run", "segment"])
+def test_segmenting_without_a_segment_channel_is_refused_up_front(env, monkeypatch, command):
+    forbid_cellpose(monkeypatch)
+    write_cfg(env["cfg"], channels=[c for c in CFG["channels"] if c["role"] != "segment"])
+    r = invoke(command, "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
+    assert r.exit_code != 0
+    assert "segment" in r.output and "--labels" in r.output
+    assert "succeeded" not in r.output  # refused once, not once per field
+    assert "Traceback" not in r.output
+
+
+def test_labels_run_needs_no_segment_channel(env, monkeypatch):
+    forbid_cellpose(monkeypatch)
+    write_cfg(env["cfg"], channels=[c for c in CFG["channels"] if c["role"] != "segment"])
+    r = run_ok(env)
+    assert r.exit_code == 0, r.output

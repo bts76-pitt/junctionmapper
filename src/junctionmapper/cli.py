@@ -414,6 +414,14 @@ def _finish(n_ok: int, failures: list[tuple[str, str]]) -> None:
         raise typer.Exit(EXIT_FAILED if n_ok == 0 else EXIT_PARTIAL)
 
 
+def _require_segment_channel(cfg: RunConfig) -> None:
+    """Refuse a segmenting run whose config names no ``segment`` channel, before any field is read."""
+    if not any(c.role == Role.SEGMENT for c in cfg.channels):
+        raise ConfigError(
+            "segmentation needs a channel with role 'segment' (a membrane marker that is not JM1 "
+            "or JM2); add one to the config, or pass --labels to measure existing labels")
+
+
 def _seg_params(model: str, diameter: float | None, flow: float, cellprob: float, gpu: bool):
     return SegmentationParams(model=model, diameter=diameter, flow_threshold=flow,
                               cellprob_threshold=cellprob, gpu=gpu)
@@ -557,6 +565,7 @@ def segment(
     2 usage error. Do not treat 3 as success.
     """
     cfg, raw = _load_config(config)
+    _require_segment_channel(cfg)
     files = _input_files(input)
     params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu)
     labels_dir = out / "labels"
@@ -598,6 +607,8 @@ def run(
     2 usage error. Do not treat 3 as success.
     """
     cfg, raw = _load_config(config)
+    if labels is None:
+        _require_segment_channel(cfg)
     files = _input_files(input)
     if labels is not None and not labels.is_dir():
         raise ConfigError(f"labels directory not found: {labels}")

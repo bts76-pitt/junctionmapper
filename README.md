@@ -59,7 +59,7 @@ flowchart TD
     CAL["Calibrate thresholds<br/>Otsu on up to 5 spread fields<br/>median per marker"]
 
     SEG{"Labels supplied?"}
-    SEG -->|no| CP["Cellpose-SAM<br/>JM1 plane → cells<br/>nucleus plane → nuclei"]
+    SEG -->|no| CP["Cellpose-SAM<br/>segment plane → cells<br/>nucleus plane → nuclei"]
     SEG -->|run --labels DIR| LOAD["Load labels<br/>and their provenance"]
     CP --> LBL[("OUT/labels<br/>.npy + provenance.json")]
     LBL -.->|segment, edit by hand, run --labels| LOAD
@@ -155,14 +155,19 @@ junctionmapper run -c config.yaml -i images/ -o out/ --labels seg/labels
 
 ```yaml
 channels:
+  - {role: segment, channel: 3, marker: "Na/K-ATPase"}   # cells are drawn here; never measured
   - {role: JM1,     channel: 2, marker: "E-cadherin"}
   - {role: JM2,     channel: 1, marker: "p120"}
   - {role: nucleus, channel: 0, marker: "Hoechst"}
 pixel_size_um: 0.0749      # used only when the image metadata has none
 ```
 
-`JM1` and `nucleus` are required. `JM2` is optional. A misspelled key is an
-error, not silently ignored.
+`JM1` and `nucleus` are required. `JM2` is optional. `segment` is required
+whenever Cellpose runs (`segment`, or `run` without `--labels`). A misspelled
+key is an error, not silently ignored.
+
+The `segment` channel may not be the `JM1` or `JM2` channel. That config is
+refused.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -191,12 +196,15 @@ same value is applied to the nucleus plane, so nuclei that are much smaller
 than the cells will be segmented less well.
 
 **2. Choose the segmentation channel deliberately.** Cells are segmented from
-the `JM1` plane. If `JM1` is also the junction protein you want to quantify,
-the boundary is placed *on* that protein's signal, so its occupancy is high by
-construction. A cell that has lost the protein may not segment at all. Where you
-can, assign a membrane marker that does not depend on your experimental
-variable (for example phalloidin or Na/K-ATPase) to `JM1`, and measure the
-junction protein as `JM2`.
+the `segment` plane, which is never measured and can never be a measured
+channel. A boundary placed on a marker's own signal makes that marker's
+occupancy ~100% by construction.
+
+- Prefer a membrane marker that does not depend on your experimental variable
+  (for example phalloidin or Na/K-ATPase).
+- A marker that does depend on it (a cadherin-complex protein in a cadherin
+  knockout) still works, but cells that have lost it may not segment. Read
+  missing cells as coverage loss, not as a measurement.
 
 **3. Check the threshold.** Four parameters depend on an intensity threshold.
 See [Intensity thresholds](#intensity-thresholds-one-value-per-marker-for-the-whole-run).
