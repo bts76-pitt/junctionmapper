@@ -26,7 +26,7 @@ def synthetic_field(roles=(Role.JM1, Role.NUCLEUS), shape=(16, 20)) -> Field:
     )
 
 
-def stub_cellpose(monkeypatch, *, version="4.0.1", diams=None, device=None):
+def stub_cellpose(monkeypatch, *, version="4.0.1", diams=None, device=None, mutate=False):
     """Install fake cellpose (+ cellpose.models); return a record of calls."""
     rec = {"init": [], "eval": []}
 
@@ -39,6 +39,11 @@ def stub_cellpose(monkeypatch, *, version="4.0.1", diams=None, device=None):
         def eval(self, plane, **kwargs):
             name = NAME_OF_FILL[float(plane.flat[0])]
             rec["eval"].append({"plane": name, "shape": plane.shape, **kwargs})
+            if mutate:
+                # Real Cellpose percentile-normalises a float32 input IN PLACE.
+                plane -= plane.min()
+                top = plane.max()
+                plane /= top if top else 1.0
             if name == "JM1":
                 masks = np.zeros(plane.shape, dtype=np.uint16)
                 masks[2:6, 2:6] = 1
@@ -245,3 +250,21 @@ def test_model_reported_cuda_device_sets_gpu_true(monkeypatch):
     stub_torch(monkeypatch, cuda=False)
     used = segment_field(synthetic_field(), SegmentationParams(gpu=True)).params_used
     assert used["gpu"] is True and used["device_source"] == "model"
+
+
+def test_segment_field_does_not_mutate_the_callers_planes(monkeypatch):
+    """Cellpose normalises a float32 input in place; the field's planes must survive.
+
+    Regression: ``run`` segments and measures the SAME Field in one process, so a plane
+    mutated by Cellpose silently became the measurement input. Thresholds are calibrated
+    on the raw planes beforehand, so every marker metric collapsed to zero while the
+    geometry columns stayed plausible -- a silent wrong answer, not a crash.
+    """
+    stub_cellpose(monkeypatch, mutate=True)
+    field = synthetic_field()
+    before = {r: p.copy() for r, p in field.planes.items()}
+    segment_field(field, SegmentationParams(gpu=False))
+    for role, plane in field.planes.items():
+        np.testing.assert_array_equal(
+            plane, before[role], err_msg=f"{role} plane was mutated by segmentation"
+        )

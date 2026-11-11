@@ -130,8 +130,12 @@ def segment_field(field: Field, params: SegmentationParams) -> Segmentation:
         plane = field.planes.get(role)
         if plane is None:
             continue
+        # Cellpose normalises a float32 input IN PLACE, so it must never be handed the
+        # field's own plane: ``run`` measures the same Field after segmenting it, and a
+        # mutated plane silently becomes the measurement input (thresholds are calibrated
+        # on the raw planes beforehand, so every marker metric collapses to zero).
         out = model.eval(
-            plane,
+            plane.copy(),
             diameter=params.diameter,
             flow_threshold=params.flow_threshold,
             cellprob_threshold=params.cellprob_threshold,
