@@ -1,332 +1,484 @@
 # junctionmapper
 
-Measures cell–cell junctions in fluorescence microscopy images, as a Python
-library and a CLI.
+Measures cell–cell junctions in fluorescence microscopy images. Python library
+and command-line tool.
 
-This reimplements the measurement method published as **Junction Mapper**
-(Imperial College London, [doi:10.7554/eLife.45413](https://doi.org/10.7554/eLife.45413)).
-The original is a Java Swing desktop application. This project implements the
-same published parameter definitions, with modern image I/O and automated
-segmentation. The method is the original authors'.
+This reimplements the method published as **Junction Mapper** (Imperial College
+London, [doi:10.7554/eLife.45413](https://doi.org/10.7554/eLife.45413)). The
+original is a Java desktop application where an operator clicks every cell and
+corner. This version keeps the published parameter definitions and automates the
+rest. The method is the original authors'.
+
+**Contents**
+[What it does](#what-it-does) ·
+[Workflow](#workflow) ·
+[Quick start](#quick-start) ·
+[Configuration](#configuration) ·
+[Before you run](#before-you-run) ·
+[Outputs](#outputs) ·
+[Differences from the original](#differences-from-the-original) ·
+[Validation](#what-the-validation-harness-shows)
+
+---
 
 ## What it does
 
-Reads OME-TIFF and OME-Zarr, segments cells with Cellpose-SAM, splits each cell
-boundary into interfaces with its neighbours, and measures the published
-junction parameters for up to two junction markers plus nuclei. Writes tidy
-tables and a standalone HTML report.
+1. Reads OME-TIFF or OME-Zarr images.
+2. Segments cells and nuclei with Cellpose-SAM, or loads labels you supply.
+3. Splits each cell boundary into **interfaces**, one stretch per neighbour.
+4. Measures the published junction parameters along each interface, for up to
+   two junction markers.
+5. Writes five tidy tables and a standalone HTML report.
 
-`--input` takes one image or a directory of them. An OME-Zarr store is a
-*directory* whose name ends `.zarr`, so it is taken as one input in its own
-right rather than scanned for files inside it. A directory can contain stores,
-`.tif`/`.tiff` files, or both, and is read in sorted order. Vendor formats
-(`.czi`, `.nd2`, `.lif`, and so on) are out of scope, and are rejected by name
-instead of being opened and then failing somewhere inside a reader.
+You declare which protein fills each role (`JM1`, `JM2`, `nucleus`). Nothing is
+inferred from channel order, and the declaration is written into every output
+row.
 
-You declare which protein occupies each of the `JM1`, `JM2` and `nucleus` roles,
-per sample. Nothing is inferred from channel order, and the declaration is
-written into every row of output.
+**Inputs.** `--input` takes one image or a directory of them. A directory is
+read in sorted order and may hold `.tif`/`.tiff` files, OME-Zarr stores, or both.
 
-## Status
+An OME-Zarr store is a *directory* whose name ends `.zarr`, so it is taken as one input in its own right rather than scanned for files inside it.
 
-Under active development. The design is in `docs/superpowers/specs/` and the
-implementation plan in `docs/superpowers/plans/`.
+Vendor formats (`.czi`, `.nd2`, `.lif`, ...) are out of scope. They are refused
+by name, up front, instead of failing somewhere inside a reader.
 
-## Install
+**Status.** Under active development. Design: `docs/superpowers/specs/`. Plan:
+`docs/superpowers/plans/`. Decisions log: `docs/decisions.md`.
 
-```bash
-pip install -e '.[dev]'              # library and tests
-pip install -e '.[dev,segmentation]' # adds Cellpose-SAM
+---
+
+## Workflow
+
+```mermaid
+flowchart TD
+    IMG["Images<br/>OME-TIFF or OME-Zarr"] --> READ
+    CFG["config.yaml<br/>channel → role + marker"] --> READ
+    READ["Read fields<br/>one per scene × time × Z"] --> CAL
+    READ --> SEG
+
+    CAL["Calibrate thresholds<br/>Otsu on up to 5 spread fields<br/>median per marker"]
+
+    SEG{"Labels supplied?"}
+    SEG -->|no| CP["Cellpose-SAM<br/>JM1 plane → cells<br/>nucleus plane → nuclei"]
+    SEG -->|run --labels DIR| LOAD["Load labels<br/>and their provenance"]
+    CP --> LBL[("OUT/labels<br/>.npy + provenance.json")]
+    LBL -.->|segment, edit by hand, run --labels| LOAD
+
+    CP --> CELL
+    LOAD --> CELL
+
+    subgraph CELL ["For each cell not touching the border"]
+        direction TB
+        TR["Trace boundary"] --> CO["Find corners<br/>dp and tcj"]
+        CO --> IF["Split into interfaces<br/>one run per neighbour"]
+        IF --> BAND["Dilate each interface<br/>into a band"]
+        BAND --> MET["Measure JM1 and JM2<br/>in the band"]
+    end
+
+    CAL --> MET
+    CP --> NUC["Nuclei<br/>assign to cells<br/>inter-nuclear distances"]
+    LOAD --> NUC
+    MET --> QC["QC flags per cell"]
+
+    MET --> OUT
+    NUC --> OUT
+    QC --> OUT
+    OUT["Five tables<br/>.parquet + .csv"] --> REP["report.html<br/>QC · quantification · provenance"]
 ```
 
-## Output tables
+Two ways to run it:
 
-Each run writes five tidy tables (`interfaces`, `cells`, `nuclei`,
-`nuclei_distances`, `flags`) as both `.parquet` and `.csv`. All are keyed by
-`field_id`, so tables from several fields concatenate.
+| | Command | Use when |
+|---|---|---|
+| **One stage** | `run` | You trust the automatic segmentation. |
+| **Two stage** | `segment`, then `run --labels` | You want to inspect or hand-correct labels first. |
+
+The labels directory is the seam between the two. `segment` writes it; an
+editor such as napari can change it; `run --labels` reads it back unchanged and
+skips Cellpose entirely.
+
+---
+
+## Quick start
+
+The supported environment is an Apptainer image. `scripts/jm` runs a command
+inside it, with the repo mounted so source edits take effect without a rebuild.
+
+```bash
+./scripts/build-image                 # once: builds container/junctionmapper.sif
+./scripts/jm pytest -q                # run the test suite
+```
+
+`scripts/jm` does not pass `--nv`, so it runs on CPU. For Cellpose on a GPU,
+call Apptainer directly:
+
+```bash
+apptainer exec --nv --cleanenv --env PYTHONNOUSERSITE=1 --env PYTHONPATH=/project/src \
+  --bind "$PWD":/project --pwd /project container/junctionmapper.sif \
+  python -m junctionmapper.cli run -c config.yaml -i images/ -o out/ --diameter 250
+```
+
+The examples below write the command as `junctionmapper`. That console script
+exists only after `pip install -e '.[segmentation]'`. Inside the image the
+package is not installed, so use `python -m junctionmapper.cli` instead, as
+above.
+
+**One stage**
+
+```bash
+junctionmapper run -c config.yaml -i images/ -o out/ --diameter 250
+```
+
+**Two stage**
+
+```bash
+junctionmapper segment -c config.yaml -i images/ -o seg/ --diameter 250
+# inspect or edit seg/labels/ here
+junctionmapper run -c config.yaml -i images/ -o out/ --labels seg/labels
+```
+
+`run` refuses to overwrite existing label files unless you pass
+`--overwrite-labels`, because they may be hand-corrected work.
+
+**Exit codes**
+
+| Code | Meaning |
+|---|---|
+| 0 | Every field succeeded. |
+| 1 | The command failed, or every field failed. Nothing was written. |
+| 2 | Usage error (bad or missing option). |
+| 3 | **Partial.** Some fields failed; the rest were written. Do not treat 3 as success. |
+
+---
+
+## Configuration
+
+```yaml
+channels:
+  - {role: JM1,     channel: 2, marker: "E-cadherin"}
+  - {role: JM2,     channel: 1, marker: "p120"}
+  - {role: nucleus, channel: 0, marker: "Hoechst"}
+pixel_size_um: 0.0749      # used only when the image metadata has none
+```
+
+`JM1` and `nucleus` are required. `JM2` is optional. A misspelled key is an
+error, not silently ignored.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `channels` | — | Which image channel fills each role, and which protein it carries. |
+| `pixel_size_um` | — | Fallback pixel size. Image metadata wins when present. |
+| `dilation_px` | 2 | Band half-width, in dilation cycles. |
+| `dilation_um` | — | Band width in µm instead; converted with the field's pixel size. |
+| `epsilon_px` | 2.0 | Douglas–Peucker tolerance for `dp` corners. |
+| `tcj_min_run` | 3 | Shortest contact run kept by `tcj`, in boundary pixels. |
+| `neighbour_radius_px` | 2 | Window used to give each boundary pixel its neighbour. |
+| `threshold` | — | Fixed intensity threshold per role. Overrides calibration. |
+| `num_intra_cells` | 5 | Nearest nuclei recorded per nucleus. |
+| `all_pairs` | false | Record every nucleus pair instead of the nearest few. |
+
+---
+
+## Before you run
+
+Three things decide whether the numbers mean anything.
+
+**1. Set `--diameter`.** It is the cell diameter in pixels. Cellpose-SAM does
+not estimate it: with no value the image is not rescaled at all. Cells much
+larger than about 30 px then shatter into fragments, with no error. Measure it
+from your own cells (for example, median cell area → equivalent diameter). The
+same value is applied to the nucleus plane, so nuclei that are much smaller
+than the cells will be segmented less well.
+
+**2. Choose the segmentation channel deliberately.** Cells are segmented from
+the `JM1` plane. If `JM1` is also the junction protein you want to quantify,
+the boundary is placed *on* that protein's signal, so its occupancy is high by
+construction. A cell that has lost the protein may not segment at all. Where you
+can, assign a membrane marker that does not depend on your experimental
+variable (for example phalloidin or Na/K-ATPase) to `JM1`, and measure the
+junction protein as `JM2`.
+
+**3. Check the threshold.** Four parameters depend on an intensity threshold.
+See [Intensity thresholds](#intensity-thresholds-one-value-per-marker-for-the-whole-run).
+
+---
+
+## Outputs
+
+Every run writes five tables, each as `.parquet` and `.csv`, plus
+`report.html`. All tables are keyed by `field_id`, so tables from many fields
+concatenate.
+
+| Table | One row per | Key columns |
+|---|---|---|
+| `interfaces` | cell-side interface × marker | `pair_id`, `interface_id`, `corner_method`, `role` |
+| `cells` | cell | `cell_id`, `area_um2`, `n_neighbours`, `measured` |
+| `nuclei` | nucleus | `nucleus_id`, `cell_id`, `orphan` |
+| `nuclei_distances` | *ordered* nucleus pair | `nucleus_id`, `neighbour_nucleus_id`, `rank_from_nucleus` |
+| `flags` | cell | `border_touching`, `isolated`, `degenerate`, ... |
+
+Lengths come in `_px` and `_um`; areas in `_px` and `_um2`.
+
+### The parameters
+
+| Column | What it is |
+|---|---|
+| `interface_contour` | Length along the interface. |
+| `straight_line_length` | Distance between its two corners. |
+| `linearity_index` | straight-line / contour. 1 = perfectly straight. |
+| `interface_area` | Area of the dilated band. |
+| `marker_area` | Band area above the threshold. |
+| `marker_intensity` | Sum of above-threshold values in the band. |
+| `interface_occupancy_pct` | 100 × marker area / interface area. |
+| `fragmented_contour` | Length of marker-positive stretches; gaps break it. |
+| `junction_contour` | Length through marker-positive pixels; gaps bridged. |
+| `junction_straight_line` | First to last marker-positive pixel. |
+| `coverage_index` | fragmented contour / interface contour. |
+| `intensity_per_*` | marker intensity / interface area. |
+| `cluster_density_per_*` | marker intensity / marker area. |
 
 ### `interfaces` — one row per measured *cell-side* interface
 
-The unit of measurement is a cell-side interface, as in the original, which
-measures the interfaces of the single cell the operator selected. A junction
-between two cells that are both included is therefore measured from both sides,
-each side with its own dilated band and its own numbers. A junction whose
-neighbour touches the field border or is degenerate is measured from one side
-only, because that neighbour never gets measured at all. The tables are not
-deduplicated: each side is a real measurement of that cell's junction, and
-dropping one would drop that cell's own view of it.
+**A row is not a junction.** Each row is one cell's view of one contact, with
+its own band and its own numbers. A junction between two measured cells is
+seen from both sides, and neither side is dropped: each is a real measurement.
 
-**One side is not always one row, and under `dp` it usually is not.** The `tcj`
-method cuts the boundary where the neighbouring identity changes, so a cell has
-exactly one interface per neighbour and a junction between two included cells is
-exactly two rows. Douglas-Peucker corners know nothing about neighbours, so a
-single run of contact can be split across several corner-to-corner intervals:
-under `dp` one cell's contact with one neighbour routinely yields two to five
-rows, and a single junction ten or more. Count junctions with `pair_id`, never
-by counting rows or by assuming a factor of two.
+How many rows one junction produces depends on the corner method:
 
-What this means downstream:
+| Method | Rows per junction | Why |
+|---|---|---|
+| `tcj` | exactly 2 (1 if the neighbour is not measured) | Cuts the boundary where the neighbour changes. |
+| `dp` | usually more; often 2–5 per side, sometimes 10+ per junction | Corners ignore neighbours, so one contact is split wherever a corner falls. |
 
-- An `n` over rows counts cell-side interfaces, not junctions, and the ratio
-  between the two is not a constant: it is 2 for an interior `tcj` junction but
-  varies per junction under `dp`, so interior junctions are over-weighted in a
-  pooled distribution by an amount that differs from junction to junction.
-  Collapse on `pair_id` before pooling if each junction should count once.
-- `pair_id` (`field|method|lo-hi`, the two cell ids sorted) identifies the cell
-  pair and groups its two sides. Count junctions with `df.pair_id.nunique()`.
-  For one row per junction, use `df.groupby("pair_id").mean()` or `.first()`,
-  depending on the question.
-- `interface_id` identifies one cell-side interface, and is shared by its JM1
-  and JM2 rows.
-- The report repeats this wherever it prints an `n`, and its QC section prints
-  the junction count next to the side count.
+So count junctions with `pair_id`, never by counting rows or by assuming a
+factor of two.
 
-Each row also has `contact_fraction`, the fraction of the interface's boundary
-positions actually adjacent to the neighbour it is labelled with (see divergence
-5 below); `low_contact_fraction`, when that drops under 0.8; and `closed_loop`,
-for an interface spanning a whole boundary, whose `linearity_index` is near 0
-for geometric reasons rather than from tortuosity.
+```python
+df.pair_id.nunique()                    # number of junctions
+df.groupby("pair_id").mean()            # one row per junction
+```
+
+| Column | Identifies |
+|---|---|
+| `pair_id` | The cell pair: `field\|method\|lo-hi`, ids sorted. Groups both sides. |
+| `interface_id` | One cell-side interface. Shared by its JM1 and JM2 rows. |
+
+Pooling rows without collapsing on `pair_id` over-weights interior junctions,
+and under `dp` by a different amount for each junction. The report repeats this
+next to every `n` it prints.
+
+Three more columns say how far to trust a row:
+
+| Column | Meaning |
+|---|---|
+| `contact_fraction` | Fraction of the interface actually touching its labelled neighbour. 1.0 for `tcj`; can be much lower for `dp`. |
+| `low_contact_fraction` | `contact_fraction` < 0.8. Band metrics then partly measure free edge. |
+| `closed_loop` | The interface is a whole boundary. Its `linearity_index` is near 0 from geometry, not tortuosity. |
 
 ### Intensity thresholds: one value per marker for the whole run
 
-Four of the measured parameters depend on an intensity threshold T per marker
-channel. Unless `threshold` is set in the run configuration, T is proposed once
-for the whole run and applied to every field: Otsu runs on each of up to five
-fields chosen deterministically and spread across the run (sorted `field_id`,
-evenly spaced, or all of them when there are five or fewer), and the run value
-is the median of those. One saturated or empty field therefore cannot drag it.
+Four parameters depend on a threshold T per marker. Unless you set `threshold`
+in the config, T is chosen once and applied to every field:
 
-Some details of that choice:
+1. Pick up to five fields, spread evenly across the sorted `field_id`s.
+2. Run Otsu on each.
+3. Take the **median**, so one saturated or empty field cannot drag it.
 
-- A field id does not exist until its file has been read, so the CLI opens up to
-  five input files, spread over the sorted input list, to offer the choice. With
-  one field per file the two selections are the same.
-- A multi-scene or multi-Z file offers all of its fields, but Otsu runs only on
-  the up-to-five that are finally chosen, so the cost stays bounded at five
-  fields however much those files contain.
-- A calibration file that cannot be read is skipped and another tried, up to ten
-  opens in all, and the report records that the proposal was degraded.
-- Fields whose plane is flat or non-finite contribute nothing. If every
-  calibration field is like that, the run value falls back to 0.0 and the report
-  says so.
+Details:
 
-`threshold` in `interfaces` is the value that was applied.
-`threshold_field_otsu` is what Otsu on that field's own plane would have given,
-and `threshold_deviates_from_run` is true when the two differ by more than 10%
-of the applied value, with a floor of one grey level. It is information for
-diagnosing a bad field, not an error.
+- The CLI opens up to five input files, spread over the sorted inputs, to find
+  those fields. With one field per file the two selections coincide.
+- A multi-scene file offers all its fields, but Otsu only runs on the five
+  chosen. Cost stays bounded.
+- An unreadable calibration file is skipped and another tried, up to ten opens.
+  The report records the degradation.
+- Flat or non-finite planes contribute nothing. If all are like that, T = 0.0
+  and the report says so.
 
-Note what that floor does on a low-valued plane. When the run value is, say,
-2.28, one grey level is already a large relative disagreement, so the flag sets
-on the outer fields of an ordinary *default* run where nothing was overridden.
-That is correct and intended: the floor exists so a 16-bit plane does not trip
-on noise. The flag stays informational, so read it as "this field's own
-plane would have been thresholded elsewhere", never as an error.
+Three columns record what happened, per row:
 
-A `threshold` in the configuration overrides all of this, per role. The report's
-red *threshold varied, not comparable* banner appears only when the applied
-values differ between fields by more than one grey level. That has two possible
-causes, and the banner states which one per marker role: either T was overridden
-for some field, or no single run value could be resolved for that role at all,
-because every calibration file was unreadable, leaving each field on its own
-Otsu. In both cases it names the fields that establish the difference.
+| Column | Meaning |
+|---|---|
+| `threshold` | The value applied. |
+| `threshold_field_otsu` | What Otsu on this field alone would have given. |
+| `threshold_deviates_from_run` | The two differ by more than 10%, with a floor of one grey level. |
+
+The deviation flag is informational, not an error. On a low-valued plane the
+one-grey-level floor dominates: with a run value of 2.28, the flag sets on the outer fields of an ordinary *default* run, where nothing was overridden. That
+is intended; the floor exists so 16-bit planes do not trip on noise. Read it as
+"this field's own plane would have been thresholded elsewhere."
+
+A configured `threshold` overrides all of this, per role. The report shows a red
+*threshold varied, not comparable* banner only when applied values differ
+between fields by more than one grey level. It says which cause applies — an
+override, or no run value could be resolved — and names the fields involved.
 
 ### `nuclei_distances` — one row per *ordered* nucleus pair
 
-This table is long. A row is `(nucleus_id, neighbour_nucleus_id,
-rank_from_nucleus, distance_px, distance_um)`, and `rank_from_nucleus` is that
-nucleus's own ordering of every distance involving it, nearest first. So
-`rank_from_nucleus == 1` is the nearest neighbour of `nucleus_id` for every
-nucleus in the field, and `df[df.rank_from_nucleus == 1]` is the
-nearest-neighbour distance distribution, which is what discohesion scoring
-needs.
+Each row is `(nucleus_id, neighbour_nucleus_id, rank_from_nucleus,
+distance_px, distance_um)`. `rank_from_nucleus` is that nucleus's own ranking,
+nearest first.
 
-With `all_pairs: true`, an unordered pair appears twice, once from each end,
-each copy with the rank it has for its own nucleus. That is on purpose: a single
-row per pair cannot give both endpoints a correct rank, and the default
-k-nearest mode already repeats a mutual nearest pair. For one copy of each
-distance, keep the rows where `nucleus_id < neighbour_nucleus_id`. The
-`n_intra_distances` and `mean_intra_distance_*` columns of `nuclei` are the
-count and mean of a nucleus's own rows here, which is a plain
-`groupby("nucleus_id")` of this table.
+```python
+df[df.rank_from_nucleus == 1]                     # nearest-neighbour distances
+df[df.nucleus_id < df.neighbour_nucleus_id]       # one copy of each pair
+```
+
+With `all_pairs: true`, each pair appears twice, once from each end, each with
+the rank it has for its own nucleus. A single row could not give both ends a
+correct rank. `n_intra_distances` and `mean_intra_distance_*` in `nuclei` are a
+plain `groupby("nucleus_id")` of this table.
+
+---
 
 ## Differences from the original
 
-The method is the original's. Below are the places where this implementation
-knowingly does not reproduce the original code. Each was verified by
-reading the Java source, and each is recorded in the code that diverges.
+The method is the original's. These are the places where the code knowingly
+does not reproduce the original code. Each was verified against the Java
+source and is commented where it diverges.
+
+| # | What | In short |
+|---|---|---|
+| 1 | `linearity_index` | Reciprocal of the Java ratio. |
+| 2 | Dilation band | Uniform; the Java's thins near the border. |
+| 3 | Marker connectivity | One symmetric rule for both markers. |
+| 4 | Nucleus assignment | Pixel plurality, not centroid. |
+| 5 | Corners | Douglas–Peucker on the boundary, not the convex hull. |
 
 ### 1. `linearity_index` is the reciprocal of the Java's ratio
 
-The Java's `getDistanceRatio` divides contour by straight-line length, so it is
-at least 1 and grows as an interface becomes more tortuous. This project reports
-`linearity_index` as straight-line over contour, so it is at most 1, and 1.0
-means a perfectly straight interface. Same information, inverted. To convert an
-older spreadsheet, take the reciprocal. The two conventions never appear in one
-table.
+The Java's `getDistanceRatio` is contour / straight-line: ≥ 1, growing with
+tortuosity. Here it is straight-line / contour: ≤ 1, where 1.0 is straight.
+Same information, inverted. Take the reciprocal to compare with an old
+spreadsheet.
 
 ### 2. The dilation band is uniform; the Java's thins at the image border
 
-Both implementations grow the interface band by repeated 8-connected 3×3
-dilation, and both count cycles as iterations. But the Java's
-`ImageUtilities.getDilatedImage` (lines 660–690) suppresses a newly dilated
-pixel whenever any of its 3×3 neighbours falls outside `[1, w−2] × [1, h−2]`.
-Dilation is therefore dead at indices 0, 1, w−2 and w−1, a 2 px dead frame,
-while pixels that were already set are left untouched. The loss compounds with
-each cycle. Interface area, marker area and marker intensity are all read off
-that band, so in the Java all three are systematically low for cells within a
-couple of pixels of the field border. This project dilates uniformly
-(`measure/interface.py`, `dilated_band`). Border-touching cells are flagged and
-excluded from the interface table in any case, which handles the same problem
-more conservatively.
+Both grow the band by repeated 3×3 dilation. But Java's
+`ImageUtilities.getDilatedImage` (lines 660–690) drops a new pixel whenever any
+neighbour falls outside `[1, w−2] × [1, h−2]`. That leaves a 2 px dead frame,
+and the loss compounds each cycle.
+
+Result: in the Java, interface area, marker area and marker intensity are all
+low for cells near the border. This project dilates uniformly. Border-touching
+cells are flagged and excluded anyway.
 
 ### 3. Marker connectivity is symmetric and the same for both markers
 
-The Java's two marker walks disagree with each other, and its JM1 walk disagrees
-with the formula in its own user guide.
+The Java's two marker walks disagree with each other, and JM1 disagrees with its
+own user guide.
 
-- JM1 accepts a step between two above-threshold pixels when either coordinate
-  differs by one, an OR. A step of (Δrow 1, Δcol 30) therefore counts as
-  connected and contributes its full ~30 px to the fragmented junction contour,
-  bridging a gap the formula says should break it.
-- JM2 tests the same step with an AND, both coordinate differences at most one,
-  but advances its running position on every contour pixel rather than only
-  the above-threshold ones. It therefore also counts the single step from an
-  unstained pixel into each fragment, an over-count proportional to the number
-  of fragments. JM2 does write a fragmented metric:
-  `Membrane_SpreadSheet.java` lines 150 and 169–170 fill a "JM2 Fragmented
-  Junction contour" column from `measurementDistanceToNeighbour`, and a "JM2
-  Coverage index" from that. What the Java's JM2 genuinely lacks is the junction
-  contour, the straight-line junction length and the junction linearity:
-  `getMeasurementPoints` computes no `measurementEuclidianDistance`, and the JM2
-  table has no columns for any of the three.
+- **JM1** connects two above-threshold pixels when *either* coordinate differs
+  by one. A step of (1 row, 30 cols) then counts as connected, bridging a gap
+  the formula says should break.
+- **JM2** uses *both* coordinates (correct), but also counts the step from an
+  unstained pixel into each fragment, over-counting by one step per fragment.
+  JM2 does report a fragmented contour and coverage index
+  (`Membrane_SpreadSheet.java` lines 150, 169–170). What it lacks is junction
+  contour, straight-line junction length and junction linearity.
 
-This project applies one rule to both markers: a step joins two consecutive
-above-threshold pixels only when both coordinate differences are at most 1. That
-is 8-connectivity, and it is what the user guide's formula describes. JM1 and
-JM2 then go through the same functions, so the two markers are directly
-comparable.
+Here, one rule for both: a step joins two consecutive above-threshold pixels
+only when both coordinate differences are at most 1. That is 8-connectivity, as
+the guide's formula describes, so JM1 and JM2 are directly comparable.
 
 ### 4. Nuclei are assigned to cells by pixel plurality, not centroid containment
 
-The Java associates a nucleus with whichever cell contains its centroid point
-(`Cell_Nucleus.setCellMembrane` → `getSelectedMembrane(getGeometricMean())`),
-where that "centroid" is the floored midpoint of the bounding box rather than a
-centre of mass. A nucleus whose centroid lands on a junction or in a gap is
-associated with nothing. This project keeps the Java's midpoint formula for the
-reported centroid, but assigns each nucleus to the cell containing most of its
-pixels, with ties going to the lowest label, and calls a nucleus an orphan only
-when it overlaps no cell at all.
+The Java gives a nucleus to whichever cell contains its centroid
+(`Cell_Nucleus.setCellMembrane` → `getSelectedMembrane(getGeometricMean())`).
+That "centroid" is the floored midpoint of the bounding box. A nucleus whose
+centroid lands on a junction or gap goes to no cell.
 
-This matters for the biology the tool is aimed at. In discohesive tissue, nuclei
-straddle junctions and gaps far more often, so a centroid rule inflates the
-orphan and anucleate counts in exactly the condition under study.
+Here the reported centroid keeps the Java formula, but assignment goes to the
+cell holding most of the nucleus's pixels (ties to the lowest label). A nucleus
+is an orphan only if it overlaps no cell.
+
+This matters in discohesive tissue, where nuclei straddle junctions and gaps
+often. A centroid rule inflates orphan and anucleate counts in exactly the
+condition being studied.
 
 ### 5. Corners are found by Douglas–Peucker on the boundary, not on the convex hull
 
-The original's own user guide cites Douglas & Peucker (1973) and describes corner
-detection as that algorithm applied to the cell outline. Its code does something
-else. `Cell_Membrane.getDouglasPeucker` first takes the convex hull of the
-cell's edge pixels, then runs Douglas–Peucker over the hull vertices, with a
-loop bound that never considers the last interior vertex of each range and a
-point-to-line distance computed from an integer-truncated slope.
+The user guide describes Douglas & Peucker (1973) on the cell outline. The code
+does something else: `Cell_Membrane.getDouglasPeucker` takes the **convex hull**
+first, then runs Douglas–Peucker on the hull vertices. It also skips the last
+interior vertex of each range and uses an integer-truncated slope.
 
-What follows from that, both from reading the code and from driving the
-original's own classes headless over the rectilinear control grid that
-`scripts/java_reference.py` builds:
+Consequences, from the code and from driving the Java classes headless on the
+control grid built by `scripts/java_reference.py`:
 
-- A reflex (concave) vertex can never be a corner, because the hull discards it.
-  Cells in discohesive tissue are frequently concave.
-- The Java's corner count for a cell is **click-dependent**, because its flood
-  fill starts from the clicked pixel and the edge-pixel set it reaches decides
-  the hull. On the nine rectangular cells of the control grid, clicked at the
-  seed the generator records, the Java gave four corners, matching this
-  project's Douglas–Peucker count. A different click inside the same centre cell,
-  one of the 14 pixels tied for maximum distance to the boundary, gives
-  three, so one "interface" then spans two sides of the cell. Neither count
-  is a property of rectangles: the click is part of the input, which is why
+- **A concave vertex can never be a corner.** The hull discards it. Cells in
+  discohesive tissue are often concave.
+- **The corner count is click-dependent.** The flood fill starts at the clicked
+  pixel, and the pixels it reaches decide the hull. On the control grid's nine
+  rectangles, clicked at the recorded seed, the Java found four corners,
+  matching this project. Another click in the centre cell — one of 14 pixels
+  tied for maximum distance to the boundary — gives three, so one "interface"
+  spans two sides. The click is part of the input, which is why
   `reference.csv` records it as `seed_row` and `seed_col`. See "Why the click
   matters" in `tests/validation/README.md`.
-- The Java's epsilon slider has no published default; it starts at 0, where only
-  hull vertices are candidates. So dp corner counts, and the dp interface
-  decompositions that follow from them, are not comparable to any published
-  Junction Mapper run, not merely different in principle.
+- **No published epsilon.** The Java slider starts at 0, where only hull
+  vertices qualify. `dp` corner counts are not comparable to any published
+  Junction Mapper run.
 
-A review-time measurement over 148 interfaces across jogged, staircase, Voronoi
-and hexagonal geometries also found that a regular hexagon yields eight to ten
-corners, none of them at a vertex. That driver is not committed and this
-repository cannot regenerate the number. Treat it as a one-off observation, not
-as evidence this project ships.
+A review-time measurement over 148 interfaces across jogged, staircase, Voronoi and hexagonal geometries also found that a regular hexagon yields eight to ten corners, none of them at a vertex. That driver is not committed and this repository cannot regenerate the number. Treat it as a one-off observation, not as evidence this project ships.
 
-This project runs Douglas–Peucker on the traced boundary itself, as the guide
-describes, so a corner can land on a concave turn and a rectangle has four of
-them. Interface decompositions therefore differ from the original's for any
-non-convex or oblique cell, and corner counts are not comparable between the two
-implementations.
+This project runs Douglas–Peucker on the traced boundary, as the guide
+describes. A corner can land on a concave turn, and a rectangle has four.
+Interface decompositions and corner counts therefore differ from the original
+for any non-convex or oblique cell.
 
-The tricellular (`tcj`) method has no counterpart in the original. It cuts the
-boundary exactly where the neighbouring identity changes. Douglas–Peucker
-corners know nothing about neighbours, so a corner-to-corner run is assigned to
-the neighbour that covers the most of its pixels. Two consequences are visible
-in the output:
+**The `tcj` method is new.** It cuts where the neighbour changes. `dp` corners
+ignore neighbours, so each `dp` run is assigned to whichever neighbour covers
+most of it. Two visible costs:
 
-- A dp interface can be mostly free edge. A neighbour touching 8 pixels of a
-  cell's 20-pixel side still wins the plurality, so dp reports one interface of
-  19 px contour against it where tcj reports 11 px. About 11 px of non-junction
-  then sit inside the measured band, which depresses coverage and occupancy.
-  `contact_fraction` gives the fraction of the interface actually against that
-  neighbour, 1.0 for tcj by construction, and `low_contact_fraction` plus the
-  per-cell `dp_low_contact` flag mark it when it falls below 0.8.
-- A short real contact can disappear. At 4 pixels of contact the plurality goes
-  to background and dp emits no interface at all, while tcj finds one; the
-  per-cell `dp_missed_tcj_contact` flag records that. Partial free edges are the
-  phenotype in discohesive tissue, so this is not an academic case.
+| Effect | Example | Flag |
+|---|---|---|
+| A `dp` interface can be mostly free edge. | A neighbour touching 8 px of a 20 px side still wins: `dp` reports 19 px of contour, `tcj` 11 px. The extra ~11 px dilute coverage and occupancy. | `contact_fraction`, `low_contact_fraction`, `dp_low_contact` |
+| A short real contact can vanish. | At 4 px of contact, background wins the plurality and `dp` emits nothing; `tcj` finds it. | `dp_missed_tcj_contact` |
 
-The rule stays as it is. It is dp's published partition, and dp without it
-would need neighbour information the method does not have. What is new here is
-the evidence for its cost, in the tables and in the report's QC section.
+The rule stays: it is `dp`'s published partition, and `dp` has no neighbour
+information to do better. What is new is that its cost is now measured, in the
+tables and the report.
 
-This divergence is about which interface gets measured, not about how it is
-measured, and the validation harness in `tests/validation/` is built on that
-distinction. It takes the original's corner pixels as input and compares the
-measurements along the shared path, reporting corner-count differences as
-information rather than as failures.
+This divergence is about *which* interface is measured, not *how*. The
+validation harness relies on that: it takes the Java's own corner pixels as
+input and compares measurements along the shared path.
+
+---
 
 ## What the validation harness shows
 
-`scripts/java_reference.py` drives the original's own classes headless and
-writes `tests/validation/reference.csv`. `./scripts/jm pytest tests/validation`
-then compares this project's functions along its own boundary, between the
-Java's two corner pixels. The numbers below are the ones recorded in
-`tests/validation/README.md`, from a real-Java run of 208 interfaces (416 rows,
-one per interface and marker) over two Voronoi tilings and a hexagonal tiling.
+`scripts/java_reference.py` drives the original's classes headless and writes
+`tests/validation/reference.csv`. `./scripts/jm pytest tests/validation` then
+compares this project's functions along the same path, between the Java's two
+corner pixels.
 
-- Where the two paths are the same pixel for pixel, the metrics agree
-  exactly. On the straight rows, where the shared path is a single
-  axis-aligned run on an axis-aligned outline, `interface_area_px`,
-  `marker_area_px` and `marker_intensity` are identical to the Java with no
-  tolerance, and `interface_contour_px`, `straight_line_length_px`,
-  `linearity_index`, `junction_contour_px` and `junction_straight_line_px` agree
-  to a relative 1e-9.
-- Few rows are exactly comparable: 10 of those 208 interfaces, 20 of 416
-  rows, about 5%. The harness rejects a reference containing no straight row, so
-  the exact assertions can never silently fail to run.
-- The other 396 rows agree only within tolerances: areas within 15% or
-  16 px, intensity within 15%, linearity within 0.35, with contour and the
-  junction lengths recorded rather than asserted. Worst observed: interface area
-  −15 to +3 px (11.3%), marker area −12 to +6 px, intensity 14.0%, linearity
-  0.31. Those differences come from the edge-map seam, not from the
-  measurement. The Java's 8-neighbour edge set is two pixels thick on oblique
-  edges, its walk follows the inner row, and it cuts convex corners diagonally,
-  so the two paths are not the same pixels. They are not a tolerance on the
-  port.
-- `fragmented_contour_px` and `coverage_index` are recorded and never asserted, because of divergence 3 above. They are
-  different on purpose.
+Numbers below are from `tests/validation/README.md`: a real-Java run of 208
+interfaces (416 rows, one per interface × marker) over two Voronoi tilings and a
+hexagonal tiling.
 
-So the accurate claim is this: *given the same interface path, the formulas
-reproduce the original's numbers, exactly where the paths coincide pixel for
-pixel and within a measured envelope where the edge-map seam makes them differ.*
-Not "every metric matches exactly on every interface", which divergence 3 alone
-makes false. Running the comparison needs a JDK and the Java checkout. Without
-`reference.csv` those tests skip and name what is missing, and
-`tests/validation/README.md` has the procedure.
+| Comparison | Rows | Result |
+|---|---|---|
+| Paths identical pixel for pixel (straight rows) | 20 of 416 rows (10 interfaces, ~5%) | Areas and intensity **identical**. Contour, straight-line, linearity and junction lengths within 1e-9. |
+| Paths differ at the edge-map seam | the other 396 | Areas within 15% or 16 px, intensity within 15%, linearity within 0.35. |
+| `fragmented_contour_px`, `coverage_index` | all | Different on purpose (divergence 3). |
+
+- The harness refuses a reference with no straight row, so the exact checks can
+  never silently skip.
+- Worst observed on the 396: interface area −15 to +3 px (11.3%), marker area
+  −12 to +6 px, intensity 14.0%, linearity 0.31.
+- Those differences come from the edge map, not the measurement. The Java's
+  edge set is two pixels thick on oblique edges, its walk follows the inner row,
+  and it cuts convex corners diagonally. The paths are not the same pixels.
+- `fragmented_contour_px` and `coverage_index` are recorded and never asserted.
+  Contour and junction lengths on the 396 are also recorded rather than
+  asserted.
+
+**The accurate claim:** given the same interface path, the formulas reproduce
+the original's numbers — exactly where the paths coincide, and within a
+measured envelope where the edge map makes them differ. Not "every metric
+matches exactly on every interface"; divergence 3 alone makes that false.
+
+Running the comparison needs a JDK and the Java checkout. Without
+`reference.csv` those tests skip and say what is missing. The procedure is in
+`tests/validation/README.md`.
