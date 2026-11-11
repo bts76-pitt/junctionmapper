@@ -78,6 +78,14 @@ OutOpt = typer.Option(..., "--out", "-o", help="Output directory (created if abs
 
 # ---- small helpers -------------------------------------------------------------------
 
+# Cellpose 4 does not estimate a diameter: None means no rescaling at all, and cells much
+# larger than the ~30 px the model was trained on break into fragments with no error.
+_DIAMETER_HELP = (
+    "Cell diameter in px. Set it: with no value Cellpose does not rescale, "
+    "and cells far above ~30 px fragment."
+)
+
+
 def _version() -> str:
     """Installed distribution metadata, else the package's own ``__version__``.
 
@@ -534,7 +542,7 @@ def _merge_params(all_params: list[dict], sidecar_dir: Path) -> dict:
 def segment(
     config: Path = ConfigOpt, input: Path = InputOpt, out: Path = OutOpt,
     model: str = typer.Option("cpsam", help="Cellpose model."),
-    diameter: float = typer.Option(None, help="Cell diameter in px (default: Cellpose decides)."),
+    diameter: float = typer.Option(None, help=_DIAMETER_HELP),
     flow_threshold: float = typer.Option(0.4),
     cellprob_threshold: float = typer.Option(0.0),
     gpu: bool = typer.Option(True, "--gpu/--no-gpu", help="Use a GPU if one is available."),
@@ -575,7 +583,7 @@ def run(
     labels: Path = typer.Option(None, "--labels", help="Directory of label files written by "
                                 "`segment` or an editor; skips Cellpose entirely."),
     model: str = typer.Option("cpsam", help="Cellpose model."),
-    diameter: float = typer.Option(None, help="Cell diameter in px (default: Cellpose decides)."),
+    diameter: float = typer.Option(None, help=_DIAMETER_HELP),
     flow_threshold: float = typer.Option(0.4),
     cellprob_threshold: float = typer.Option(0.0),
     gpu: bool = typer.Option(True, "--gpu/--no-gpu", help="Use a GPU if one is available."),
