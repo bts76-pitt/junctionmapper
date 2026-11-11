@@ -29,21 +29,28 @@ def assess_cell(labels: np.ndarray, label: int, epsilon: float,
                 search_radius: int = _NEIGHBOUR_RADIUS) -> CellFlags:
     """QC flags for ``label``.
 
-    ``degenerate`` is True when the boundary cannot be traced or either corner method
-    raises; the affected count is None and ``corner_methods_disagree`` is then False
-    (nothing to compare). An invalid ``epsilon`` is a configuration error and raises
-    ConfigError rather than being reported as a bad cell.
+    degenerate
+        True when the boundary cannot be traced, or either corner method raises.
+        The affected count is then None, and ``corner_methods_disagree`` is False
+        because there is nothing to compare.
 
-    ``corner_methods_disagree`` is also False whenever TCJ finds no corners at all.
-    Zero TCJ corners means the neighbour identity never changes around the boundary --
-    an isolated cell, or one wholly enclosed by a single neighbour -- so the two methods
-    are not measuring the same thing and the comparison carries no signal. Both counts
-    are still reported.
+        An invalid ``epsilon`` is a configuration error: it raises ConfigError
+        rather than being reported as a bad cell.
 
-    ``all_contacts_filtered`` is True when the cell does have a neighbour but every
-    contact is shorter than the TCJ ``min_run`` filter, so TCJ yields no interface for
-    it. Without this flag such a cell would contribute nothing to the results with
-    nothing to say why.
+    corner_methods_disagree
+        Also False whenever TCJ finds no corners at all.
+
+        Zero TCJ corners means the neighbour identity never changes around the
+        boundary -- an isolated cell, or one wholly enclosed by a single
+        neighbour. The two methods are then not measuring the same thing, so the
+        comparison carries no signal. Both counts are still reported.
+
+    all_contacts_filtered
+        True when the cell does have a neighbour, but every contact is shorter
+        than the TCJ ``min_run`` filter, so TCJ yields no interface for it.
+
+        Without this flag, such a cell would contribute nothing to the results
+        with nothing to say why.
     """
     if (isinstance(epsilon, bool) or not isinstance(epsilon, (int, float, np.floating, np.integer))
             or not np.isfinite(epsilon) or epsilon <= 0):

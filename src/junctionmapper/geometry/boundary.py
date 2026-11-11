@@ -15,11 +15,15 @@ _MIN_AREA = 4
 def trace_boundary(labels: np.ndarray, label: int) -> np.ndarray:
     """Return the closed boundary of ``label`` as an (N, 2) int array of (row, col).
 
-    Moore-neighbour tracing, clockwise from the topmost-leftmost pixel, stopped when
-    a (pixel, backtrack) state repeats; the returned array is exactly that cycle.
-    Each pixel is 8-adjacent to the next and the last to the first. A pixel is
-    emitted more than once only where the shape is a one-pixel-wide neck, so a
-    consumer walking corner-to-corner segments must expect repeated points.
+    Moore-neighbour tracing, clockwise from the topmost-leftmost pixel, stopped
+    when a (pixel, backtrack) state repeats. The returned array is exactly that
+    cycle.
+
+    Each pixel is 8-adjacent to the next, and the last to the first.
+
+    A pixel is emitted more than once only where the shape is a one-pixel-wide
+    neck, so a consumer walking corner-to-corner segments must expect repeated
+    points.
     """
     mask = np.asarray(labels) == label
     area = int(mask.sum())

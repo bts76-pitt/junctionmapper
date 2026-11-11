@@ -32,30 +32,51 @@ never a filter: the row is still emitted and still measured.
 
 @dataclass
 class Interface:
-    """An interface of ``cell_id`` against one neighbour, as the walk between two corners.
+    """An interface of ``cell_id`` against one neighbour: the walk between two corners.
 
-    ``pixels`` is authoritative and INCLUSIVE of both corner pixels (start corner first,
-    end corner last), in walk order and contiguous, as in the reference method, so
-    contour and straight-line length are measured corner to corner. ``start_idx`` is the
-    boundary position of the start corner; ``end_idx`` is the boundary position of the
-    end corner, i.e. the first position of the next run. The walk is
-    ``start_idx, start_idx+1, ..., end_idx`` modulo the boundary length, so the interface
-    that wraps through index 0 has ``start_idx > end_idx``. Adjacent interfaces share
-    their common corner pixel, so a corner position is covered by exactly two interfaces
-    and every other position by one. When one run is the whole boundary (single corner,
-    or an engulfed cell) ``start_idx == end_idx`` and the start pixel is repeated as the
-    last pixel to close the loop, so the contour equals the true perimeter -- a CLOSED LOOP,
-    whose straight-line length is ~0 and whose linearity index is therefore ~0 by geometry,
-    not by tortuosity.
+    ``pixels`` is authoritative. It is INCLUSIVE of both corner pixels (start
+    corner first, end corner last), in walk order, and contiguous -- as in the
+    reference method -- so contour and straight-line length are measured corner to
+    corner.
 
-    ``contact_fraction`` is the fraction of the interface's boundary positions (the run, not
-    counting the repeated closing pixel) whose nearest non-self label actually IS
-    ``neighbour_id``. For 'tcj' it is at or near 1 by construction, since the run was cut where
-    that identity changes. For 'dp' the corners know nothing about neighbours, so a run is
-    labelled with its plurality neighbour and the fraction can be well below 1: the rest of the
-    run is free edge or another cell that nevertheless sits inside the measured band. Reading a
-    dp row's band metrics without reading its ``contact_fraction`` is reading a number that may
-    be half non-junction.
+    Indices
+
+        start_idx   boundary position of the start corner
+        end_idx     boundary position of the end corner, i.e. the first position
+                    of the next run
+
+    The walk is ``start_idx, start_idx+1, ..., end_idx`` modulo the boundary
+    length. An interface that wraps through index 0 therefore has
+    ``start_idx > end_idx``.
+
+    Adjacent interfaces share their common corner pixel, so a corner position is
+    covered by exactly two interfaces and every other position by one.
+
+    Closed loop
+
+        When one run is the whole boundary -- a single corner, or an engulfed cell
+        -- ``start_idx == end_idx``, and the start pixel is repeated as the last
+        pixel to close the loop, so the contour equals the true perimeter.
+
+        Its straight-line length is ~0, so its ``linearity_index`` is ~0 by
+        geometry, not by tortuosity.
+
+    contact_fraction
+
+        The fraction of the interface's boundary positions whose nearest non-self
+        label actually IS ``neighbour_id``. The repeated closing pixel is not
+        counted.
+
+            tcj   at or near 1 by construction -- the run was cut exactly where
+                  that identity changes
+            dp    can be well below 1
+
+        dp corners know nothing about neighbours, so a run is labelled with its
+        plurality neighbour. The rest of the run is free edge, or another cell that
+        still sits inside the measured band.
+
+        Reading a dp row's band metrics without reading its ``contact_fraction`` is
+        reading a number that may be half non-junction.
     """
     cell_id: int
     neighbour_id: "int | None"
@@ -89,15 +110,25 @@ def extract_interfaces(labels: np.ndarray, label: int, method: str,
                        search_radius: int = DEFAULT_NEIGHBOUR_RADIUS_PX) -> "list[Interface]":
     """Interfaces of ``label`` split by ``method`` ('dp' or 'tcj').
 
-    ``epsilon`` is required for 'dp' (ConfigError if None) and ignored for 'tcj'.
-    ``min_run`` (TCJ only, shortest contact run kept) and ``search_radius`` (window used to
-    assign each boundary pixel a neighbour; both methods) must be integers >= 1.
-    Runs against background (free edge) are dropped. With zero corners the decision is
-    made on the neighbour ids: an isolated cell (all background) gives ``[]``, while a
-    cell engulfed by a single neighbour gives one whole-boundary interface
-    (``start_idx == end_idx == 0``). A whole-boundary interface is a legitimate result,
-    not a degenerate one. A single corner likewise yields one closed-loop interface.
-    Neighbour symmetry is not guaranteed: A may list B while B does not list A.
+        epsilon         required for 'dp' (ConfigError if None); ignored for 'tcj'
+        min_run         tcj only: the shortest contact run kept
+        search_radius   window used to assign each boundary pixel a neighbour,
+                        both methods
+
+    ``min_run`` and ``search_radius`` must be integers >= 1.
+
+    Runs against background (free edge) are dropped.
+
+    With zero corners, the neighbour ids decide the result:
+
+        isolated cell (all background)        []
+        engulfed by a single neighbour        one whole-boundary interface,
+                                              ``start_idx == end_idx == 0``
+
+    A whole-boundary interface is a legitimate result, not a degenerate one. A
+    single corner likewise yields one closed-loop interface.
+
+    Neighbour symmetry is NOT guaranteed: A may list B while B does not list A.
     """
     if method not in ("dp", "tcj"):
         raise ConfigError(f"method must be 'dp' or 'tcj', got {method!r}")

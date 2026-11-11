@@ -1,28 +1,41 @@
 """Cellpose-SAM segmentation of the junction-marker (JM1) and nucleus channels.
 
-This replaces the Java tool's click-every-cell step. The wrapper is deliberately
-thin: it hands each 2D plane to Cellpose and returns the integer label arrays
-(0 = background) exactly as Cellpose produced them. It does NOT validate, fill
-holes in, relabel, size-filter or otherwise post-process the labels; geometry
-that cannot be traced (tiny, fragmented or holed labels) is reported downstream
-by ``trace_boundary`` as a ``BoundaryError``, which is the place to decide what
-to do about it.
+This replaces the Java tool's click-every-cell step.
 
-Reproducibility: the wrapper itself adds no randomness and no hidden state, but
-the labels are only as reproducible as Cellpose. Results can differ between CPU
-and GPU, between devices, and between cellpose/torch versions (GPU kernels are
-not guaranteed bit-exact run to run). ``params_used`` records the versions and
-the device actually used so a run can be re-created as closely as possible, but
-bit-identical labels are not guaranteed.
+The wrapper is deliberately thin. It hands each 2D plane to Cellpose and
+returns the integer label arrays (0 = background) exactly as Cellpose produced
+them.
 
-Limitations: one ``diameter`` and one pair of thresholds is applied to both the
-cell and nucleus planes (nuclei may want different values; a per-role field can be
-added to ``SegmentationParams`` later). The ``CellposeModel(...)`` / ``.eval(...)``
-signatures are pinned by stubs only, and cpsam may ignore ``diameter``; run one
-smoke test against real cellpose before release.
+It does NOT validate, fill holes in, relabel, size-filter or otherwise
+post-process the labels. Geometry that cannot be traced -- tiny, fragmented or
+holed labels -- is reported downstream by ``trace_boundary`` as a
+``BoundaryError``, which is the place to decide what to do about it.
 
-Cellpose and torch are optional (the ``segmentation`` extra) and are imported
-inside :func:`segment_field` so the rest of the library imports without them.
+Reproducibility
+
+    The wrapper adds no randomness and no hidden state, but the labels are only
+    as reproducible as Cellpose itself.
+
+    Results can differ between CPU and GPU, between devices, and between
+    cellpose/torch versions. GPU kernels are not guaranteed bit-exact run to
+    run.
+
+    ``params_used`` records the versions and the device actually used, so a run
+    can be re-created as closely as possible. Bit-identical labels are not
+    guaranteed.
+
+Limitations
+
+    One ``diameter`` and one pair of thresholds is applied to BOTH the cell and
+    nucleus planes. Nuclei may want different values; a per-role field can be
+    added to ``SegmentationParams`` later.
+
+    The ``CellposeModel(...)`` and ``.eval(...)`` signatures are pinned by
+    stubs only. Run one smoke test against real cellpose before release.
+
+Cellpose and torch are optional -- the ``segmentation`` extra -- and are
+imported inside :func:`segment_field`, so the rest of the library imports
+without them.
 """
 
 from __future__ import annotations
@@ -104,9 +117,11 @@ def _as_float(value: Any) -> float | None:
 def segment_field(field: Field, params: SegmentationParams) -> Segmentation:
     """Segment the JM1 and nucleus planes of ``field`` with Cellpose.
 
-    A missing nucleus plane yields an all-zero ``nuclei`` array of the cell
-    array's shape (rather than None) so downstream code can treat "no nuclei"
-    as an empty label image. A missing JM1 plane raises SegmentationError.
+    A missing JM1 plane raises SegmentationError.
+
+    A missing nucleus plane yields an all-zero ``nuclei`` array shaped like the
+    cell array, rather than None, so downstream code can treat "no nuclei" as an
+    empty label image.
     """
     if Role.JM1 not in field.planes:
         raise SegmentationError(f"Field {field.field_id!r} has no JM1 plane to segment.")

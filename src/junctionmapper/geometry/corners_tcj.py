@@ -13,17 +13,22 @@ def neighbour_at(labels: np.ndarray, boundary: np.ndarray, label: int,
                  search_radius: int = DEFAULT_NEIGHBOUR_RADIUS_PX) -> np.ndarray:
     """Neighbour label for every boundary *position* (0 = free edge / background).
 
-    ``boundary`` is the (N, 2) (row, col) array from ``trace_boundary``; the result has
-    length N and is index-aligned with it (a necked pixel that appears twice gets two
-    entries, identical because they share coordinates).
+    ``boundary`` is the (N, 2) (row, col) array from ``trace_boundary``. The result
+    has length N and is index-aligned with it. A necked pixel that appears twice
+    gets two entries, identical because they share coordinates.
 
-    For each pixel, the square window of Chebyshev radius ``search_radius`` (clipped to
-    the image; outside the image counts as background) is scanned for labels that are
-    neither 0 nor ``label``. The winner is chosen by, in order:
-      1. highest pixel count in the window (modal label),
-      2. smallest Euclidean distance to any pixel of that label,
-      3. smallest label value.
-    Rule 3 makes ties fully deterministic, independent of array order or trace start.
+    For each pixel, the square window of Chebyshev radius ``search_radius`` is
+    scanned for labels that are neither 0 nor ``label``. The window is clipped to
+    the image, and outside the image counts as background.
+
+    The winner is chosen by, in order:
+
+        1. highest pixel count in the window (modal label)
+        2. smallest Euclidean distance to any pixel of that label
+        3. smallest label value
+
+    Rule 3 makes ties fully deterministic, independent of array order or trace
+    start.
     """
     if (isinstance(search_radius, bool) or not isinstance(search_radius, (int, np.integer))
             or search_radius < 1):
@@ -62,15 +67,22 @@ def _check_min_run(min_run) -> int:
 
 
 def merge_short_runs(neighbour_ids: np.ndarray, min_run: int) -> np.ndarray:
-    """Return a copy of ``neighbour_ids`` with every circular run shorter than ``min_run``
-    absorbed into an adjacent run.
+    """Copy of ``neighbour_ids`` with every circular run shorter than ``min_run`` absorbed.
 
-    Deterministic rule: repeatedly take the shortest sub-threshold run (ties: smaller
-    label, then earlier position) and give its positions to the longer of its two
-    neighbouring runs (ties: smaller label). Runs that become adjacent with the same
-    label fuse. The array is circular, so a run may span the last and first positions.
-    If every run is sub-threshold the process continues until a single identity remains.
-    ``min_run=1`` returns an unchanged copy.
+    Each sub-threshold run is absorbed into an adjacent one, by this rule, applied
+    repeatedly:
+
+        take the shortest sub-threshold run    ties: smaller label, then earlier
+                                               position
+        give its positions to the longer of    ties: smaller label
+        its two neighbouring runs
+
+    Runs that become adjacent with the same label fuse.
+
+    The array is circular, so a run may span the last and first positions.
+
+    If every run is sub-threshold, the process continues until a single identity
+    remains. ``min_run=1`` returns an unchanged copy.
     """
     min_run = _check_min_run(min_run)
     ids = np.asarray(neighbour_ids)
@@ -101,21 +113,29 @@ def merge_short_runs(neighbour_ids: np.ndarray, min_run: int) -> np.ndarray:
 def tcj_corners(neighbour_ids: np.ndarray, min_run: int = DEFAULT_TCJ_MIN_RUN) -> np.ndarray:
     """Ascending indices where the neighbour identity changes, treating the array as circular.
 
-    Convention: index ``i`` is returned when ``ids[i] != ids[i-1]`` (with ``ids[-1]``
-    preceding ``ids[0]``), i.e. the corner is the FIRST position of the new neighbour.
-    Slicing ``[c_k, c_{k+1})`` between consecutive corners therefore yields a run with a
-    single neighbour identity; the final interface wraps from the last corner through the
-    end of the array and around to the first corner.
+    Convention: index ``i`` is returned when ``ids[i] != ids[i-1]``, with
+    ``ids[-1]`` preceding ``ids[0]``. The corner is therefore the FIRST position of
+    the new neighbour.
 
-    Runs shorter than ``min_run`` positions are first absorbed into a neighbouring run
-    (see ``merge_short_runs``). At a four-way vertex a diagonal-only neighbour can win one
-    or two positions; an interface spanning fewer than 3 boundary pixels cannot support a
-    meaningful contour measurement, and every spurious run observed was 1-2 pixels, hence
-    the default of 3. ``min_run`` is a filter on the measurement, not a property of the
-    segmentation. ``min_run=1`` disables the filter (raw identity changes).
+    Slicing ``[c_k, c_{k+1})`` between consecutive corners yields a run with a
+    single neighbour identity. The final interface wraps from the last corner
+    through the end of the array and around to the first.
 
-    A closed curve cannot have exactly one change, so counts are 0 or >= 2 (0 for an
-    all-same boundary such as an isolated cell). Arrays shorter than 2 give no corners.
+    Runs shorter than ``min_run`` positions are absorbed into a neighbouring run
+    first (see ``merge_short_runs``).
+
+    ``min_run`` is a filter on the measurement, not a property of the
+    segmentation. ``min_run=1`` disables it, giving raw identity changes.
+
+    (Why the default is 3: at a four-way vertex a diagonal-only neighbour can win
+    one or two positions, and an interface spanning fewer than 3 boundary pixels
+    cannot support a meaningful contour measurement. Every spurious run observed
+    was 1-2 pixels.)
+
+    A closed curve cannot have exactly one change, so counts are 0 or >= 2. Zero
+    means an all-same boundary, such as an isolated cell. Arrays shorter than 2
+    give no corners.
+
     Raises ConfigError for non-1-D input or an invalid ``min_run``.
     """
     min_run = _check_min_run(min_run)

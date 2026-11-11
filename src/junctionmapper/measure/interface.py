@@ -68,12 +68,13 @@ def straight_line_length(pixels) -> float:
 def linearity_index(pixels) -> float:
     """Straight-line length / contour; dimensionless, NaN when undefined.
 
-    For an open arc this lies in [0, 1] (1 = perfectly straight). NaN when
-    the contour is 0 (empty or single-pixel interface). For the
-    whole-boundary interface of a cell enclosed by one neighbour, first and
-    last pixel are adjacent (~1 px apart) while the contour is the whole
-    perimeter, so the value is near 0; that is a closed loop, not a very
-    crooked line.
+    For an open arc this lies in [0, 1], where 1 is perfectly straight.
+
+    NaN when the contour is 0 -- an empty or single-pixel interface.
+
+    Near 0 for the whole-boundary interface of a cell enclosed by one neighbour:
+    its first and last pixel are adjacent (~1 px apart) while the contour is the
+    whole perimeter. That is a closed loop, not a very crooked line.
     """
     contour = interface_contour(pixels)
     if contour == 0.0:
@@ -88,24 +89,30 @@ _SQUARE_3X3 = np.ones((3, 3), dtype=bool)
 def dilated_band(pixels, shape, cycles: int) -> np.ndarray:
     """Dilated Interface band (parameter 3, Dilation Cycles), as a bool mask.
 
-    ``pixels`` is an ``(N, 2)`` int array of ``(row, col)``; repeated pixels
-    are harmless because the run is rasterised into a mask. ``shape`` is the
-    ``(rows, cols)`` of the image. The mask is dilated ``cycles`` times with the
-    full 3x3 (8-connected) square, so one cycle widens a straight line to 3 px.
-    ``cycles`` is a pixel count of iterations (not micrometres); 0 returns the
-    undilated run. A band near the image edge is truncated at the edge.
+        pixels   (N, 2) int array of (row, col); repeated pixels are harmless,
+                 because the run is rasterised into a mask
+        shape    the (rows, cols) of the image
+        cycles   a count of dilation iterations, NOT micrometres; 0 returns the
+                 undilated run
 
-    Divergence from the Java original (deliberate, do not "fix" back): the
-    Java ``getDilatedImage`` suppresses a newly dilated pixel whenever any of
-    its 3x3 neighbours falls outside ``[1, w-2] x [1, h-2]``, so dilation is
-    dead at indices 0, 1, w-2 and w-1 -- a 2-px dead zone that compounds with
-    each iteration. Cells within a couple of pixels of the border therefore
-    get a narrower band there than the documented formula gives. That is an
-    implementation border artefact, not the published algorithm, so uniform
-    dilation is used here.
+    The mask is dilated ``cycles`` times with the full 3x3 (8-connected) square,
+    so one cycle widens a straight line to 3 px.
+
+    A band near the image edge is truncated at the edge.
 
     Raises ConfigError for a bad ``pixels`` shape, a negative or non-integer
     ``cycles``, or pixels outside ``shape``.
+
+    Divergence from the Java original -- deliberate, do not "fix" back
+
+        Java ``getDilatedImage`` suppresses a newly dilated pixel whenever any of
+        its 3x3 neighbours falls outside ``[1, w-2] x [1, h-2]``. Dilation is
+        therefore dead at indices 0, 1, w-2 and w-1: a 2-px dead zone that
+        compounds with each iteration.
+
+        Cells within a couple of pixels of the border get a narrower band there
+        than the documented formula gives. That is an implementation border
+        artefact, not the published algorithm, so this uses uniform dilation.
     """
     if isinstance(cycles, bool) or not isinstance(cycles, (int, np.integer)) or cycles < 0:
         raise ConfigError(f"cycles must be a non-negative integer; got {cycles!r}")
@@ -137,10 +144,14 @@ def dilated_band(pixels, shape, cycles: int) -> np.ndarray:
 class BandMetrics:
     """Band measurements for one interface and one marker channel.
 
-    Areas are pixel counts (convert with ``Field.pixel_size_um`` squared
-    downstream); ``marker_intensity`` is in raw image intensity units;
-    ``interface_occupancy_pct`` is a percentage; ``intensity_per_area`` and
-    ``cluster_density`` are intensity per pixel. Ratios are NaN when undefined.
+        areas               pixel counts; convert with ``Field.pixel_size_um``
+                            squared, downstream
+        marker_intensity    raw image intensity units
+        occupancy           a percentage
+        intensity_per_area  intensity per pixel
+        cluster_density     intensity per pixel
+
+    Ratios are NaN when undefined.
     """
 
     interface_area_px: int
@@ -154,25 +165,35 @@ class BandMetrics:
 def band_metrics(band, marker_image, t) -> BandMetrics:
     """Interface Area, Marker Area, Marker Intensity and derived ratios.
 
-    ``band`` is a bool mask (from ``dilated_band``); ``marker_image`` is the
-    greyscale marker channel of the same shape. The channel is thresholded with
-    ``mask_above(marker_image, t)``, which keeps surviving values, so:
+        band           a bool mask, from ``dilated_band``
+        marker_image   the greyscale marker channel, same shape
 
-    - ``interface_area_px``: band pixel count (pixels).
-    - ``marker_area_px``: band pixels with masked value > 0 (pixels).
-    - ``marker_intensity``: sum of masked values over the band, in raw image
-      units (float64 accumulation). Sub-threshold pixels contribute 0.
-    - ``interface_occupancy_pct``: 100 * marker area / interface area.
-    - ``intensity_per_area``: intensity / interface area (per pixel).
-    - ``cluster_density``: intensity / marker area (per pixel).
+    The channel is thresholded with ``mask_above(marker_image, t)``, which keeps
+    surviving values rather than collapsing them. Then:
 
-    Ratios are NaN on a zero denominator. NaN pixels and pixels <= ``t`` are
-    treated as below threshold; negative pixels (e.g. after background
-    subtraction) are excluded whenever ``t >= 0``, but with a negative ``t``
-    they pass and subtract from the intensity sum. A pixel above ``t`` whose
-    value is not positive is not counted in the marker area (Java parity).
+        interface_area_px         band pixel count
+        marker_area_px            band pixels whose masked value is > 0
+        marker_intensity          sum of masked values over the band, raw units,
+                                  accumulated in float64; sub-threshold pixels
+                                  contribute 0
+        interface_occupancy_pct   100 * marker area / interface area
+        intensity_per_area        intensity / interface area   (per pixel)
+        cluster_density           intensity / marker area      (per pixel)
 
-    Raises ConfigError for a non-bool ``band``, a shape mismatch or NaN ``t``.
+    Ratios are NaN on a zero denominator.
+
+    Threshold edge cases
+
+        NaN pixels, and pixels <= ``t``, count as below threshold.
+
+        Negative pixels (say, after background subtraction) are excluded whenever
+        ``t >= 0``. With a NEGATIVE ``t`` they pass, and subtract from the
+        intensity sum.
+
+        A pixel above ``t`` whose value is not positive is not counted in the
+        marker area. This is Java parity.
+
+    Raises ConfigError for a non-bool ``band``, a shape mismatch, or a NaN ``t``.
     """
     band = np.asarray(band)
     marker_image = np.asarray(marker_image)
@@ -295,11 +316,13 @@ def junction_straight_line(pixels, marker_image, t) -> float:
 def coverage_index(pixels, marker_image, t) -> float:
     """Coverage Index = fragmented_contour / interface_contour (dimensionless).
 
-    0.0 when the interface has length but no marker step exists (fewer than
-    two above-threshold pixels). NaN when ``interface_contour`` is 0 (empty or
-    single-pixel interface), where the ratio is undefined. Bounded by 1 (the
-    connected chords are shortcuts of the walk, by the triangle inequality), up
-    to last-ulp rounding; deliberately not clamped.
+        0.0    the interface has length, but no marker step exists (fewer than
+               two above-threshold pixels)
+        NaN    ``interface_contour`` is 0 -- an empty or single-pixel interface,
+               where the ratio is undefined
+
+    Bounded by 1, because the connected chords are shortcuts of the walk by the
+    triangle inequality -- up to last-ulp rounding. Deliberately not clamped.
     """
     contour = interface_contour(pixels)
     frag = fragmented_contour(pixels, marker_image, t)

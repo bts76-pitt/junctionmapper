@@ -14,11 +14,13 @@ def mask_above(image: np.ndarray, t: float) -> np.ndarray:
     """Return a copy of ``image`` where pixels ``<= t`` are zeroed.
 
     Pixels strictly greater than ``t`` keep their original value. The result has
-    the same dtype and shape as the input. NaN pixels count as not above the
-    threshold and are zeroed, since ``NaN > t`` is false.
+    the same dtype and shape as the input.
 
-    A NaN threshold would zero the whole image and report every metric as zero,
-    so it is rejected rather than propagated.
+    NaN pixels count as not above the threshold and are zeroed, since ``NaN > t``
+    is false.
+
+    A NaN threshold would zero the whole image and report every metric as zero, so
+    it is rejected rather than propagated.
     """
     # np.isnan rather than math.isnan(float): isinstance(t, float) is False for
     # np.float32, so a float32 NaN would have slipped through and zeroed the image.
