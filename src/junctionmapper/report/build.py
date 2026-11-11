@@ -1,14 +1,25 @@
 """Build the single-file HTML report from ``FieldResult`` objects.
 
-Three sections: QC (can I trust this run), Quantification (what does it show) and Provenance.
-Every figure is an inline base64 PNG; the page references nothing external and contains no URL.
+Three sections: QC (can I trust this run), Quantification (what does it show),
+and Provenance.
 
-Figure count (independent of the number of fields and of markers):
-    1 (QC bar) + P (pooled distributions) + P (per-field strip panels) + 3 (cell / nucleus size)
-with P = len(PARAMETERS) = 13. Each figure is a small-multiples grid whose panels are the
-(role, marker) x corner-method groups; groups are never pooled together. Per-field detail is
-also available as summary rows (n, quartiles) rather than as extra figures, so the page grows
-in rows, not in images, as fields are added.
+Every figure is an inline base64 PNG. The page references nothing external and
+contains no URL.
+
+Figure count, independent of the number of fields and of markers:
+
+    1      QC bar
+    P      pooled distributions
+    P      per-field strip panels
+    3      cell / nucleus size
+
+with P = len(PARAMETERS) = 13.
+
+Each figure is a small-multiples grid whose panels are the (role, marker) x
+corner-method groups. Groups are never pooled together.
+
+Per-field detail is summary ROWS (n, quartiles) rather than extra figures, so
+the page grows in rows, not in images, as fields are added.
 """
 from __future__ import annotations
 
@@ -258,11 +269,16 @@ _ACCOUNT_KEYS = [k for k, _ in QC_COLUMNS if not k.startswith("excl_")]
 def _qc_figure(pooled: dict[str, int], units: dict[str, int]) -> str | None:
     """One PNG, four panels, because the quantities are not comparable.
 
-    Panel 1 counts cells and does not add up (a cell can be measured and contributing);
-    panel 2 is a partition of the non-contributing cells, so those bars DO sum to it;
-    panel 3 counts overlapping flags, one cell possibly in several bars, plus orphan nuclei,
-    which are not cells at all; panel 4 counts interfaces and junctions, which are not cells.
-    Drawn as one figure so the page's figure count stays independent of the number of fields.
+        panel 1   counts cells, and does not add up -- a cell can be measured and
+                  contributing
+        panel 2   a partition of the non-contributing cells, so those bars DO sum
+                  to it
+        panel 3   counts overlapping flags, so one cell may appear in several bars,
+                  plus orphan nuclei, which are not cells at all
+        panel 4   counts interfaces and junctions, which are not cells
+
+    Drawn as one figure so the page's figure count stays independent of the number
+    of fields.
     """
     if not pooled["cells_found"]:
         return None
@@ -306,8 +322,11 @@ def _groups(ifc: pd.DataFrame) -> list[tuple[str, str]]:
 def _run_roles(provenance: dict) -> "set[str] | None":
     """The marker roles a single run-level threshold was carried for, if the run recorded it.
 
-    ``None`` means the caller recorded nothing (a library consumer building a report directly),
-    which is NOT the same as "nothing resolved": the two cases read differently in the banner.
+    ``None`` means the caller recorded nothing -- a library consumer building a
+    report directly.
+
+    That is NOT the same as "nothing resolved". The two cases read differently in
+    the banner.
     """
     raw = provenance.get("threshold_run_roles")
     if raw is None:
@@ -319,21 +338,35 @@ def _threshold_info(ifc: pd.DataFrame, run_roles: "set[str] | None" = None
                     ) -> dict[str, dict[str, Any]]:
     """Per role: the APPLIED threshold per field, and whether it genuinely varied.
 
-    ``varied`` means the applied values span more than ``THRESHOLD_SAME_TOL`` grey levels. The
-    default path proposes one value for the whole run (``pipeline.propose_run_thresholds``), so
-    it does not trip this; a bare difference in the last bits of a float never did mean "not
-    comparable". ``differing`` names the fields that establish the span -- those holding an
-    extreme applied value, plus any field more than the tolerance from the run value -- so a
-    fired banner can never name zero fields: at a span in (1.0, 2.0] every field is within the
-    tolerance of the median, and the banner used to contradict itself with "(0 fields in all)".
+    varied
+        The applied values span more than ``THRESHOLD_SAME_TOL`` grey levels.
 
-    ``attribution`` says what a varied threshold means, from ``run_roles``: ``"override"`` when
-    a single run value WAS carried for the role (so a differing field was overridden),
-    ``"fallback"`` when it was not (the proposal resolved nothing and every field fell back to
-    Otsu on its own plane -- nobody overrode anything), ``"unknown"`` when the run did not
-    record which it was. ``field_otsu`` carries, per field, what Otsu on that field's own plane
-    would have given, and ``deviating`` the fields where the two are far enough apart to be
-    worth a look.
+        The default path proposes one value for the whole run
+        (``pipeline.propose_run_thresholds``), so it does not trip this.
+
+    differing
+        The fields that establish the span: those holding an extreme applied
+        value, plus any field more than the tolerance from the run value.
+
+        A fired banner can therefore never name zero fields. (At a span in
+        (1.0, 2.0] every field is within the tolerance of the median, and the
+        banner used to contradict itself with "(0 fields in all)".)
+
+    attribution
+        What a varied threshold MEANS, read from ``run_roles``:
+
+            "override"   a single run value WAS carried for the role, so a
+                         differing field was overridden
+            "fallback"   it was not -- the proposal resolved nothing and every
+                         field fell back to Otsu on its own plane, so nobody
+                         overrode anything
+            "unknown"    the run did not record which it was
+
+    field_otsu
+        Per field, what Otsu on that field's own plane would have given.
+
+    deviating
+        The fields where those two are far enough apart to be worth a look.
     """
     info: dict[str, dict[str, Any]] = {}
     if not len(ifc):
@@ -383,9 +416,11 @@ BLUE = "#4c78a8"
 def _hist_figure(sub: dict, groups, col, label, unit, varied_roles, td) -> str:
     """Rows = (role, marker), columns = dp / tcj.
 
-    The bin range is computed per (role, marker) and shared by dp and tcj within it, so the
-    two methods of one marker are directly comparable while a weak marker is not crushed by a
-    strong one.
+    The bin range is computed per (role, marker) and shared by dp and tcj within
+    it.
+
+    So the two methods of one marker are directly comparable, while a weak marker
+    is not crushed by a strong one.
     """
     rows = groups
     fig, axes = plt.subplots(len(rows), len(METHODS), figsize=(3.4 * len(METHODS), 2.5 * len(rows)),
@@ -596,9 +631,15 @@ def _provenance(cfg: RunConfig, prov: dict, cells, ifc, tinfo, use_um):
 def build_report(results: Iterable, cfg: RunConfig, provenance: dict | None, out: Path) -> Path:
     """Write the report to ``out`` (parents created) and return ``out``.
 
-    ``provenance`` keys (all optional): ``params_used`` (segmentation parameters, including
-    ``model``), ``junctionmapper_version``, ``timestamp`` (embedded only if given), plus any
-    extra scalar entries. Raises ConfigError if two results share a ``field_id``.
+    ``provenance`` keys, all optional:
+
+        params_used              segmentation parameters, including ``model``
+        junctionmapper_version
+        timestamp                embedded only if given
+
+    plus any extra scalar entries.
+
+    Raises ConfigError if two results share a ``field_id``.
     """
     results = list(results)
     provenance = provenance or {}

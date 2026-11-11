@@ -25,11 +25,13 @@ class NucleusFlags:
 def nucleus_centroids(nucleus_labels) -> dict[int, tuple[int, int]]:
     """Return ``{label: (row, col)}`` using the Java tool's midpoint formula.
 
-    ``(max - min) // 2 + min`` over each axis of the nucleus's extent (integer
-    division, as in ``Cell_Nucleus.getGeometricMean``). This is the floored
-    midpoint of the bounding extent, NOT the centre of mass. Values are ints
-    on purpose: they are pixel indices produced by integer division, as in
-    the Java original.
+    ``(max - min) // 2 + min`` over each axis of the nucleus's extent, with integer
+    division, as in ``Cell_Nucleus.getGeometricMean``.
+
+    This is the floored midpoint of the bounding extent, NOT the centre of mass.
+
+    Values are ints on purpose: they are pixel indices produced by integer
+    division, as in the Java original.
     """
     labels = np.asarray(nucleus_labels)
     out: dict[int, tuple[int, int]] = {}
@@ -53,22 +55,28 @@ def nucleus_centroids(nucleus_labels) -> dict[int, tuple[int, int]]:
 def associate(cell_labels, nucleus_labels):
     """Assign each nucleus to the cell holding the most of its pixels.
 
-    A nucleus is an orphan if and only if it overlaps no cell at all (zero
-    non-background pixels under it); otherwise it goes to the cell label with
-    the most pixels under it, background ignored in that comparison. Ties go
-    to the lowest cell label, independent of array order.
+    A nucleus is an orphan if and only if it overlaps no cell at all -- zero
+    non-background pixels under it.
 
-    Divergence from the Java tool: Java associates a nucleus with the membrane
-    containing its centroid point (``setCellMembrane`` ->
-    ``getSelectedMembrane(getGeometricMean())``). We use pixel overlap because
-    it is robust to irregular nuclei and to nuclei straddling junctions, where
-    the centroid can fall on background or the wrong cell. Consequence: a
-    nucleus with a single pixel over a cell is assigned to it rather than
-    orphaned.
+    Otherwise it goes to the cell label with the most pixels under it, ignoring
+    background in that comparison. Ties go to the lowest cell label, independent of
+    array order.
 
-    Returns ``({cell_id: sorted [nucleus_ids]}, NucleusFlags)``. The mapping
-    holds only cells that received a nucleus; ``anucleate_cells`` enumerates
-    every cell label present in ``cell_labels``. All flag lists are sorted.
+    Returns ``({cell_id: sorted [nucleus_ids]}, NucleusFlags)``. The mapping holds
+    only cells that received a nucleus, while ``anucleate_cells`` enumerates every
+    cell label present in ``cell_labels``. All flag lists are sorted.
+
+    Divergence from the Java tool
+
+        Java associates a nucleus with the membrane containing its centroid point
+        (``setCellMembrane`` -> ``getSelectedMembrane(getGeometricMean())``).
+
+        This uses pixel overlap instead, because that is robust to irregular
+        nuclei and to nuclei straddling junctions, where the centroid can fall on
+        background or on the wrong cell.
+
+        Consequence: a nucleus with a single pixel over a cell is assigned to it,
+        rather than orphaned.
     """
     cells = np.asarray(cell_labels)
     nuclei = np.asarray(nucleus_labels)
@@ -105,17 +113,22 @@ def intra_distances(
 ) -> list[tuple[int, int, float]]:
     """Euclidean distances between nucleus centroids, as ``(i, j, dist)``.
 
-    Default: for each nucleus ``i`` its ``k`` nearest other nuclei. Self is
-    excluded by index (not by zero distance, so distinct nuclei with identical
-    centroids still give 0). ``k`` is clamped to ``n - 1``; fewer than two
-    nuclei gives ``[]``; ``k < 1`` raises ConfigError. Never emits inf.
-    Ordering: by ``i`` ascending, then distance ascending (ties by ``j``).
+    By default, each nucleus ``i`` gets its ``k`` nearest other nuclei.
+
+        self excluded    by index, not by zero distance -- so distinct nuclei
+                         with identical centroids still give 0
+        k                clamped to ``n - 1``; ``k < 1`` raises ConfigError
+        fewer than 2     returns ``[]``
+        nuclei
+        ordering         by ``i`` ascending, then distance ascending, ties by ``j``
+
+    Never emits inf.
 
     ``all_pairs=True`` ignores ``k`` and emits each unordered pair once with
     ``i < j``, ordered by ``(i, j)``.
 
-    Computed with an exact per-row distance sort rather than cKDTree so that
-    ties at the k-th neighbour are resolved deterministically (lowest id).
+    (Why an exact per-row distance sort rather than cKDTree: ties at the k-th
+    neighbour then resolve deterministically, to the lowest id.)
     """
     if not all_pairs and (
         isinstance(k, bool) or not isinstance(k, (int, np.integer)) or k < 1

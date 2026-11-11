@@ -1,10 +1,17 @@
 """What code produced a figure.
 
-A figure that cannot be traced to the code behind it is not reproducible, and a static
-``__version__`` string does not identify code: every commit of this branch stamps the same
-``0.1.0.dev0``. What identifies it is the commit (when the working tree is a checkout) or the
-installed distribution version (when it is not), plus the versions of the libraries whose
-numbers can move a result.
+A figure that cannot be traced to the code behind it is not reproducible.
+
+A static ``__version__`` string does not identify code: every commit of this
+branch stamps the same ``0.1.0.dev0``.
+
+What does identify it:
+
+    the commit                        when the working tree is a checkout
+    the installed distribution        when it is not
+    version
+
+plus the versions of the libraries whose numbers can move a result.
 """
 from __future__ import annotations
 
@@ -56,9 +63,11 @@ def _git_dir(start: Path) -> Path | None:
 def _head_sha(git_dir: Path) -> str | None:
     """HEAD's commit sha read straight off the filesystem, with no git binary.
 
-    The shipped container installs no git (its %post is pure pip on purpose), so the binary is
-    exactly unavailable on the path this project actually runs. Reading .git is what makes the
-    commit recoverable there, which is the whole point of recording it.
+    The shipped container installs no git -- its %post is pure pip, on purpose --
+    so the binary is exactly unavailable on the path this project actually runs.
+
+    Reading .git is what makes the commit recoverable there, which is the whole
+    point of recording it.
     """
     try:
         head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
@@ -116,9 +125,13 @@ def code_identity() -> str:
     """One resolvable string: the commit when there is one, else the installed version.
 
     The container runs the package off ``PYTHONPATH`` without installing it, so the
-    distribution version is frequently absent; the commit is what survives there. A trailing
-    ``-dirty`` means uncommitted changes, ``-dirty?`` that no git binary was available to
-    check (the image has none), so the commit identifies the checkout but not the edits in it.
+    distribution version is frequently absent. The commit is what survives there.
+
+    Suffixes:
+
+        -dirty     uncommitted changes
+        -dirty?    no git binary was available to check (the image has none), so
+                   the commit identifies the checkout but not the edits in it
     """
     sha = git_commit()
     dist = distribution_version()

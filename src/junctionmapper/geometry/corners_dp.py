@@ -7,17 +7,23 @@ from junctionmapper.errors import ConfigError
 def _farthest_pair(pts: np.ndarray) -> tuple:
     """Indices (i < j) of the two mutually most distant points; O(N^2).
 
-    Squared distances tie often, so the pair is chosen canonically to make the result
-    independent of where the boundary array starts: among all pairs at the maximum
-    distance, take the one whose coordinates sorted as ((r1, c1), (r2, c2)) with
-    (r1, c1) <= (r2, c2) are lexicographically smallest. Indices are then the first
-    occurrence of each coordinate (a necked pixel can occur twice), ordered i < j.
+    Squared distances tie often, so the pair is chosen canonically, to keep the
+    result independent of where the boundary array starts:
 
-    "First occurrence" is the one residual dependence on the trace origin: if a seed
-    coordinate were itself a repeated pixel, which occurrence is first would depend on
-    where the trace started. Measured at 0 occurrences over 1,152 necked boundaries
-    (5,134 traced), and geometrically it is hard to arrange — a farthest-pair seed is an
-    extreme point of the shape, while a repeated pixel is an interior constriction.
+        among all pairs at the maximum distance, take the one whose coordinates
+        sorted as ((r1, c1), (r2, c2)) with (r1, c1) <= (r2, c2) are
+        lexicographically smallest
+
+    Indices are then the first occurrence of each coordinate, ordered i < j. (A
+    necked pixel can occur twice.)
+
+    "First occurrence" is the one residual dependence on the trace origin: if a
+    seed coordinate were itself a repeated pixel, which occurrence came first would
+    depend on where the trace started.
+
+    Measured at 0 occurrences over 1,152 necked boundaries (5,134 traced), and it
+    is geometrically hard to arrange -- a farthest-pair seed is an extreme point of
+    the shape, while a repeated pixel is an interior constriction.
     """
     dr = pts[:, 0, None] - pts[None, :, 0]
     dc = pts[:, 1, None] - pts[None, :, 1]
@@ -61,14 +67,18 @@ def _split(pts: np.ndarray, lo: int, hi: int, epsilon: float, keep: set) -> None
 def dp_corners(boundary: np.ndarray, epsilon: float) -> np.ndarray:
     """Return ascending indices into ``boundary`` of its Douglas-Peucker corners.
 
-    ``boundary`` is a closed (N, 2) cycle (N >= 3); it is seeded with the two mutually
-    most distant points and each of the two arcs between them is simplified with
-    perpendicular distance to the chord. A point is kept when it lies strictly more
-    than ``epsilon`` from the chord. Results are indices, so repeated pixels (necks)
-    are never conflated. If ``epsilon`` exceeds the shape, only the two seeds remain.
+    ``boundary`` is a closed (N, 2) cycle, N >= 3.
 
-    Raises ConfigError for epsilon that is not a finite number > 0, or a boundary that
-    is not (N, 2) with N >= 3.
+    It is seeded with the two mutually most distant points, and each of the two
+    arcs between them is simplified with perpendicular distance to the chord. A
+    point is kept when it lies strictly more than ``epsilon`` from the chord.
+
+    Results are indices, so repeated pixels (necks) are never conflated.
+
+    If ``epsilon`` exceeds the shape, only the two seeds remain.
+
+    Raises ConfigError for an ``epsilon`` that is not a finite number > 0, or a
+    boundary that is not (N, 2) with N >= 3.
     """
     pts = np.asarray(boundary, dtype=float)
     if pts.ndim != 2 or pts.shape[1] != 2:

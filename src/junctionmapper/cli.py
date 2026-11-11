@@ -2,22 +2,31 @@
 
 Error policy
 ------------
-Everything the user can cause (bad config, bad input, bad labels, missing optional
-dependency) surfaces as a ``JunctionMapperError``. Each command catches that, prints one
-clean line to stderr and exits non-zero. Unexpected exceptions are real bugs and propagate.
+Everything the user can cause -- bad config, bad input, bad labels, a missing
+optional dependency -- surfaces as a ``JunctionMapperError``.
+
+Each command catches that, prints one clean line to stderr, and exits non-zero.
+
+Unexpected exceptions are real bugs, and propagate.
 
 Exit codes
 ----------
 0  every field succeeded
-1  the command failed: bad config / input, or every field failed (nothing was written)
+1  the command failed: bad config or input, or every field failed (nothing written)
 2  usage error (missing or unknown option; raised by typer itself)
-3  partial: some fields failed, the successful fields' outputs were written
+3  partial: some fields failed, and the successful fields' outputs were written
 
 The labels directory
 --------------------
-``segment`` writes, per field, ``<field_id>.JM1.npy`` (cell labels), ``<field_id>.nucleus.npy``
-(nucleus labels) and ``<field_id>.provenance.json``. ``run --labels DIR`` reads the ``.npy``
-files back unchanged. This directory is the seam a human-in-the-loop editor writes to.
+``segment`` writes three files per field:
+
+    <field_id>.JM1.npy             cell labels
+    <field_id>.nucleus.npy         nucleus labels
+    <field_id>.provenance.json     what produced them
+
+``run --labels DIR`` reads the ``.npy`` files back unchanged.
+
+This directory is the seam a human-in-the-loop editor writes to.
 """
 from __future__ import annotations
 
@@ -72,8 +81,8 @@ OutOpt = typer.Option(..., "--out", "-o", help="Output directory (created if abs
 def _version() -> str:
     """Installed distribution metadata, else the package's own ``__version__``.
 
-    Not an identification of the code: see ``provenance.code_identity``, which is recorded
-    beside it in every sidecar and report.
+    This does NOT identify the code. See ``provenance.code_identity``, which is
+    recorded beside it in every sidecar and report.
     """
     try:
         return metadata.version("junctionmapper")
@@ -131,10 +140,14 @@ def _load_config(path: Path) -> tuple[RunConfig, dict]:
 def _is_input(path: Path) -> bool:
     """True if ``path`` names an input in its own right, decided by suffix alone.
 
-    An OME-Zarr store is a DIRECTORY whose name ends ``.zarr``, so "is this an input" cannot
-    be decided with ``is_file()``: that left every zarr invocation unreachable from the CLI
-    even though the reader supports the format. Out-of-scope suffixes count here too, so a
-    vendor file is picked up and then refused BY NAME in ``_iter_fields`` rather than ignored.
+    An OME-Zarr store is a DIRECTORY whose name ends ``.zarr``, so "is this an
+    input" cannot be decided with ``is_file()``.
+
+    Out-of-scope suffixes count here too, so a vendor file is picked up and then
+    refused BY NAME in ``_iter_fields``, rather than ignored.
+
+    (Deciding on ``is_file()`` left every zarr invocation unreachable from the CLI,
+    even though the reader supports the format.)
     """
     return path.suffix.lower() in (_INPUT_SUFFIXES | _OUT_OF_SCOPE_SUFFIXES)
 
@@ -142,10 +155,14 @@ def _is_input(path: Path) -> bool:
 def _input_files(path: Path) -> list[Path]:
     """The input leaves of ``path``: ``path`` itself, or the recognised entries inside it.
 
-    A recognised suffix wins over ``is_dir()``, so ``--input store.ome.zarr`` is taken as the
-    store rather than scanned for files inside it. A path with no recognised suffix behaves
-    exactly as before: a directory is scanned (sorted, so deterministic) and now admits a
-    zarr store alongside files, anything else is returned as a single leaf.
+    A recognised suffix wins over ``is_dir()``, so ``--input store.ome.zarr`` is
+    taken as the store, not scanned for files inside it.
+
+    A path with no recognised suffix behaves as it always has:
+
+        a directory    scanned, sorted, so deterministic -- and now admits a zarr
+                       store alongside files
+        anything else  returned as a single leaf
     """
     if _is_input(path):                 # a .zarr store is a directory; a .tif file is not
         if not path.exists():
@@ -183,8 +200,10 @@ def _ensure_out_dir(out: Path) -> None:
 def _refuse_label_overwrite(labels_dir: Path, files: list[Path], cfg: RunConfig) -> None:
     """Refuse, before any segmentation, if writing would replace existing label files.
 
-    Existing labels may be hand-corrected work (the napari seam); that must never be lost
-    silently. Field ids are enumerated by reading the inputs, which is cheap next to Cellpose.
+    Existing labels may be hand-corrected work -- the napari seam -- and that must
+    never be lost silently.
+
+    Field ids are enumerated by reading the inputs, which is cheap next to Cellpose.
     """
     if not labels_dir.is_dir():
         return
@@ -283,10 +302,12 @@ def _check_sidecar(directory: Path, field: Field, side: dict | None) -> dict | N
 def _load_labels(directory: Path, field: Field) -> Segmentation:
     """Load one field's labels, and the provenance of whatever produced them.
 
-    The sidecar written by ``segment`` (or by an editor that keeps it) holds the model, its
-    parameters, the device, when the labels were made and what code made them. Reading only its
-    ``source`` field, as this did, left the supported ``--labels`` path unable to say what
-    segmentation is behind a figure.
+    The sidecar written by ``segment``, or by an editor that keeps it, holds the
+    model, its parameters, the device, when the labels were made, and what code
+    made them.
+
+    (Reading only its ``source`` field, as this once did, left the supported
+    ``--labels`` path unable to say what segmentation is behind a figure.)
     """
     cells = _load_label(directory, field, Role.JM1)
     nuclei = _load_label(directory, field, Role.NUCLEUS)
@@ -393,12 +414,16 @@ def _seg_params(model: str, diameter: float | None, flow: float, cellprob: float
 def _calibration_files(files: list[Path], n: int = CALIBRATION_FIELDS) -> list[Path]:
     """Up to ``n`` input files spread evenly over ``files`` (which ``_input_files`` sorted).
 
-    The threshold proposal is over up to ``n`` FIELDS chosen by sorted ``field_id``
-    (``pipeline.calibration_subset``); this picks which files the calibration pass has to open
-    to offer that choice. It is done per file because a field id does not exist until the file
-    has been read, so the alternative is reading every input twice. One file usually holds one
-    field, and then the two selections coincide; a multi-scene file contributes all its fields
-    to the subset, which ``calibration_subset`` then narrows to ``n``.
+    This picks which files the calibration pass has to open. The threshold proposal
+    itself is over up to ``n`` FIELDS chosen by sorted ``field_id``, in
+    ``pipeline.calibration_subset``.
+
+    It is done per FILE because a field id does not exist until the file has been
+    read -- the alternative is reading every input twice.
+
+    One file usually holds one field, and then the two selections coincide. A
+    multi-scene file contributes all its fields to the subset, which
+    ``calibration_subset`` then narrows to ``n``.
     """
     if len(files) <= n:
         return list(files)
@@ -425,13 +450,20 @@ def _calibration_fields(files: list[Path], cfg: RunConfig,
                         n: int = CALIBRATION_FIELDS) -> tuple[list[Field], str | None]:
     """Fields of up to ``n`` READABLE calibration files, and a note when that was degraded.
 
-    A file that cannot be read used to shrink the calibration set silently, and if all ``n``
-    failed the run reverted to per-field Otsu while the report blamed a human override. So the
-    spread order is walked past a failure to the next candidate until ``n`` files have been
-    read or the candidates run out, bounded at ``_CALIBRATION_ATTEMPTS`` opens. A file counts
-    as read only if it yielded fields and raised nothing, so a multi-scene file that dies part
-    way through is skipped whole rather than contributing a truncated set. The failures are not
-    reported here beyond the note: the measurement pass reads the same files and names each one.
+    The spread order is walked past a failure to the next candidate, until ``n``
+    files have been read or the candidates run out, bounded at
+    ``_CALIBRATION_ATTEMPTS`` opens.
+
+    A file counts as read only if it yielded fields and raised nothing, so a
+    multi-scene file that dies part way through is skipped whole rather than
+    contributing a truncated set.
+
+    Failures are not reported here beyond the note. The measurement pass reads the
+    same files and names each one.
+
+    (Why walk past: a file that could not be read used to shrink the calibration
+    set silently, and if all ``n`` failed the run reverted to per-field Otsu while
+    the report blamed a human override.)
     """
     candidates = _calibration_candidates(files, n)[:_CALIBRATION_ATTEMPTS]
     fields: list[Field] = []
@@ -460,9 +492,10 @@ def _calibration_fields(files: list[Path], cfg: RunConfig,
 def _calibrate(files: list[Path], cfg: RunConfig) -> tuple[RunThresholds, str | None]:
     """Propose one threshold per marker role for the whole run, and note any degradation.
 
-    Reads the marker planes of the calibration files only. Skipped entirely when the
-    configuration already fixes a threshold for every marker role, since then nothing would
-    be proposed.
+    Reads the marker planes of the calibration files only.
+
+    Skipped entirely when the configuration already fixes a threshold for every
+    marker role, since then nothing would be proposed.
     """
     roles = [c.role for c in cfg.channels if c.role in (Role.JM1, Role.JM2)]
     if cfg.threshold and all(r in cfg.threshold for r in roles):
@@ -474,10 +507,13 @@ def _calibrate(files: list[Path], cfg: RunConfig) -> tuple[RunThresholds, str | 
 def _merge_params(all_params: list[dict], sidecar_dir: Path) -> dict:
     """Keep the parameters every field agrees on; name the ones that varied per field.
 
-    ``sidecar_dir`` is where the per-field provenance sidecars actually are: ``OUT/labels``
-    when this run segmented, the operator's ``--labels`` directory when it did not. The text
-    used to say ``labels/<field_id>.provenance.json`` unconditionally, which named a directory
-    that does not exist on the supported path.
+    ``sidecar_dir`` is where the per-field provenance sidecars actually are:
+
+        OUT/labels              when this run segmented
+        the --labels directory  when it did not
+
+    (The text used to say ``labels/<field_id>.provenance.json`` unconditionally,
+    naming a directory that does not exist on the supported path.)
     """
     if not all_params:
         return {}
