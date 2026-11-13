@@ -58,6 +58,7 @@ from junctionmapper.pipeline import (
 )
 from junctionmapper.report.build import build_report
 from junctionmapper.segment.cellpose import Segmentation, SegmentationParams, segment_field
+from junctionmapper.segment.snap import ERODE_PX, SIGMA_PX, SMOOTH_PX, snap_params, snap_to_membrane
 from junctionmapper.tables import write_tables
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
@@ -80,6 +81,12 @@ OutOpt = typer.Option(..., "--out", "-o", help="Output directory (created if abs
 
 # Cellpose 4 does not estimate a diameter: None means no rescaling at all, and cells much
 # larger than the ~30 px the model was trained on break into fragments with no error.
+_SNAP_HELP = (
+    "After Cellpose, move cell-cell boundaries onto the segment-plane membrane ridge and "
+    "smooth them (erode 8 px, sigma 3, smooth 20 px). To snap existing labels, use `snap`.")
+_WITH_NUCLEUS_HELP = (
+    "Also give Cellpose the nucleus plane when drawing cells (channel 2). Stops cell "
+    "boundaries cutting through nuclei. Needs a 'nucleus' channel in the config.")
 _DIAMETER_HELP = (
     "Cell diameter in px. Set it: with no value Cellpose does not rescale, "
     "and cells far above ~30 px fragment."
@@ -422,9 +429,17 @@ def _require_segment_channel(cfg: RunConfig) -> None:
             "or JM2); add one to the config, or pass --labels to measure existing labels")
 
 
-def _seg_params(model: str, diameter: float | None, flow: float, cellprob: float, gpu: bool):
+def _snapped(field: Field, seg: Segmentation, params: dict, **extra: Any) -> Segmentation:
+    """``seg`` with its cell boundaries snapped onto the segment plane; nuclei untouched."""
+    cells = snap_to_membrane(seg.cells, field.planes[Role.SEGMENT], **params)
+    return Segmentation(cells=cells, nuclei=seg.nuclei,
+                        params_used={**seg.params_used, "snap_to_membrane": params, **extra})
+
+
+def _seg_params(model: str, diameter: float | None, flow: float, cellprob: float, gpu: bool,
+                with_nucleus: bool = False):
     return SegmentationParams(model=model, diameter=diameter, flow_threshold=flow,
-                              cellprob_threshold=cellprob, gpu=gpu)
+                              cellprob_threshold=cellprob, gpu=gpu, with_nucleus=with_nucleus)
 
 
 def _calibration_files(files: list[Path], n: int = CALIBRATION_FIELDS) -> list[Path]:
@@ -547,6 +562,58 @@ def _merge_params(all_params: list[dict], sidecar_dir: Path) -> dict:
 
 @app.command()
 @_guard
+def snap(
+    config: Path = ConfigOpt, input: Path = InputOpt, out: Path = OutOpt,
+    labels: Path = typer.Option(..., "--labels", help="Directory of label files to snap."),
+    erode_px: int = typer.Option(ERODE_PX, help="How far (px) a boundary may move."),
+    sigma_px: float = typer.Option(SIGMA_PX, help="Smoothing (px) of the membrane plane."),
+    smooth_px: float = typer.Option(SMOOTH_PX, help="Smoothing (px) of the snapped boundaries."),
+    overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
+                                          "files in OUT/labels (default: refuse)."),
+) -> None:
+    """Move existing cell-cell boundaries onto the membrane ridge; write labels to OUT/labels.
+
+    The membrane is the config's segment channel. Foreground, nuclei and cell ids are
+    unchanged. Measure the result with `run --labels OUT/labels`.
+
+    \b
+    Exit codes: 0 every field succeeded; 1 command failed, or every field failed
+    (nothing written); 3 PARTIAL - some fields failed and the rest were written;
+    2 usage error. Do not treat 3 as success.
+    """
+    cfg, raw = _load_config(config)
+    _require_segment_channel(cfg)
+    files = _input_files(input)
+    if not labels.is_dir():
+        raise ConfigError(f"labels directory not found: {labels}")
+    labels = labels.resolve()
+    labels_dir = out / "labels"
+    if labels_dir.resolve() == labels:
+        raise ConfigError("snap would overwrite its own input labels; choose a different --out")
+    _ensure_out_dir(out)
+    if not overwrite_labels:
+        _refuse_label_overwrite(labels_dir, files, cfg)
+    params = snap_params(erode_px, sigma_px, smooth_px)
+
+    def work(field: Field) -> None:
+        seg = _load_labels(labels, field)
+        side = _read_sidecar(labels, field) or {}
+        used = side.get("params_used") if isinstance(side.get("params_used"), dict) else {}
+        seg = Segmentation(cells=seg.cells, nuclei=seg.nuclei, params_used=dict(used))
+        _save_labels(labels_dir, field, _snapped(field, seg, params, snapped_from=str(labels)),
+                     cfg, raw)
+
+    ok, failures = _process(files, cfg, work)
+    _report_outcome(len(ok), failures)
+    if ok:
+        typer.echo(f"snapped labels written to {labels_dir}")
+    elif not failures:
+        raise ConfigError(f"no fields found in {input}")
+    _finish(len(ok), failures)
+
+
+@app.command()
+@_guard
 def segment(
     config: Path = ConfigOpt, input: Path = InputOpt, out: Path = OutOpt,
     model: str = typer.Option("cpsam", help="Cellpose model."),
@@ -554,6 +621,8 @@ def segment(
     flow_threshold: float = typer.Option(0.4),
     cellprob_threshold: float = typer.Option(0.0),
     gpu: bool = typer.Option(True, "--gpu/--no-gpu", help="Use a GPU if one is available."),
+    with_nucleus: bool = typer.Option(False, "--with-nucleus", help=_WITH_NUCLEUS_HELP),
+    snap: bool = typer.Option(False, "--snap-to-membrane", help=_SNAP_HELP),
     overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
                                           "files in OUT/labels (default: refuse)."),
 ) -> None:
@@ -567,14 +636,18 @@ def segment(
     cfg, raw = _load_config(config)
     _require_segment_channel(cfg)
     files = _input_files(input)
-    params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu)
+    params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu,
+                         with_nucleus)
     labels_dir = out / "labels"
     _ensure_out_dir(out)
     if not overwrite_labels:
         _refuse_label_overwrite(labels_dir, files, cfg)
 
     def work(field: Field) -> None:
-        _save_labels(labels_dir, field, segment_field(field, params), cfg, raw)
+        seg = segment_field(field, params)
+        if snap:
+            seg = _snapped(field, seg, snap_params())
+        _save_labels(labels_dir, field, seg, cfg, raw)
 
     ok, failures = _process(files, cfg, work)
     _report_outcome(len(ok), failures)
@@ -596,6 +669,8 @@ def run(
     flow_threshold: float = typer.Option(0.4),
     cellprob_threshold: float = typer.Option(0.0),
     gpu: bool = typer.Option(True, "--gpu/--no-gpu", help="Use a GPU if one is available."),
+    with_nucleus: bool = typer.Option(False, "--with-nucleus", help=_WITH_NUCLEUS_HELP),
+    snap: bool = typer.Option(False, "--snap-to-membrane", help=_SNAP_HELP),
     overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
                                           "files in OUT/labels (default: refuse)."),
 ) -> None:
@@ -612,12 +687,16 @@ def run(
     files = _input_files(input)
     if labels is not None and not labels.is_dir():
         raise ConfigError(f"labels directory not found: {labels}")
+    if labels is not None and snap:
+        raise ConfigError("--snap-to-membrane applies to a fresh segmentation; to snap existing "
+                          "labels, run `junctionmapper snap` and pass its labels to --labels")
     if labels is not None:
         labels = labels.resolve()
     _ensure_out_dir(out)
     if labels is None and not overwrite_labels:
         _refuse_label_overwrite(out / "labels", files, cfg)
-    params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu)
+    params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu,
+                         with_nucleus)
 
     run_t, calib_note = _calibrate(files, cfg)
 
@@ -626,6 +705,8 @@ def run(
             seg = _load_labels(labels, field)
         else:
             seg = segment_field(field, params)
+            if snap:
+                seg = _snapped(field, seg, snap_params())
             _save_labels(out / "labels", field, seg, cfg, raw)
         result = measure_field(field, seg, cfg, run_thresholds=run_t)
         thresholds = {r.value: t for r, t in resolve_thresholds(field, cfg, run_t).items()}

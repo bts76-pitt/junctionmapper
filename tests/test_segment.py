@@ -38,7 +38,7 @@ def stub_cellpose(monkeypatch, *, version="4.0.1", diams=None, device=None, muta
 
         def eval(self, plane, **kwargs):
             name = NAME_OF_FILL[float(plane.flat[0])]
-            rec["eval"].append({"plane": name, "shape": plane.shape, **kwargs})
+            rec["eval"].append({"plane": name, "shape": plane.shape, "x": plane.copy(), **kwargs})
             if mutate:
                 # Real Cellpose percentile-normalises a float32 input IN PLACE.
                 plane -= plane.min()
@@ -286,3 +286,47 @@ def test_segmenting_without_a_segment_plane_is_refused(monkeypatch):
     with pytest.raises(SegmentationError, match="segment"):
         segment_field(synthetic_field(roles=(Role.JM1, Role.NUCLEUS)), SegmentationParams())
     assert rec["eval"] == []  # refused before any Cellpose call
+
+
+# ---- with_nucleus: the nucleus plane as Cellpose's second channel for cells -------------
+
+def test_cells_are_segmented_on_the_segment_plane_alone_by_default(monkeypatch):
+    seen = record_eval_calls(monkeypatch)
+    segment_field(synthetic_field(), SegmentationParams())
+    cell = seen[0]
+    assert cell["shape"] == (16, 20)
+    assert "channel_axis" not in cell
+
+
+def test_with_nucleus_gives_cellpose_segment_then_nucleus_channels(monkeypatch):
+    """A cell boundary drawn from the membrane plane alone can cut straight through a
+    nucleus; Cellpose-SAM avoids that when it also sees the nuclei."""
+    seen = record_eval_calls(monkeypatch)
+    segment_field(synthetic_field(), SegmentationParams(with_nucleus=True))
+    cell = seen[0]
+    assert cell["shape"] == (16, 20, 2)
+    assert cell["channel_axis"] == -1
+    assert np.all(cell["x"][..., 0] == FILL[Role.SEGMENT])
+    assert np.all(cell["x"][..., 1] == FILL[Role.NUCLEUS])
+
+
+def test_with_nucleus_still_segments_nuclei_on_the_nucleus_plane_alone(monkeypatch):
+    seen = record_eval_calls(monkeypatch)
+    segment_field(synthetic_field(), SegmentationParams(with_nucleus=True))
+    nuc = seen[1]
+    assert nuc["plane"] == "NUCLEUS" and nuc["shape"] == (16, 20)
+    assert "channel_axis" not in nuc
+
+
+def test_with_nucleus_without_a_nucleus_plane_is_refused(monkeypatch):
+    record_eval_calls(monkeypatch)
+    with pytest.raises(SegmentationError, match="nucleus"):
+        segment_field(synthetic_field(roles=(Role.SEGMENT,)), SegmentationParams(with_nucleus=True))
+
+
+def test_params_used_records_which_planes_the_cells_were_drawn_from(monkeypatch):
+    stub_no_gpu(monkeypatch)
+    plain = segment_field(synthetic_field(), SegmentationParams()).params_used
+    both = segment_field(synthetic_field(), SegmentationParams(with_nucleus=True)).params_used
+    assert plain["with_nucleus"] is False and plain["cell_input"] == ["SEGMENT"]
+    assert both["with_nucleus"] is True and both["cell_input"] == ["SEGMENT", "NUCLEUS"]

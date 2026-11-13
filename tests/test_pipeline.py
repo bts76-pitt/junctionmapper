@@ -690,3 +690,39 @@ def test_nucleus_shape_mismatch_raises_config_error(setup):
     seg.nuclei = np.zeros((5, 5), np.int32)
     with pytest.raises(ConfigError):
         measure_field(f, seg, cfg)
+
+
+# ---- splits_nucleus: an interface drawn through a nucleus ---------------------------------
+# build(): cells 1 | 2 side by side (cols 10..17 | 18..25, rows 10..17); 3 | 4 below them.
+
+def _pair_flags(df, a, b):
+    sel = df[((df.cell_id == a) & (df.neighbour_id == b)) | ((df.cell_id == b) & (df.neighbour_id == a))]
+    assert len(sel), (a, b)
+    return set(sel.splits_nucleus)
+
+
+def test_interface_through_a_nucleus_is_flagged_on_both_sides_and_both_methods(setup):
+    f, seg, cfg = setup
+    seg.nuclei[12:15, 15:21] = 3            # 9 px in cell 1, 9 px in cell 2
+    df = measure_field(f, seg, cfg).interfaces
+    assert _pair_flags(df, 1, 2) == {True}
+    assert set(df[(df.cell_id == 1) & (df.neighbour_id == 2)].corner_method) == {"dp", "tcj"}
+    assert _pair_flags(df, 1, 3) == {False}
+    assert _pair_flags(df, 3, 4) == {False}
+
+
+def test_nucleus_only_grazing_the_neighbour_is_not_a_split(setup):
+    """Nucleus labels overrun a pressed-against membrane by a pixel or two; that is not a cut."""
+    f, seg, cfg = setup
+    seg.nuclei[:] = 0
+    seg.nuclei[10:18, 13:18] = 1            # 40 px in cell 1
+    seg.nuclei[10:12, 18] = 1               # 2 px (5%) over into cell 2
+    df = measure_field(f, seg, cfg).interfaces
+    assert _pair_flags(df, 1, 2) == {False}
+
+
+def test_no_interface_is_flagged_when_every_nucleus_sits_in_one_cell(setup):
+    f, seg, cfg = setup
+    df = measure_field(f, seg, cfg).interfaces
+    assert "splits_nucleus" in df.columns
+    assert not df.splits_nucleus.any()

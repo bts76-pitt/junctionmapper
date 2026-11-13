@@ -26,6 +26,9 @@ Reproducibility
 
 Limitations
 
+    ``with_nucleus`` stacks the nucleus plane under the segment plane for the cell
+    pass only. Nuclei are always segmented from the nucleus plane alone.
+
     One ``diameter`` and one pair of thresholds is applied to BOTH the cell and
     nucleus planes. Nuclei may want different values; a per-role field can be
     added to ``SegmentationParams`` later.
@@ -61,6 +64,9 @@ class SegmentationParams:
     flow_threshold: float = 0.4
     cellprob_threshold: float = 0.0
     gpu: bool = True
+    # Cells: also give Cellpose the nucleus plane, as channel 2. Off by default.
+    # Membrane signal lying over a nucleus otherwise reads as a cell edge and cuts it.
+    with_nucleus: bool = False
 
 
 @dataclass
@@ -128,6 +134,10 @@ def segment_field(field: Field, params: SegmentationParams) -> Segmentation:
         raise SegmentationError(
             f"Field {field.field_id!r} has no segment plane. Add a channel with role 'segment' "
             f"(a membrane marker that is not JM1 or JM2), or pass --labels to skip segmentation.")
+    if params.with_nucleus and Role.NUCLEUS not in field.planes:
+        raise SegmentationError(
+            f"Field {field.field_id!r} has no nucleus plane, but with_nucleus asks for one as the "
+            f"second channel for cells. Add a 'nucleus' channel or drop --with-nucleus.")
 
     cellpose, models = _import_cellpose()
 
@@ -152,8 +162,16 @@ def segment_field(field: Field, params: SegmentationParams) -> Segmentation:
         # field's own plane: ``run`` measures the same Field after segmenting it, and a
         # mutated plane silently becomes the measurement input (thresholds are calibrated
         # on the raw planes beforehand, so every marker metric collapses to zero).
+        extra: dict[str, Any] = {}
+        if role is Role.SEGMENT and params.with_nucleus:
+            # np.stack copies, so the field's planes stay untouched (see above).
+            x = np.stack([plane, field.planes[Role.NUCLEUS]], axis=-1)
+            extra["channel_axis"] = -1
+        else:
+            x = plane.copy()
         out = model.eval(
-            plane.copy(),
+            x,
+            **extra,
             diameter=params.diameter,
             flow_threshold=params.flow_threshold,
             cellprob_threshold=params.cellprob_threshold,
@@ -187,6 +205,8 @@ def segment_field(field: Field, params: SegmentationParams) -> Segmentation:
         "cellpose_version": _cellpose_version(cellpose),
         "torch_version": torch_version,
         "roles_segmented": [r.name for r in _SEGMENTED_ROLES if r in labels],
+        "with_nucleus": bool(params.with_nucleus),
+        "cell_input": ["SEGMENT", "NUCLEUS"] if params.with_nucleus else ["SEGMENT"],
         "input_shape": [int(n) for n in cells.shape],
         "input_dtype": str(field.planes[Role.SEGMENT].dtype),
         "field_id": field.field_id,

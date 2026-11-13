@@ -1194,3 +1194,91 @@ def test_labels_run_needs_no_segment_channel(env, monkeypatch):
     write_cfg(env["cfg"], channels=[c for c in CFG["channels"] if c["role"] != "segment"])
     r = run_ok(env)
     assert r.exit_code == 0, r.output
+
+
+# ---- --with-nucleus -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("command", ["segment", "run"])
+@pytest.mark.parametrize("flag, expected", [([], False), (["--with-nucleus"], True)])
+def test_with_nucleus_flag_reaches_segmentation(env, monkeypatch, command, flag, expected):
+    got = []
+    def fake(field, params):
+        got.append(params.with_nucleus)
+        return Segmentation(cells=env["seg"].cells.copy(), nuclei=env["seg"].nuclei.copy(),
+                            params_used={"model": params.model})
+    monkeypatch.setattr(cli, "segment_field", fake)
+    r = invoke(command, "--config", env["cfg"], "--input", env["tif"],
+               "--out", env["tmp"] / command, *flag)
+    assert r.exit_code == 0, r.output
+    assert got and all(g is expected for g in got)
+
+
+# ---- snap: move existing cell boundaries onto the membrane ridge -------------------------
+
+def test_snap_writes_new_labels_with_provenance_and_unchanged_nuclei(env):
+    out = env["tmp"] / "snapped"
+    r = invoke("snap", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+               "--out", out)
+    assert r.exit_code == 0, r.output
+    lab = out / "labels"
+    cells = np.load(lab / f"{FID}.JM1.npy"); nuc = np.load(lab / f"{FID}.nucleus.npy")
+    assert cells.shape == env["seg"].cells.shape and cells.dtype == env["seg"].cells.dtype
+    assert np.array_equal(nuc, env["seg"].nuclei)
+    assert np.array_equal(cells > 0, env["seg"].cells > 0)
+    side = json.loads((lab / f"{FID}.provenance.json").read_text())
+    snap = side["params_used"]["snap_to_membrane"]
+    assert snap == {"erode_px": 8, "sigma_px": 3.0, "smooth_px": 20.0}
+    assert side["params_used"]["snapped_from"] == str(env["labels"].resolve())
+
+
+def test_snapped_labels_can_be_measured(env):
+    out = env["tmp"] / "snapped"
+    assert invoke("snap", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+                  "--out", out).exit_code == 0
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels", out / "labels",
+               "--out", env["out"])
+    assert r.exit_code == 0, r.output
+    assert "snap_to_membrane" in (env["out"] / "report.html").read_text()
+
+
+def test_snap_parameters_are_options(env):
+    out = env["tmp"] / "snapped"
+    r = invoke("snap", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+               "--out", out, "--erode-px", "4", "--smooth-px", "10")
+    assert r.exit_code == 0, r.output
+    side = json.loads((out / "labels" / f"{FID}.provenance.json").read_text())
+    assert side["params_used"]["snap_to_membrane"] == {"erode_px": 4, "sigma_px": 3.0, "smooth_px": 10.0}
+
+
+def test_snap_needs_a_segment_channel(env):
+    cfg = write_cfg(env["tmp"] / "noseg.yaml", channels=CFG["channels"][:3])
+    r = invoke("snap", "--config", cfg, "--input", env["tif"], "--labels", env["labels"],
+               "--out", env["tmp"] / "snapped")
+    assert r.exit_code != 0 and "segment" in r.output
+
+
+def test_snap_refuses_to_overwrite_its_input_labels(env):
+    run_dir = env["tmp"] / "seg"
+    save_labels(run_dir / "labels", FID, env["seg"])          # labels at OUT/labels
+    before = np.load(run_dir / "labels" / f"{FID}.JM1.npy")
+    r = invoke("snap", "--config", env["cfg"], "--input", env["tif"],
+               "--labels", run_dir / "labels", "--out", run_dir, "--overwrite-labels")
+    assert r.exit_code != 0 and "own input labels" in r.output
+    assert np.array_equal(np.load(run_dir / "labels" / f"{FID}.JM1.npy"), before)
+
+
+@pytest.mark.parametrize("command", ["segment", "run"])
+def test_snap_to_membrane_flag_snaps_fresh_segmentation(env, monkeypatch, command):
+    stub_segment(monkeypatch, env["seg"])
+    out = env["tmp"] / command
+    r = invoke(command, "--config", env["cfg"], "--input", env["tif"], "--out", out,
+               "--snap-to-membrane")
+    assert r.exit_code == 0, r.output
+    side = json.loads((out / "labels" / f"{FID}.provenance.json").read_text())
+    assert side["params_used"]["snap_to_membrane"] == {"erode_px": 8, "sigma_px": 3.0, "smooth_px": 20.0}
+
+
+def test_snap_to_membrane_with_labels_points_to_the_snap_command(env):
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+               "--out", env["out"], "--snap-to-membrane")
+    assert r.exit_code != 0 and "snap" in r.output

@@ -280,6 +280,37 @@ def resolve_thresholds(field: Field, cfg: RunConfig,
     return out
 
 
+SPLIT_NUCLEUS_FRACTION = 0.10
+"""Share of one nucleus that must lie in EACH of two cells for their interface to count as
+drawn through it (``splits_nucleus``). Below this, the nucleus label is only grazing a
+membrane it is pressed against: those labels overrun the boundary by a pixel or two."""
+
+
+def split_nucleus_pairs(cells: np.ndarray, nuclei: np.ndarray,
+                        min_fraction: float = SPLIT_NUCLEUS_FRACTION) -> set[frozenset[int]]:
+    """Cell pairs whose shared boundary cuts a nucleus.
+
+    A pair qualifies when one nucleus label has at least ``min_fraction`` of its pixels in
+    each of the two cells. Background pixels count toward the nucleus total, not a cell.
+    """
+    m = nuclei > 0
+    if not m.any():
+        return set()
+    nuc, cel = nuclei[m].astype(np.int64), cells[m].astype(np.int64)
+    total = np.bincount(nuc)
+    pairs: set[frozenset[int]] = set()
+    keys, counts = np.unique(np.stack([nuc, cel]), axis=1, return_counts=True)
+    held: dict[int, list[int]] = {}
+    for n, c, k in zip(keys[0], keys[1], counts):
+        if c != 0 and k >= min_fraction * total[n]:
+            held.setdefault(int(n), []).append(int(c))
+    for cs in held.values():
+        for i, a in enumerate(cs):
+            for b in cs[i + 1:]:
+                pairs.add(frozenset((a, b)))
+    return pairs
+
+
 def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                   epsilon: float | None = None,
                   run_thresholds: RunThresholds | None = None) -> FieldResult:
@@ -326,6 +357,7 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
         raise ConfigError(f"nucleus labels shape {nuc_labels.shape} != cell labels {labels.shape}")
     mapping, nflags = associate(labels, nuc_labels)
     nuc_of = {n: c for c, ns in mapping.items() for n in ns}
+    split_pairs = split_nucleus_pairs(labels, nuc_labels)
 
     iface_rows, cell_rows, flag_rows = [], [], []
     for cid in (int(c) for c in np.unique(labels) if c != 0):
@@ -366,6 +398,7 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                             "interface_id": _interface_id(fid, itf.method, cid, itf.start_idx),
                             "contact_fraction": itf.contact_fraction,
                             "low_contact_fraction": low, "closed_loop": closed,
+                            "splits_nucleus": frozenset((cid, int(itf.neighbour_id))) in split_pairs,
                             "threshold": t,
                             "threshold_field_otsu": (float("nan") if own_otsu.get(role) is None
                                                      else own_otsu[role]),

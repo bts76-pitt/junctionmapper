@@ -329,6 +329,18 @@ def test_qc_surfaces_the_dp_contact_flags(cfg, tmp_path):
     assert _row_cells(html, "units-pooled")["low_contact_dp"] == 1
 
 
+def test_units_count_junctions_drawn_through_a_nucleus(cfg, tmp_path):
+    """A junction that cuts a nucleus is usually a segmentation error; the page must say how
+    many there are, per method, counted as junctions (cell pairs)."""
+    f, seg = build("cut")
+    seg.nuclei[12:15, 15:21] = 3            # split between cells 1 and 2
+    res = [measure_field(f, seg, cfg)]
+    html = build_report(res, cfg, PROV, tmp_path / "r.html").read_text()
+    row = _row_cells(html, "units-pooled")
+    assert row["splits_nucleus_dp"] == 1 and row["splits_nucleus_tcj"] == 1
+    assert "through a nucleus" in html
+
+
 # ---- threshold comparability -------------------------------------------------------
 
 def test_threshold_warning_names_fields_values_role_and_explains(results_varying_t, cfg, tmp_path):

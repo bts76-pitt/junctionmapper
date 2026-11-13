@@ -205,6 +205,27 @@ occupancy ~100% by construction.
 - A marker that does depend on it (a cadherin-complex protein in a cadherin
   knockout) still works, but cells that have lost it may not segment. Read
   missing cells as coverage loss, not as a measurement.
+- Cellpose's smooth outlines can sit a few px off the membrane. `snap` moves each
+  cell-cell boundary onto the segment-plane membrane ridge, then smooths it:
+
+  ```bash
+  junctionmapper snap -c config.yaml -i images/ --labels seg/labels -o snapped/
+  junctionmapper run  -c config.yaml -i images/ --labels snapped/labels -o out/
+  ```
+
+  - A boundary moves at most `--erode-px` (8). Smoothing (`--smooth-px`, 20) stops
+    it chasing specks of a punctate stain.
+  - Edges facing background, nuclei and cell ids are unchanged.
+  - `segment`/`run --snap-to-membrane` does the same right after Cellpose.
+  - On plate-1 row E (12 lines, 120 fields) boundary length changed by at most 3%.
+    Membrane signal on boundaries rose in every line (median ~+33%), and phalloidin,
+    which the snap never sees, rose or held in every line.
+- `--with-nucleus` (off by default) also gives Cellpose the nucleus plane when
+  drawing cells. It cuts fewer nuclei, but boundaries can leave the membrane:
+  on plate-1 row E the membrane-only outlines tracked junctions better.
+  - Interfaces whose boundary cuts a nucleus are flagged `splits_nucleus`;
+    `report.html` counts them per method. Some are real: a neighbour's membrane
+    can lie over a nucleus in a single optical section.
 
 **3. Check the threshold.** Four parameters depend on an intensity threshold.
 See [Intensity thresholds](#intensity-thresholds-one-value-per-marker-for-the-whole-run).
