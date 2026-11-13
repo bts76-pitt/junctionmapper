@@ -1,16 +1,15 @@
 Bootstrap: docker
 From: python:3.11.18-slim
-# Pinned to the patch version the current .sif was built from (its interpreter reports
-# 3.11.18). NOT pinned by digest: a digest cannot be verified here without rebuilding the
-# image.
+# Base image: pinned to the patch version (3.11.18), not by digest.
 #
-# What the pins below give, exactly: every DIRECT dependency is pinned to the version the
-# committed .sif holds, so a rebuild installs the same direct set. They do NOT make the image
-# bit-for-bit reproducible -- the transitive set (zarr's own deps, dask, numcodecs,
-# bioio-base, and what pip resolves under them) is unpinned, so a rebuild months later can
-# still drift underneath. What closes that gap is not this file: every run records the library
-# versions it actually used (provenance.library_versions and code_identity), which is the
-# check that matters for a figure.
+# Reproducibility:
+# - Every DIRECT dependency is pinned exactly. A rebuild installs the same direct set.
+# - Transitive deps (zarr's, dask, numcodecs, bioio-base, ...) are NOT pinned and can drift.
+# - Each run records the versions it used (provenance.library_versions, code_identity).
+#   Use that, not this file, to tie a figure to its environment.
+#
+# GPU: torch wheels bundle CUDA (13.2). Run with `apptainer --nv` or APPTAINER_NV=1.
+#   Without it, torch silently falls back to CPU: a very slow run, not an error.
 
 %labels
     Name junctionmapper
@@ -19,21 +18,15 @@ From: python:3.11.18-slim
 %post
     set -eux
 
-    # No apt-get here on purpose. CRC has no fakeroot binary and this user is
-    # not in /etc/subuid, so apt cannot drop privileges to _apt and dies with
-    # "setgroups (1: Operation not permitted)". Everything below is pure pip,
-    # which runs fine in the root-mapped namespace. Keep it that way.
+    # Pure pip only; no apt-get.
+    # - On CRC there is no fakeroot binary and this user is not in /etc/subuid.
+    # - apt then fails with "setgroups (1: Operation not permitted)".
 
     pip install --no-cache-dir "pip==26.3"
 
-    # Runtime dependencies, pinned to EXACT versions, which is what a rebuild reproduces: a
-    # measured number depends on the versions of numpy, scipy, scikit-image (Otsu, morphology)
-    # and pandas, and a `>=` floor means a rebuild months later is a different environment with
-    # no record of the difference. The versions below are the ones the current .sif holds, read
-    # back out of it; the report and every label sidecar record them per run as well
-    # (provenance.library_versions), so a figure can be matched to the environment that made it.
-    # pyproject.toml keeps its `>=` floors on purpose: it states what the library supports,
-    # while this file states what was actually run.
+    # Runtime deps: exact pins, read back out of the built image.
+    # - Measured numbers depend on numpy, scipy, scikit-image and pandas versions.
+    # - pyproject.toml keeps `>=` floors: it states what is supported; this file, what is run.
     pip install --no-cache-dir \
         "numpy==2.4.6" \
         "scipy==1.17.1" \
@@ -51,30 +44,16 @@ From: python:3.11.18-slim
         "tifffile==2026.3.3" \
         "pillow==13.0.0"
 
-    # Test tooling. zarr is imported directly by the reader and CLI tests, which build real
-    # OME-Zarr stores, so it is declared here (and in pyproject's dev extra) rather than being
-    # relied on as a transitive dependency of bioio-ome-zarr. Pinned to the version the
-    # committed .sif already holds, so this adds nothing new to the image.
+    # Test tooling. zarr is declared here because the reader and CLI tests build real OME-Zarr
+    # stores; it is not left as a transitive dep of bioio-ome-zarr.
     pip install --no-cache-dir "pytest==9.2.0" "pytest-cov==7.1.0" "zarr==3.1.6"
 
-    # Cellpose-SAM, and torch underneath it. cellpose 4.x IS Cellpose-SAM; its model name is
-    # `cpsam`, the CLI's default --model. Pinned exactly, because the segmentation decides which
-    # pixels are a cell and so every number downstream of it.
-    #
-    # This image used to leave cellpose and torch out, on the grounds that the suite stubs
-    # cellpose and a ~3 GB CUDA wheel has no business in front of a CPU test run. One image is
-    # worth that cost: two images meant writing the 15 runtime pins above into a second def and
-    # keeping the lists in step by hand, and if they ever drifted, label images and the
-    # measurements taken from them would come from different numpy/scikit-image versions. That
-    # is the exact failure the pinning exists to prevent, so the duplication is the worse risk.
-    #
-    # torch and torchvision are pinned to what pip resolved against this cellpose and what the
-    # built image therefore holds, read back out of it (the same practice as the runtime list
-    # above). The default linux wheels bundle their own CUDA libraries -- this torch reports
-    # CUDA 13.2 -- so no CUDA base image and no apt packages are needed; the host driver is
-    # reached by running with `apptainer --nv` (or APPTAINER_NV=1, which scripts/jm passes
-    # through). Without --nv, torch sees no GPU and the library falls back to CPU rather than
-    # failing, so a missing --nv shows up as a very slow run, not an error.
+    # Cellpose-SAM (cellpose 4.x, model `cpsam`) and torch, pinned exactly.
+    # - Segmentation decides which pixels are a cell, so every downstream number depends on it.
+    # - torch/torchvision: the versions pip resolved for this cellpose.
+    # - One image, not a separate segmentation image: two defs would mean two copies of the
+    #   runtime pins, and drift would put labels and measurements on different library versions.
+    #   The cost: torch's ~3 GB CUDA wheel is in every image, test runs included.
     pip install --no-cache-dir \
         "cellpose==4.2.1.1" \
         "torch==2.15.0" \
