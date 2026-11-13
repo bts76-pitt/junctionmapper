@@ -101,22 +101,30 @@ skips Cellpose entirely.
 
 ## Quick start
 
-The supported environment is an Apptainer image. `scripts/jm` runs a command
-inside it, with the repo mounted so source edits take effect without a rebuild.
+The supported environment is one Apptainer image, `container/junctionmapper.sif`.
+
+- It holds the library's dependencies, the test tools, Cellpose-SAM and torch.
+- The package is not installed in it. The repo is bind-mounted at `/project` and
+  `PYTHONPATH=/project/src`, so source edits take effect without a rebuild.
+- The `.sif` is not in git (`.gitignore`). Build it once:
 
 ```bash
-./scripts/build-image                 # once: builds container/junctionmapper.sif
-./scripts/jm pytest -q                # run the test suite
+./scripts/build-image                 # builds container/junctionmapper.sif from container/junctionmapper.def
+./scripts/jm pytest -q                # run the test suite inside it
 ```
 
-`scripts/jm` does not pass `--nv`, so it runs on CPU. For Cellpose on a GPU,
-call Apptainer directly:
+`scripts/jm` runs on CPU and mounts only the repo. For Cellpose on a GPU, with
+data outside the repo, call Apptainer directly:
 
 ```bash
 apptainer exec --nv --cleanenv --env PYTHONNOUSERSITE=1 --env PYTHONPATH=/project/src \
-  --bind "$PWD":/project --pwd /project container/junctionmapper.sif \
+  --bind "$PWD":/project --bind /ix1:/ix1 --bind /ix3:/ix3 --pwd /project \
+  container/junctionmapper.sif \
   python -m junctionmapper.cli run -c config.yaml -i images/ -o out/ --diameter 250
 ```
+
+- Without `--nv`, torch falls back to CPU silently: a very slow run, not an error.
+- `--bind /ix1 /ix3` are CRC paths; bind wherever your images and output live.
 
 The examples below write the command as `junctionmapper`. That console script
 exists only after `pip install -e '.[segmentation]'`. Inside the image the
