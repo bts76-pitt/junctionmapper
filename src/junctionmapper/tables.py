@@ -69,6 +69,11 @@ FLAGS ON AN INTERFACE
     low_contact_fraction    set when that falls below
                             ``interfaces.LOW_CONTACT_FRACTION``
     closed_loop             a whole-boundary interface (``start_idx == end_idx``)
+    splits_nucleus          the boundary between ``cell_id`` and ``neighbour_id`` cuts a
+                            nucleus: one nucleus label has at least
+                            ``pipeline.SPLIT_NUCLEUS_FRACTION`` of its pixels in each
+                            cell. Usually a segmentation error, a false junction drawn
+                            along membrane lying over the nucleus; exclude these rows.
 
 ``contact_fraction`` is at or near 1 for tcj by construction, and can be well
 below 1 for dp.
@@ -107,6 +112,7 @@ INTERFACE_COLUMNS = [
     "field_id", "cell_id", "neighbour_id", "corner_method", "role", "marker",
     "pair_id", "interface_id",
     "start_idx", "end_idx", "contact_fraction", "low_contact_fraction", "closed_loop",
+    "splits_nucleus",
     "threshold", "threshold_field_otsu",
     "threshold_deviates_from_run", "dilation_cycles",
     "interface_contour_px", "interface_contour_um",
@@ -151,7 +157,7 @@ SCHEMAS = {
     "nuclei_distances": NUCLEUS_DISTANCE_COLUMNS,
 }
 _NULLABLE_INT = ["neighbour_id", "n_corners_dp", "n_corners_tcj", "cell_id"]
-_BOOL = ["threshold_deviates_from_run", "low_contact_fraction", "closed_loop",
+_BOOL = ["threshold_deviates_from_run", "low_contact_fraction", "closed_loop", "splits_nucleus",
          "border_touching", "isolated", "degenerate", "corner_methods_disagree",
          "all_contacts_filtered", "dp_low_contact", "dp_missed_tcj_contact",
          "closed_loop_interface", "multinucleate", "anucleate", "measured", "orphan"]

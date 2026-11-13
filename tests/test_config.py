@@ -232,3 +232,52 @@ def test_the_single_definition_check_rejects_a_re_hardcoded_literal():
     node = ast.parse(src).body[0].args.defaults[0]
     with pytest.raises(AssertionError, match="a literal 3 is written here"):
         _names_the_constant(config_mod, node, "DEFAULT_TCJ_MIN_RUN")
+
+
+# ---- the segmentation channel is never a measured channel -----------------------------
+
+def _with_segment(segment_channel, jm2=True):
+    chans = [
+        ChannelSpec(role=Role.SEGMENT, channel=segment_channel, marker="Na/K-ATPase"),
+        ChannelSpec(role=Role.JM1, channel=1, marker="E-cadherin"),
+        ChannelSpec(role=Role.NUCLEUS, channel=0, marker="Hoechst"),
+    ]
+    if jm2:
+        chans.append(ChannelSpec(role=Role.JM2, channel=3, marker="p120"))
+    return RunConfig(channels=chans, pixel_size_um=0.325)
+
+
+def test_segment_role_on_its_own_channel_is_accepted():
+    cfg = _with_segment(2)
+    assert cfg.role_for(Role.SEGMENT).channel == 2
+
+
+@pytest.mark.parametrize("shared", [1, 3])
+def test_segment_channel_shared_with_a_measured_marker_is_refused(shared):
+    with pytest.raises(ValidationError, match="segment"):
+        _with_segment(shared)
+
+
+def test_segment_channel_shared_by_name_with_jm1_is_refused():
+    with pytest.raises(ValidationError, match="segment"):
+        RunConfig(
+            channels=[
+                ChannelSpec(role=Role.SEGMENT, channel="CDH1", marker="E-cadherin"),
+                ChannelSpec(role=Role.JM1, channel="CDH1", marker="E-cadherin"),
+                ChannelSpec(role=Role.NUCLEUS, channel="DAPI", marker="DAPI"),
+            ],
+            pixel_size_um=0.325,
+        )
+
+
+def test_threshold_for_segment_role_is_refused():
+    with pytest.raises(ValidationError, match="segment"):
+        RunConfig(
+            channels=[
+                ChannelSpec(role=Role.SEGMENT, channel=2, marker="Na/K-ATPase"),
+                ChannelSpec(role=Role.JM1, channel=1, marker="E-cadherin"),
+                ChannelSpec(role=Role.NUCLEUS, channel=0, marker="Hoechst"),
+            ],
+            pixel_size_um=0.325,
+            threshold={"segment": 5.0},
+        )

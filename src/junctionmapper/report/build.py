@@ -97,8 +97,10 @@ _FLAG_COLS = ("border_touching", "isolated", "degenerate", "corner_methods_disag
 UNIT_COLUMNS = [
     ("sides_dp", "dp: cell-side interfaces"), ("junctions_dp", "dp: junctions (cell pairs)"),
     ("low_contact_dp", "dp: sides mostly free edge"),
+    ("splits_nucleus_dp", "dp: junctions through a nucleus"),
     ("sides_tcj", "tcj: cell-side interfaces"), ("junctions_tcj", "tcj: junctions (cell pairs)"),
     ("low_contact_tcj", "tcj: sides mostly free edge"),
+    ("splits_nucleus_tcj", "tcj: junctions through a nucleus"),
     ("closed_loop", "closed-loop interfaces (either method)"),
 ]
 BANNER_CAP = 10        # fields listed inline in the threshold banner; the full list is in Provenance
@@ -228,6 +230,9 @@ def _unit_counts(ifc: pd.DataFrame) -> dict[str, int]:
         if "low_contact_fraction" in g.columns:
             out[f"low_contact_{m}"] = int(g.loc[g["low_contact_fraction"].astype(bool),
                                                 "interface_id"].nunique())
+        if "splits_nucleus" in g.columns:
+            out[f"splits_nucleus_{m}"] = int(g.loc[g["splits_nucleus"].astype(bool),
+                                                   "pair_id"].nunique())
     if "closed_loop" in ifc.columns:
         out["closed_loop"] = int(ifc.loc[ifc["closed_loop"].astype(bool), "interface_id"].nunique())
     return out
