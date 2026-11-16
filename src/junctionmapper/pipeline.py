@@ -383,9 +383,15 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                     straight = mi.straight_line_length(pix)
                     lin = mi.linearity_index(pix)
                     band = mi.dilated_band(pix, labels.shape, cycles)
+                    # The segment channel is never thresholded, only read for brightness.
+                    # The outline was drawn and snapped on it, so the band sits on its
+                    # brightest ridge: read it as a ridge level, not an unbiased average.
+                    seg_mean, seg_sat = (
+                        mi.band_brightness(band, field.planes[Role.SEGMENT], field.saturation)
+                        if Role.SEGMENT in field.planes else (float("nan"), float("nan")))
                     for role in roles:
                         img, t = field.planes[role], thresholds[role]
-                        bm = mi.band_metrics(band, img, t)
+                        bm = mi.band_metrics(band, img, t, field.saturation)
                         frag = mi.fragmented_contour(pix, img, t)
                         jc = mi.junction_contour(pix, img, t)
                         jsl = mi.junction_straight_line(pix, img, t)
@@ -423,6 +429,10 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                             "intensity_per_um2": bm.intensity_per_area / (px * px),
                             "cluster_density_per_px2": bm.cluster_density,
                             "cluster_density_per_um2": bm.cluster_density / (px * px),
+                            "band_mean_intensity": bm.band_mean_intensity,
+                            "band_saturated_pct": bm.band_saturated_pct,
+                            "segment_band_mean_intensity": seg_mean,
+                            "segment_band_saturated_pct": seg_sat,
                         })
         neighbours = nb_by_method["dp"] | nb_by_method["tcj"]
         cell_rows.append({

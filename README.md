@@ -163,7 +163,7 @@ junctionmapper run -c config.yaml -i images/ -o out/ --labels seg/labels
 
 ```yaml
 channels:
-  - {role: segment, channel: 3, marker: "Na/K-ATPase"}   # cells are drawn here; never measured
+  - {role: segment, channel: 3, marker: "Na/K-ATPase"}   # cells are drawn here; never thresholded
   - {role: JM1,     channel: 2, marker: "E-cadherin"}
   - {role: JM2,     channel: 1, marker: "p120"}
   - {role: nucleus, channel: 0, marker: "Hoechst"}
@@ -204,9 +204,11 @@ same value is applied to the nucleus plane, so nuclei that are much smaller
 than the cells will be segmented less well.
 
 **2. Choose the segmentation channel deliberately.** Cells are segmented from
-the `segment` plane, which is never measured and can never be a measured
+the `segment` plane, which is never thresholded and can never be a measured
 channel. A boundary placed on a marker's own signal makes that marker's
-occupancy ~100% by construction.
+occupancy ~100% by construction. Its threshold-free brightness in each band is
+still reported as `segment_band_mean_intensity`. That value is biased upward,
+because the band sits on the ridge the outline was snapped to.
 
 - Prefer a membrane marker that does not depend on your experimental variable
   (for example phalloidin or Na/K-ATPase).

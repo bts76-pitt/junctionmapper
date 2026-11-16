@@ -26,7 +26,8 @@ class Role(StrEnum):
     JM1 = "JM1"
     JM2 = "JM2"
     NUCLEUS = "nucleus"
-    # The channel Cellpose draws cell outlines on. Never measured, and never the same
+    # The channel Cellpose draws cell outlines on. Never thresholded (only its threshold-free
+    # band brightness is read, as segment_band_*), and never the same
     # channel as JM1 or JM2: a boundary placed on a marker makes that marker's occupancy
     # ~100% by construction.
     SEGMENT = "segment"

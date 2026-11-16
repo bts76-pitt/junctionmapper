@@ -726,3 +726,46 @@ def test_no_interface_is_flagged_when_every_nucleus_sits_in_one_cell(setup):
     df = measure_field(f, seg, cfg).interfaces
     assert "splits_nucleus" in df.columns
     assert not df.splits_nucleus.any()
+
+
+# ---- threshold-free brightness columns ------------------------------------------------
+
+def test_band_mean_intensity_is_independent_of_the_threshold(setup):
+    f, seg, cfg = setup
+    lo = measure_field(f, seg, make_cfg(threshold={"JM1": 0.0, "JM2": 0.0})).interfaces
+    hi = measure_field(f, seg, make_cfg(threshold={"JM1": 1e9, "JM2": 1e9})).interfaces
+    assert (hi.marker_intensity == 0).all()
+    assert np.allclose(lo.band_mean_intensity, hi.band_mean_intensity)
+    assert (lo.band_mean_intensity > 0).any()
+
+
+def test_saturation_columns_are_nan_for_a_float_source(setup):
+    f, seg, cfg = setup
+    df = measure_field(f, seg, cfg).interfaces
+    assert df.band_saturated_pct.isna().all()
+
+
+def test_saturation_follows_the_field_saturation_value(setup):
+    f, seg, cfg = setup
+    f.saturation = float(f.planes[Role.JM1].max())
+    df = measure_field(f, seg, cfg).interfaces
+    jm1 = df[df.role == "JM1"]
+    assert jm1.band_saturated_pct.notna().all() and (jm1.band_saturated_pct > 0).any()
+
+
+def test_segment_columns_are_nan_without_a_segment_plane(setup):
+    f, seg, cfg = setup
+    df = measure_field(f, seg, cfg).interfaces
+    assert df.segment_band_mean_intensity.isna().all()
+    assert df.segment_band_saturated_pct.isna().all()
+
+
+def test_segment_band_brightness_is_the_segment_plane_in_the_same_band(setup):
+    f, seg, cfg = setup
+    f.planes[Role.SEGMENT] = f.planes[Role.JM1].copy()
+    df = measure_field(f, seg, cfg).interfaces
+    jm1 = df[df.role == "JM1"]
+    assert np.allclose(jm1.segment_band_mean_intensity, jm1.band_mean_intensity)
+    # one segment value per interface, repeated on the JM1 and JM2 rows
+    both = df.pivot_table(index="interface_id", columns="role", values="segment_band_mean_intensity")
+    assert np.allclose(both["JM1"], both["JM2"])

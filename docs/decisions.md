@@ -187,10 +187,23 @@ Java measures its boundary marker by design, because the operator drew the bound
 Cellpose drawing it, the same choice is circular.
 *Cost if wrong:* a two-stain field yields one measured marker rather than two, and configs
 written for segmentation on `JM1` must add a `segment` channel.
+*Amended 2026-11-16:* the segment channel's threshold-free band brightness is now reported
+(`segment_band_mean_intensity`, `segment_band_saturated_pct`). It is still never thresholded.
+The value is biased upward, more so in a dim condition, so a dim condition that still reads
+lower is a conservative difference. Needed because AO0025 P2_B segments on beta-catenin, and
+beta-catenin loss in CDH1 KO lines is itself a result.
 
 ---
 
 ## 2. Output schema
+
+**Threshold-free brightness columns: `band_mean_intensity` and `band_saturated_pct`.**
+The mean of every band pixel, and the share of band pixels at the source dtype's ceiling
+(`Field.saturation`; NaN for a float source).
+*Why:* every other intensity column scales with the threshold. When the threshold is set per
+condition, a dim condition can still read as well occupied. AO0025 needs absolute marker
+levels compared between lines imaged with the same settings.
+*Cost if wrong:* two extra columns per role row.
 
 **`n_neighbours` replaces `n_interfaces`,** keeping `n_interfaces_dp` and `n_interfaces_tcj`.
 *Why:* DP and TCJ decompose the same boundary, so their sum double-counts while reading like

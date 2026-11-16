@@ -63,6 +63,7 @@ PARAMETERS: list[dict[str, Any]] = [
     {"key": "interface_occupancy_pct", "label": "Interface occupancy (%)", "px": "interface_occupancy_pct", "um": None, "td": True},
     {"key": "intensity_per_area", "label": "Intensity per interface area", "px": "intensity_per_px2", "um": "intensity_per_um2", "td": True},
     {"key": "cluster_density", "label": "Cluster density (intensity per marker area)", "px": "cluster_density_per_px2", "um": "cluster_density_per_um2", "td": True},
+    {"key": "band_mean_intensity", "label": "Band mean intensity (no threshold)", "px": "band_mean_intensity", "um": None, "td": False},
 ]
 
 # Exclusion accounting: every cell that contributes no interface is assigned to exactly one
