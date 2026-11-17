@@ -513,3 +513,13 @@ image makes the two steps share a runtime by construction instead of by discipli
 and the image takes appreciably longer to build and to stage. Reversible by splitting the def
 again, at which point the pin duplication has to be solved properly — layering the second
 image on the first with `Bootstrap: localimage` rather than copying the list.
+
+**The membrane score uses no outlines, and divides by a structureless baseline.** It is scored on
+raw planes inside a region grown from the nucleus plane, never from labels, and each patch's
+line contrast is divided by the same contrast on a seeded shuffle of its own pixels.
+*Why:* labels would tie the score to whichever segmentation was loaded, and a hand-corrected
+outline would change it. Noise alone puts the brightest pixels on the "ridge", so a raw contrast
+means different things on different stains; the shuffled baseline cancels that, so 1 means no line
+structure for any channel.
+*Cost if wrong:* a patch with real structure only at a scale outside `line_width_um` reads as
+unstructured. Tune the config, not the code.

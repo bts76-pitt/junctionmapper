@@ -1490,3 +1490,54 @@ def test_a_run_whose_every_asset_failed_still_writes_tables_and_report(env, monk
     assert (env["out"] / "cells.parquet").exists() and (env["out"] / "report/index.html").exists()
     [run] = page_runs(env["out"])
     assert [f["assets"] for f in run["fields"]] == [False]
+
+
+# ---- membrane score -----------------------------------------------------------------------
+
+def test_run_writes_membrane_tables(env, monkeypatch):
+    stub_segment(monkeypatch, env["seg"])
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
+    assert r.exit_code == 0, r.output
+    f = pd.read_parquet(env["out"] / "membrane_fields.parquet")
+    assert {"JM1", "JM2"} <= set(f.role) and "nucleus" not in set(f.role)
+    assert len(f.field_id.unique()) == 1
+    assert run_provenance(env["out"])["membrane_score"] == "on"
+
+
+def test_run_no_membrane_score_writes_empty_tables(env, monkeypatch):
+    stub_segment(monkeypatch, env["seg"])
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--out", env["out"],
+               "--no-membrane-score")
+    assert r.exit_code == 0, r.output
+    assert len(pd.read_parquet(env["out"] / "membrane_patches.parquet")) == 0
+    assert len(pd.read_parquet(env["out"] / "membrane_fields.parquet")) == 0
+    assert run_provenance(env["out"])["membrane_score"] == "off"
+
+
+def test_run_with_labels_still_scores_membranes(env, monkeypatch):
+    forbid_cellpose(monkeypatch)
+    r = run_ok(env)
+    assert r.exit_code == 0, r.output
+    assert len(pd.read_parquet(env["out"] / "membrane_fields.parquet")) > 0
+
+
+def test_a_field_with_no_cells_still_gets_membrane_rows(env, monkeypatch):
+    empty = Segmentation(cells=np.zeros_like(env["seg"].cells), nuclei=np.zeros_like(env["seg"].nuclei),
+                         params_used={})
+    stub_segment(monkeypatch, empty)
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--out", env["out"])
+    assert r.exit_code == 0, r.output
+    f = pd.read_parquet(env["out"] / "membrane_fields.parquet")
+    assert FID in set(f.field_id)
+    cells = pd.read_parquet(env["out"] / "cells.parquet")
+    assert FID not in set(cells.field_id)
+
+
+def test_run_with_only_jm1_scores_only_jm1(env, monkeypatch):
+    stub_segment(monkeypatch, env["seg"])
+    cfg = write_cfg(env["tmp"] / "jm1.yaml", channels=[c for c in CFG["channels"] if c["role"] != "JM2"],
+                    threshold={"JM1": 50.0})
+    r = invoke("run", "--config", cfg, "--input", env["tif"], "--out", env["out"])
+    assert r.exit_code == 0, r.output
+    roles = set(pd.read_parquet(env["out"] / "membrane_fields.parquet").role)
+    assert "JM1" in roles and not roles & {"JM2", "nucleus"}   # absent channels are not invented

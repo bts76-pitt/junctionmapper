@@ -19,8 +19,9 @@ def test_write_tables_round_trip_two_fields(tmp_path):
         csv = pd.read_csv(tmp_path / f"{name}.csv")
         assert list(pq.columns) == cols and list(csv.columns) == cols
         assert len(pq) == len(csv) == sum(len(getattr(r, name)) for r in results)
-        if len(pq):  # the membrane tables stay empty until the score is wired into measure
-            assert set(pq.field_id) == {"a", "b"}
+        if name in ("membrane_patches", "membrane_fields") and not len(pq):
+            continue  # measure_field does not score membranes; only `run` does
+        assert set(pq.field_id) == {"a", "b"}
 
 
 def test_empty_tables_keep_full_column_set(tmp_path):

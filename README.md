@@ -28,7 +28,7 @@ rest. The method is the original authors'.
 3. Splits each cell boundary into **interfaces**, one stretch per neighbour.
 4. Measures the published junction parameters along each interface, for up to
    two junction markers.
-5. Writes five tidy tables and an interactive report that opens offline.
+5. Writes seven tidy tables and an interactive report that opens offline.
 
 You declare which protein fills each role (`JM1`, `JM2`, `nucleus`). Nothing is
 inferred from channel order, and the declaration is written into every output
@@ -244,7 +244,7 @@ See [Intensity thresholds](#intensity-thresholds-one-value-per-marker-for-the-wh
 
 ## Outputs
 
-Every run writes five tables, each as `.parquet` and `.csv`, plus
+Every run writes seven tables, each as `.parquet` and `.csv`, plus
 `report/index.html`. All tables are keyed by `field_id`, so tables from many fields
 concatenate.
 
@@ -255,6 +255,8 @@ concatenate.
 | `nuclei` | nucleus | `nucleus_id`, `cell_id`, `orphan` |
 | `nuclei_distances` | *ordered* nucleus pair | `nucleus_id`, `neighbour_nucleus_id`, `rank_from_nucleus` |
 | `flags` | cell | `border_touching`, `isolated`, `degenerate`, ... |
+| `membrane_patches` | scored patch × channel | `role`, `patch_row`, `patch_col`, `score`, `membrane_like` |
+| `membrane_fields` | field × channel | `role`, `n_scored`, `median_score`, `membrane_like_fraction` |
 
 Lengths come in `_px` and `_um`; areas in `_px` and `_um2`.
 
@@ -393,6 +395,24 @@ With `all_pairs: true`, each pair appears twice, once from each end, each with
 the rank it has for its own nucleus. A single row could not give both ends a
 correct rank. `n_intra_distances` and `mean_intra_distance_*` in `nuclei` are a
 plain `groupby("nucleus_id")` of this table.
+
+### `membrane_patches` and `membrane_fields`: does the stain sit in thin lines?
+
+Outline-free. Uses no labels, so it is identical under `--labels`.
+
+- Every channel except `nucleus` is scored, `segment` included.
+- Region: nuclei (Otsu on the raw nucleus plane) grown by `region_um`.
+- Patches: squares of `patch_um`. One row per patch per channel in `membrane_patches`.
+- `contrast`: mean intensity on the top `ridge_fraction` of line-filter pixels, over the mean on the rest.
+- `baseline`: the same contrast on one seeded shuffle of the patch's region pixels.
+- `score` = `contrast` / `baseline`. 1 means no line structure. `membrane_like` = `score` >= `cutoff`.
+- `too_dim`: patch mean minus field floor is under 3 x noise. No score, never "diffuse".
+- Clipped edge patches under half a side are rows but unscored.
+- `membrane_fields` rolls patches up: `n_patches`, `n_scored`, `n_too_dim`, `median_score`, `membrane_like_fraction`.
+- A field with no cells still gets these rows.
+
+Configure under `membrane_score:` in the config (`line_width_um`, `patch_um`, `region_um`, `ridge_fraction`, `cutoff`).
+`run --no-membrane-score` leaves both tables empty; `run.json` records `membrane_score: on` or `off`.
 
 ---
 
