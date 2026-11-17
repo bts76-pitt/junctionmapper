@@ -384,8 +384,29 @@ that the click changes the result at all — was observed directly by driving th
 
 ## 5. The QC report
 
-**Per-field detail stays in the HTML, uncapped** (~16.7 KB per field of rows, ~8.5 MB at 500
-fields × markers); no pooled-only mode.
+**An interactive dashboard (`report/index.html`) replaces `report.html`.**
+The static page and its matplotlib figures are gone; QC counts, threshold warnings and
+provenance moved to `report/summary.py` and feed the dashboard.
+*Why:* the static report showed no cells, so a number could not be traced to the image; the
+user asked for an interactive dashboard that shows the cells.
+*Cost if wrong:* the old page is in git history; its figures were built from the same tables.
+
+**A field whose report image cannot be written keeps its measurements.**
+Any exception from the asset write is logged per field, recorded as `assets_missing`, and
+shown as a run warning; the tables are written as usual and the exit code is unchanged.
+*Why:* the report is a view of the tables; a preview failure must not cost a run.
+*Cost if wrong:* a field with no image in the report, named in the warning.
+
+**Overlays sit at pixel centres in preview space.** Raw pixel `(r, c)` maps to
+`((c + 0.5)·s, (r + 0.5)·s)`; planes are drawn at the preview size, not the raw size.
+*Why:* fields over 1500 px were drawn at raw size under preview-space overlays (misaligned),
+and the missing half pixel put every line up and left of its membrane.
+*Cost if wrong:* nil for any measured value; display only.
+
+**Superseded by the dashboard:** ~~Per-field detail stays in the HTML, uncapped~~. `index.html`
+now holds no per-field rows; each field's detail loads from its own file when opened.
+*Original entry:* per-field detail stays in the HTML, uncapped (~16.7 KB per field of rows,
+~8.5 MB at 500 fields × markers); no pooled-only mode.
 *Why:* the rows sit in collapsed `details`, a local file that size opens fine, and the
 per-field detail is the point — the alternative hides exactly the variation the operator
 reviews.
@@ -399,13 +420,14 @@ was explicitly *not* retuned.
 *Cost if wrong:* a reader of a low-signal run sees an informational flag with documentation
 explaining it, instead of a tolerance tuned to hide it.
 
-**The override banner, when it fires, must name at least two fields with different applied
-values.** The fired condition is the span of applied values, so the named set is the fields
-that establish it.
+**The threshold-varied warning, whatever its cause (override, fallback, not recorded), names
+at least two fields with different applied values.** The fired condition is the span of applied
+values, so the named set is the fields that establish it. (Was: the override banner only.)
 *Why:* the banner could previously fire and then say "(0 fields in all)".
 *Cost if wrong:* nil; it is a correction.
 
-**The strip-title overlap fix ships without an automated test.**
+**Superseded: the static report and its strip titles are gone.**
+*Original entry:* the strip-title overlap fix ships without an automated test.
 *Why:* a re-review rendered both layouts and its own bounding-box detector reported zero
 overlaps for the old, visibly broken layout too — so a naive overlap test would not have
 caught the original defect, and any minimum-gap threshold would be arbitrary. The title text
