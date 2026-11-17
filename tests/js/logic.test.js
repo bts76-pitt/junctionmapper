@@ -296,6 +296,17 @@ test("cropWindow accepts a bare list of polylines and never exceeds a small imag
   const w = L.cropWindow([[[1, 1], [3, 3]]], 30, 20);
   assert.ok(w.x >= 0 && w.y >= 0 && w.x + w.w <= 30 && w.y + w.h <= 20);
 });
+test("cropWindow keeps a long junction whole on a wide image, centring the overflow on the short side", () => {
+  const w = L.cropWindow([[[300, 100], [700, 100]]], 1000, 200);
+  assert.equal(w.w, w.h);
+  assert.ok(w.w >= 400 && w.x <= 300 && w.x + w.w >= 700 && w.x >= 0 && w.x + w.w <= 1000);
+  assert.equal(w.y, Math.round((200 - w.w) / 2));
+});
+test("profileScale reaches down to a negative value or threshold, else starts at 0", () => {
+  assert.equal(L.profileScale({x: [0, 5], y: [1, 2]}, {}, "JM1").ymin, 0);
+  assert.equal(L.profileScale({x: [0, 5], y: [-3, 2]}, {}, "JM1").ymin, -3);
+  assert.equal(L.profileScale({x: [0, 5], y: [1, 2]}, {JM1: -5}, "JM1").ymin, -5);
+});
 test("percentileOf ignores NaN and is null for NaN input", () => {
   assert.equal(L.percentileOf([1, 2, NaN, 3, 4], 3), 75);
   assert.equal(L.percentileOf([1, 2], NaN), null);

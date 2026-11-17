@@ -977,7 +977,9 @@
     const parts = spec.parts.map(p => ({plane: fd.planes[p.ci], tint: p.tint, gain: layerFor(p.role).gain}));
     for (let y = 0; y < win.h; y++) {
       for (let x = 0; x < win.w; x++) {
-        const i = (win.y + y) * fd.width + win.x + x, o = (y * win.w + x) * 4;
+        const iy = win.y + y, ix = win.x + x, o = (y * win.w + x) * 4;
+        if (iy < 0 || ix < 0 || iy >= fd.height || ix >= fd.width) { d[o] = d[o + 1] = d[o + 2] = 0; d[o + 3] = 255; continue; }
+        const i = iy * fd.width + ix;
         let r = 0, g = 0, b = 0;
         for (const p of parts) { const v = p.plane[i] * p.gain; r += v * p.tint[0]; g += v * p.tint[1]; b += v * p.tint[2]; }
         d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
@@ -1054,11 +1056,15 @@
     const panels = roles.map(r => {
       const sc = L.profileScale(prof[r], thresholds, r);
       xmax = Math.max(xmax, sc.xmax);
-      // Round ticks from 0; the top tick sits on or above the peak, so the line stays in its panel.
-      const ticks = niceTicks(0, sc.ymax > 0 ? sc.ymax : 1, r === "segment" ? 2 : 3);
-      const step = ticks.length > 1 ? ticks[1] - ticks[0] : (sc.ymax || 1);
+      // Round ticks from 0 (or below it, for negative values); the end ticks sit on or beyond the
+      // extremes, so the line stays in its panel.
+      const hi = sc.ymax > sc.ymin ? sc.ymax : sc.ymin + 1;
+      const ticks = niceTicks(sc.ymin, hi, r === "segment" ? 2 : 3);
+      const step = ticks.length > 1 ? ticks[1] - ticks[0] : (hi - sc.ymin || 1);
+      while (ticks[0] > sc.ymin) ticks.unshift(Number((ticks[0] - step).toPrecision(12)));
       while (ticks[ticks.length - 1] < sc.ymax) ticks.push(Number((ticks[ticks.length - 1] + step).toPrecision(12)));
-      return {role: r, ticks, ymax: ticks[ticks.length - 1] || 1, height: r === "segment" ? 52 : 88};
+      const ymin = ticks[0], ymax = ticks[ticks.length - 1] > ymin ? ticks[ticks.length - 1] : ymin + 1;
+      return {role: r, ticks, ymin, ymax, height: r === "segment" ? 52 : 88};
     });
     const plot = h("div", {class: "profile-plot"});
     const readout = h("div", {class: "viewer-readout profile-readout", hidden: true});
@@ -1081,7 +1087,7 @@
       panels.forEach((p, i) => { p.top = y0 + m.t; y0 = p.top + p.height + (i < panels.length - 1 ? gap - m.t : 0); });
       const H = y0 + m.b;
       const X = x => m.l + (xmax > 0 ? (x / xmax) * (W - m.l - m.r) : 0);
-      const Y = (p, y) => p.top + (1 - y / p.ymax) * p.height;
+      const Y = (p, y) => p.top + (1 - (y - p.ymin) / (p.ymax - p.ymin)) * p.height;
       const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: "profile-svg", role: "img",
                             "aria-label": `Intensity along junction ${jLabel(key)}: ${roles.map(label).join(", ")}`});
       const muted = cssVar("--muted"), ink2 = cssVar("--ink-2"), grid = cssVar("--grid"), axis = cssVar("--axis");
@@ -1144,7 +1150,9 @@
       });
       const last = panels[panels.length - 1], base = last.top + last.height;
       const xt = niceTicks(0, xmax, 4);
-      xt.forEach((t, i) => svg.append(text({x: X(t), y: base + 15, "text-anchor": i === 0 ? "start" : "middle", fill: muted, class: "tick"},
+      // The last tick carries the unit; near the right edge it is right-aligned so it is not cut off.
+      const anchorOf = (t, i) => i === 0 ? "start" : (i === xt.length - 1 && X(t) > W - m.r - 30 ? "end" : "middle");
+      xt.forEach((t, i) => svg.append(text({x: X(t), y: base + 15, "text-anchor": anchorOf(t, i), fill: muted, class: "tick"},
         i === xt.length - 1 ? `${L.fmtValue(t)} ${unit}` : L.fmtValue(t))));
       const cross = s("line", {y1: panels[0].top, y2: base, stroke: muted, "stroke-width": 1, visibility: "hidden"});
       const dots = panels.map(p => s("circle", {r: 4, fill: colours[p.role], stroke: cssVar("--surface"), "stroke-width": 2, visibility: "hidden"}));
