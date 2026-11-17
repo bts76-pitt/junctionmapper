@@ -100,6 +100,59 @@
     return calibrated && useUm && metric.unit_um ? metric.unit_um : metric.unit_px;
   }
 
+  /*** FIELD GEOMETRY ***/
+
+  // Positions in the metric index arrays that belong to one field (fieldPos = its place in fields).
+  function fieldSlice(index, fieldPos) {
+    const junctions = [], cells = [];
+    for (let i = 0; i < index.junction_field.length; i++) {
+      if (index.junction_field[i] === fieldPos) {
+        junctions.push({i, key: junctionKey(index.junction_lo[i], index.junction_hi[i])});
+      }
+    }
+    for (let i = 0; i < index.cell_field.length; i++) {
+      if (index.cell_field[i] === fieldPos) cells.push({i, cell_id: index.cell_id[i]});
+    }
+    return {junctions, cells};
+  }
+
+  function segmentDist2(px, py, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    const t = len2 ? Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / len2)) : 0;
+    const x = a[0] + t * dx - px, y = a[1] + t * dy - py;
+    return x * x + y * y;
+  }
+
+  // polylines: {key: [[[x, y], ...], ...]}. The key of the nearest junction within tol, else null.
+  function hitTest(polylines, x, y, tol) {
+    let best = null, bestD = tol * tol;
+    for (const key in polylines) {
+      for (const line of polylines[key]) {
+        for (let k = 0; k < line.length; k++) {
+          const d = segmentDist2(x, y, line[k], line[Math.min(k + 1, line.length - 1)]);
+          if (d <= bestD) { bestD = d; best = key; }
+        }
+      }
+    }
+    return best;
+  }
+
+  // Even-odd ray casting; outlines: {cell_id: [[x, y], ...]}.
+  function inside(poly, x, y) {
+    let hit = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+    }
+    return hit;
+  }
+
+  function cellAt(outlines, x, y) {
+    for (const id in outlines) if (inside(outlines[id], x, y)) return id;
+    return null;
+  }
+
   /*** SCRIPT LOADER ***/
 
   // Data files are <script>s that call JM.register*(payload). The run id inside a copied file is
@@ -140,7 +193,8 @@
   }
 
   const api = {decodeF32, decodeU32, finite, quantileRange, summaryStats, fmtCount, fmtShare, fmtValue,
-               colourFor, runColour, junctionKey, unitFor, createLoader, NAN_GREY};
+               colourFor, runColour, junctionKey, unitFor, fieldSlice, hitTest, cellAt,
+               createLoader, NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

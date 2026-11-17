@@ -176,13 +176,35 @@ def test_flagged_cells_count_only_measured_cells(tmp_path):
     border = flags[flags["border_touching"]]
     assert len(border) and not set(zip(border.field_id, border.cell_id.astype(int))) & measured
     s = run_summary(tmp_path, "r1", "x")
-    bools = [c for c in flags.columns if pd.api.types.is_bool_dtype(flags[c])]
+    bools = [c for c in flags.columns if pd.api.types.is_bool_dtype(flags[c])
+             and c != "corner_methods_disagree"]
     want = sum(1 for _, r in flags.iterrows()
                if (r.field_id, int(r.cell_id)) in measured and r[bools].any())
     assert s["tiles"]["flagged_cells"] == want <= s["tiles"]["cells"]
     for f in s["fields"]:
         assert f["qc"]["flagged_cells"] <= f["n_cells"]
         assert all(v <= f["n_cells"] for v in f["qc"].values())
+
+
+def test_corner_method_disagreement_alone_does_not_flag_a_cell(setup_tables):
+    path = setup_tables.dir / "flags.parquet"
+    flags = pd.read_parquet(path)
+    bools = [c for c in flags.columns if pd.api.types.is_bool_dtype(flags[c])]
+    flags[bools] = False
+    flags["corner_methods_disagree"] = True
+    measured = setup_tables.interfaces.cell_id.astype(int).unique()
+    flags.loc[flags.cell_id.astype(int) == measured[0], "anucleate"] = True
+    flags.to_parquet(path)
+    s = run_summary(setup_tables.dir, "r1", "x")
+    qc = s["fields"][0]["qc"]
+    assert s["tiles"]["flagged_cells"] == qc["flagged_cells"] == 1
+    assert qc["corner_methods_disagree"] == len(measured) and qc["anucleate"] == 1
+
+
+def test_field_qc_omits_flags_that_measured_cells_cannot_carry(setup_tables):
+    qc = run_summary(setup_tables.dir, "r1", "x")["fields"][0]["qc"]
+    assert not {"border_touching", "isolated", "degenerate"} & set(qc)
+    assert "corner_methods_disagree" in qc
 
 
 def test_write_thumbs_registers_one_jpeg_per_field(setup_tables):

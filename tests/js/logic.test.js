@@ -123,3 +123,28 @@ test("a registration with no request in flight is ignored", () => {
   const loader = L.createLoader(() => {});
   assert.equal(loader.receive("Field", {}), false);
 });
+
+test("hitTest finds the junction under the cursor", () => {
+  const p = {"2-4": [[[0, 0], [10, 0]]], "4-5": [[[0, 10], [10, 10]]]};
+  assert.equal(L.hitTest(p, 5, 1, 3), "2-4"); assert.equal(L.hitTest(p, 5, 5, 3), null); });
+test("hitTest takes the nearest of several and searches every polyline", () => {
+  const p = {"1-2": [[[0, 0], [10, 0]]], "2-3": [[[50, 50], [60, 50]], [[0, 4], [10, 4]]]};
+  assert.equal(L.hitTest(p, 5, 3, 3), "2-3");
+  assert.equal(L.hitTest(p, 12, 0, 3), "1-2");   // past the end: distance to the endpoint
+  assert.equal(L.hitTest({"1-2": [[[3, 3]]]}, 4, 3, 2), "1-2");   // single-point polyline
+});
+test("cellAt uses point-in-polygon", () => {
+  assert.equal(L.cellAt({"7": [[0,0],[10,0],[10,10],[0,10]]}, 5, 5), "7"); });
+test("cellAt is null outside every outline and handles concave outlines", () => {
+  const u = {"3": [[0, 0], [10, 0], [10, 10], [7, 10], [7, 3], [3, 3], [3, 10], [0, 10]]};
+  assert.equal(L.cellAt(u, 5, 8), null);
+  assert.equal(L.cellAt(u, 1, 8), "3");
+  assert.equal(L.cellAt(u, 20, 20), null);
+});
+test("fieldSlice picks only that field's rows", () => {
+  const idx = {junction_field: [0, 0, 1], junction_lo: [2, 3, 2], junction_hi: [4, 5, 4],
+               cell_field: [0, 1], cell_id: [2, 2]};
+  assert.deepEqual(L.fieldSlice(idx, 1).junctions, [{i: 2, key: "2-4"}]);
+  assert.deepEqual(L.fieldSlice(idx, 0).cells, [{i: 0, cell_id: 2}]);
+  assert.deepEqual(L.fieldSlice(idx, 5), {junctions: [], cells: []});
+});

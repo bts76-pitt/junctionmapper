@@ -23,6 +23,11 @@ THUMB_PX = 240
 _VALUE_COLS = [c for p in PARAMETERS for c in (p["px"], p["um"]) if c]
 _J_KEYS = ["role", "field_id", "lo", "hi"]
 _C_KEYS = ["role", "field_id", "cell_id"]
+# Records that the TCJ and DP corners differ, not a failure; it fires on nearly every cell, so it
+# is counted but does not make a cell "flagged".
+NOT_FLAGGING = {"corner_methods_disagree"}
+# Only unmeasured cells carry these, and the summary counts measured cells only.
+UNMEASURED_ONLY = {"border_touching", "isolated", "degenerate"}
 
 
 def b64_f32(a) -> str:
@@ -177,8 +182,10 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
     measured_cells = ifc[["field_id", "cell_id"]].drop_duplicates().astype({"cell_id": "int64"})
     flags = flags.dropna(subset=["cell_id"]).astype({"cell_id": "int64"}).merge(
         measured_cells, on=["field_id", "cell_id"], how="inner")
-    bool_cols = [c for c in flags.columns if pd.api.types.is_bool_dtype(flags[c])]
-    any_flag = flags[bool_cols].any(axis=1) if bool_cols else pd.Series(False, index=flags.index)
+    bool_cols = [c for c in flags.columns
+                 if pd.api.types.is_bool_dtype(flags[c]) and c not in UNMEASURED_ONLY]
+    flagging = [c for c in bool_cols if c not in NOT_FLAGGING]
+    any_flag = flags[flagging].any(axis=1) if flagging else pd.Series(False, index=flags.index)
     tcj = ifc[ifc["corner_method"] == "tcj"]
     fields = []
     for fid in doc["fields"]:
