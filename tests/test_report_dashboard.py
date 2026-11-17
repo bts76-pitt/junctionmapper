@@ -3,23 +3,29 @@ import re
 
 import pytest
 
+from junctionmapper.config import Role
 from junctionmapper.errors import ConfigError
 from junctionmapper.pipeline import measure_field
 from junctionmapper.report.assets import write_field_asset
-from junctionmapper.report.dashboard import build_dashboard
-from junctionmapper.report.data import write_metric_files, write_run_json
+from junctionmapper.report.dashboard import _plotly, build_dashboard
+from junctionmapper.report.data import write_metric_files, write_run_json, write_thumbs
 from junctionmapper.tables import write_tables
 from tests.fixtures13 import build, make_cfg
 
 
-def _make_run(d):
+def _make_run(d, jm1_only=False):
     f, seg = build()
     cfg = make_cfg()
+    if jm1_only:
+        f.planes.pop(Role.JM2)
+        cfg = cfg.model_copy(update={"channels": [c for c in cfg.channels if c.role != Role.JM2],
+                                     "threshold": {Role.JM1: 50.0}})
     r = measure_field(f, seg, cfg)
     write_tables([r], d)
     write_run_json(d, cfg, {"tool": "x"}, [f.field_id])
     write_metric_files(r.interfaces, "r1", d / "report/runs/r1/metrics", calibrated=True)
     write_field_asset(f, seg, r, "r1", d / "report/runs/r1/fields")
+    write_thumbs(d)
     return d
 
 
@@ -91,3 +97,21 @@ def test_index_inlines_the_app_and_no_per_junction_values(tmp_path, built_run):
         assert marker in html
     summary = json.dumps(_runs(html))
     assert "junction_px" not in summary and "cells" in summary
+
+
+def test_index_html_embeds_no_images_and_each_run_has_thumbs(tmp_path, built_run, built_run2):
+    html = build_dashboard([(built_run, "A"), (built_run2, "B")], tmp_path / "rep").read_text()
+    assert html.count(_plotly()) == 1           # vendored Plotly carries its own icon URIs
+    assert "data:image" not in html.replace(_plotly(), "")
+    for k in (1, 2):
+        assert (tmp_path / f"rep/runs/r{k}/thumbs.js").read_text().startswith("JM.registerThumbs(")
+
+
+def test_rebuilding_into_the_same_folder_leaves_no_stale_files(tmp_path, built_run):
+    out = tmp_path / "rep"
+    build_dashboard([(built_run, "A")], out)
+    assert (out / "runs/r1/metrics/tcj/JM2").is_dir()
+    other = _make_run(tmp_path / "jm1only", jm1_only=True)
+    build_dashboard([(other, "B")], out)
+    assert not (out / "runs/r1/metrics/tcj/JM2").exists()
+    assert (out / "runs/r1/metrics/tcj/JM1").is_dir()

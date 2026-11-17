@@ -54,6 +54,12 @@ test("fmtCount compacts large counts only", () => {
   assert.equal(L.fmtCount(1284), "1,284");
   assert.equal(L.fmtCount(12900), "12.9K");
 });
+test("fmtShare gives the count and its percentage", () => {
+  assert.equal(L.fmtShare(12, 185), "12 (6.5%)");
+  assert.equal(L.fmtShare(60, 120), "60 (50%)");
+  assert.equal(L.fmtShare(0, 20), "0 (0%)");
+  assert.equal(L.fmtShare(0, 0), "0");
+});
 test("fmtValue keeps three significant figures and shows NaN as a dash", () => {
   assert.equal(L.fmtValue(0.123456), "0.123");
   assert.equal(L.fmtValue(1234.5), "1,235");

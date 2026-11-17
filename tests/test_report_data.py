@@ -12,9 +12,10 @@ from junctionmapper.pipeline import measure_field
 from junctionmapper.report.assets import write_field_asset
 from junctionmapper.report.build import PARAMETERS
 from junctionmapper.report.data import (b64_f32, b64_u32, cell_table, junction_table,
-                                        run_summary, write_metric_files, write_run_json)
+                                        run_summary, write_metric_files, write_run_json,
+                                        write_thumbs)
 from junctionmapper.tables import make_frame, write_tables
-from tests.fixtures13 import build, make_cfg
+from tests.fixtures13 import build, field_with_border_cell, make_cfg
 
 
 def _load(path):
@@ -157,11 +158,40 @@ def test_run_summary_of_a_real_run(setup_tables):
     assert units["linearity_index"] == ("", "") and units["intensity_per_area"] == ("", "")
     assert all(m["help"] for m in s["metrics"])
     f = s["fields"][0]
-    assert f["field_id"] == "f1" and f["thumb"].startswith("data:image/jpeg;base64,")
+    assert f["field_id"] == "f1" and "thumb" not in f
     assert f["qc"]["flagged_cells"] >= 0 and f["n_junctions"] > 0
     assert s["tiles"]["fields"] == 1 and s["tiles"]["cells"] == f["n_cells"]
     assert s["tiles"]["junctions"] == f["n_junctions"]
     assert s["provenance"] == {"tool": "x"}
+
+
+def test_flagged_cells_count_only_measured_cells(tmp_path):
+    f, seg = field_with_border_cell()
+    cfg = make_cfg()
+    write_tables([measure_field(f, seg, cfg)], tmp_path)
+    write_run_json(tmp_path, cfg, {}, [f.field_id])
+    flags = pd.read_parquet(tmp_path / "flags.parquet")
+    ifc = pd.read_parquet(tmp_path / "interfaces.parquet")
+    measured = set(zip(ifc.field_id, ifc.cell_id.astype(int)))
+    border = flags[flags["border_touching"]]
+    assert len(border) and not set(zip(border.field_id, border.cell_id.astype(int))) & measured
+    s = run_summary(tmp_path, "r1", "x")
+    bools = [c for c in flags.columns if pd.api.types.is_bool_dtype(flags[c])]
+    want = sum(1 for _, r in flags.iterrows()
+               if (r.field_id, int(r.cell_id)) in measured and r[bools].any())
+    assert s["tiles"]["flagged_cells"] == want <= s["tiles"]["cells"]
+    for f in s["fields"]:
+        assert f["qc"]["flagged_cells"] <= f["n_cells"]
+        assert all(v <= f["n_cells"] for v in f["qc"].values())
+
+
+def test_write_thumbs_registers_one_jpeg_per_field(setup_tables):
+    path = write_thumbs(setup_tables.dir)
+    assert path == setup_tables.dir / "report/runs/r1/thumbs.js"
+    text = path.read_text()
+    assert text.startswith("JM.registerThumbs(")
+    thumbs = _load(path)
+    assert list(thumbs) == ["f1"] and thumbs["f1"].startswith("data:image/jpeg;base64,")
 
 
 def test_field_with_no_interfaces_still_builds_a_summary(tmp_path):

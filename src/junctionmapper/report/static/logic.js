@@ -52,6 +52,13 @@
   const fmtCompact = new Intl.NumberFormat("en-US", {notation: "compact", maximumFractionDigits: 1});
   const fmtCount = n => (Math.abs(n) >= 10000 ? fmtCompact.format(n) : fmtInt.format(n));
 
+  // "12 (6.5%)": a count with its share of total; whole percent from 10% up.
+  function fmtShare(n, total) {
+    if (!total) return fmtCount(n);
+    const pct = (100 * n) / total;
+    return `${fmtCount(n)} (${pct >= 10 || pct === 0 ? Math.round(pct) : pct.toFixed(1)}%)`;
+  }
+
   function fmtValue(v) {
     if (!Number.isFinite(v)) return "–";
     if (v !== 0 && Math.abs(v) < 1e-3) return v.toExponential(2);
@@ -132,7 +139,7 @@
     return {load, receive};
   }
 
-  const api = {decodeF32, decodeU32, finite, quantileRange, summaryStats, fmtCount, fmtValue,
+  const api = {decodeF32, decodeU32, finite, quantileRange, summaryStats, fmtCount, fmtShare, fmtValue,
                colourFor, runColour, junctionKey, unitFor, createLoader, NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

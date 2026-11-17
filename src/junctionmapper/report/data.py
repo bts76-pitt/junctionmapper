@@ -150,6 +150,20 @@ def _thumb(asset: Path) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def write_thumbs(run_dir: Path) -> Path:
+    """``<run_dir>/report/runs/r1/thumbs.js``: one JPEG thumbnail per field of the run.
+
+    Kept out of ``index.html`` so the page stays small however many fields a run has.
+    """
+    run_dir = Path(run_dir)
+    fields = json.loads((run_dir / "run.json").read_text())["fields"]
+    base = run_dir / "report" / "runs" / RUN
+    thumbs = {fid: _thumb(base / "fields" / f"{fid}.js") for fid in fields}
+    path = base / "thumbs.js"
+    _register(path, "Thumbs", thumbs)
+    return path
+
+
 def run_summary(run_dir: Path, run: str, label: str) -> dict:
     """The run summary object: everything ``index.html`` needs, none of the per-junction values."""
     run_dir = Path(run_dir)
@@ -159,6 +173,10 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
     cells = pd.read_parquet(run_dir / "cells.parquet")
     flags = pd.read_parquet(run_dir / "flags.parquet")
     calibrated = _has_pixel_size(cells, cfg)
+    # Only measured cells (at least one interface row) count, the denominator of tiles.cells.
+    measured_cells = ifc[["field_id", "cell_id"]].drop_duplicates().astype({"cell_id": "int64"})
+    flags = flags.dropna(subset=["cell_id"]).astype({"cell_id": "int64"}).merge(
+        measured_cells, on=["field_id", "cell_id"], how="inner")
     bool_cols = [c for c in flags.columns if pd.api.types.is_bool_dtype(flags[c])]
     any_flag = flags[bool_cols].any(axis=1) if bool_cols else pd.Series(False, index=flags.index)
     tcj = ifc[ifc["corner_method"] == "tcj"]
@@ -172,7 +190,6 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
             "n_cells": int(ifc.loc[ifc["field_id"] == fid, "cell_id"].nunique()),
             "n_junctions": int(tcj.loc[tcj["field_id"] == fid, "pair_id"].nunique()),
             "qc": qc,
-            "thumb": _thumb(run_dir / "report" / "runs" / RUN / "fields" / f"{fid}.js"),
         })
     measured = {"JM1", "JM2"}
     return {

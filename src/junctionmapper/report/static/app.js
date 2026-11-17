@@ -34,6 +34,7 @@
   JM.registerIndex = function (p) { loader.receive("Index", p); };
   JM.registerMetric = function (p) { loader.receive("Metric", p); };
   JM.registerField = function (p) { loader.receive("Field", p); };
+  JM.registerThumbs = function (p) { loader.receive("Thumbs", p); };
 
   const decoded = new Map();   // src -> decoded payload
 
@@ -65,7 +66,21 @@
       return decoded.get(src);
     });
   }
-  JM.data = {loadIndex, loadMetric};
+  // {field_id: data URI} for one run; an older run without thumbs.js gives {}.
+  function loadThumbs(run) {
+    return loader.load(`runs/${run}/thumbs.js`, {run}).then(got => got.payload, () => ({}));
+  }
+
+  // Thumbnails arrive after the page: each .thumb[data-run][data-field] gets its image.
+  function fillThumbs(root) {
+    const wells = [...root.querySelectorAll(".thumb[data-field]")];
+    [...new Set(wells.map(w => w.dataset.run))].forEach(run => loadThumbs(run).then(map => {
+      wells.filter(w => w.dataset.run === run && map[w.dataset.field] && !w.firstChild)
+        .forEach(w => w.append(h("img", {src: map[w.dataset.field], alt: "", decoding: "async"})));
+    }));
+  }
+
+  JM.data = {loadIndex, loadMetric, loadThumbs};
 
   /*** STATE ***/
 
@@ -279,31 +294,31 @@
 
   function renderTiles(runs) {
     const sum = k => runs.reduce((a, r) => a + r.tiles[k], 0);
-    const flagged = sum("flagged_cells");
+    const cells = sum("cells");
     const across = runs.length > 1 ? `across ${runs.length} runs` : null;
     return h("div", {class: "tiles"},
-      tile("Cells", "Cells with at least one measured interface", L.fmtCount(sum("cells")), across),
+      tile("Cells", "Cells with at least one measured interface", L.fmtCount(cells), across),
       tile("Junctions", "Distinct cell–cell junctions (tricellular corners)", L.fmtCount(sum("junctions")), across),
       tile("Fields", "Images in the run", L.fmtCount(sum("fields")), across),
-      tile("Flagged cells", "Segmented cells with at least one QC flag, measured or not", L.fmtCount(flagged), across));
+      tile("Flagged cells", "Measured cells with at least one QC flag", L.fmtShare(sum("flagged_cells"), cells), across));
   }
 
-  function qcBadge(qc) {
+  function qcBadge(qc, cells) {
     const n = qc.flagged_cells || 0;
     if (!n) return h("span", {class: "badge good", tip: "No QC flags"}, icon("good"), "Clean");
     const detail = Object.entries(qc).filter(([k, v]) => k !== "flagged_cells" && v > 0)
       .map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · ");
-    return h("span", {class: "badge warning", tip: detail || `${n} flagged cells`}, icon("warning"), `${n} flagged`);
+    return h("span", {class: "badge warning", tip: detail || `${n} flagged cells`}, icon("warning"), L.fmtShare(n, cells).replace(/^(\S+)/, "$1 flagged"));
   }
 
   function fieldCard(run, f) {
     return h("a", {class: "card field-card", href: JM.fieldHref(run.run, f.field_id),
                    "aria-label": `Open field ${f.field_id}`},
-      h("div", {class: "thumb"}, f.thumb ? h("img", {src: f.thumb, alt: "", loading: "lazy", decoding: "async"}) : null),
+      h("div", {class: "thumb", "data-run": run.run, "data-field": f.field_id}),
       h("div", {class: "field-meta"},
         h("span", {class: "field-name", title: f.field_id}, f.field_id),
         h("span", {class: "field-row"}, `${L.fmtCount(f.n_cells)} cells · ${L.fmtCount(f.n_junctions)} junctions`),
-        qcBadge(f.qc)));
+        qcBadge(f.qc, f.n_cells)));
   }
 
   function renderFieldGrid(runs) {
@@ -455,6 +470,7 @@
   JM.views.overview = function (root) {
     const runs = selectedRuns();
     root.append(renderTiles(runs), renderDistribution(runs), renderFieldGrid(runs));
+    fillThumbs(root);
   };
 
   // The field view proper (image, junctions, linked chart) replaces this.
@@ -466,13 +482,14 @@
       return;
     }
     root.append(
-      h("div", {class: "field-head"}, h("a", {class: "back", href: "#/"}, "← Overview"), h("h1", null, f.field_id), qcBadge(f.qc)),
+      h("div", {class: "field-head"}, h("a", {class: "back", href: "#/"}, "← Overview"), h("h1", null, f.field_id), qcBadge(f.qc, f.n_cells)),
       h("div", {class: "tiles"},
         tile("Cells", "Cells with at least one measured interface", L.fmtCount(f.n_cells)),
         tile("Junctions", "Distinct cell–cell junctions (tricellular corners)", L.fmtCount(f.n_junctions)),
-        tile("Flagged cells", "Segmented cells with at least one QC flag, measured or not", L.fmtCount(f.qc.flagged_cells || 0)),
+        tile("Flagged cells", "Measured cells with at least one QC flag", L.fmtShare(f.qc.flagged_cells || 0, f.n_cells)),
         tile("Run", "The run this field belongs to", run.label)),
-      h("div", {class: "card field-preview"}, h("div", {class: "thumb"}, f.thumb ? h("img", {src: f.thumb, alt: f.field_id}) : null)));
+      h("div", {class: "card field-preview"}, h("div", {class: "thumb", "data-run": run.run, "data-field": f.field_id})));
+    fillThumbs(root);
   };
 
   /*** RENDER ***/

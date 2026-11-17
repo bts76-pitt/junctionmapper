@@ -62,8 +62,8 @@ def _is_own_report(run_dir: Path, out: Path) -> bool:
 def build_dashboard(runs: list[tuple[Path, str]], out: Path) -> Path:
     """Write ``out/index.html`` and ``out/runs/r1..rN/`` for ``runs`` = [(run directory, label)].
 
-    Run ids are ``r1``, ``r2``, … in argument order. A run's asset tree is copied unless ``out`` is
-    that run's own ``report/`` folder and it is the first run. Returns the path of ``index.html``.
+    Run ids are ``r1``, ``r2``, … in argument order. A run's asset tree replaces ``out/runs/rK`` unless
+    ``out`` is that run's own ``report/`` folder and it is the first run. Returns the path of ``index.html``.
     """
     from junctionmapper.report.data import run_summary   # data imports build; keep this lazy
 
@@ -74,9 +74,14 @@ def build_dashboard(runs: list[tuple[Path, str]], out: Path) -> Path:
     summaries = []
     for k, (run_dir, label) in enumerate(runs, start=1):
         rid = f"r{k}"
+        src, dst = run_dir / "report" / "runs" / SOURCE_RUN, out / "runs" / rid
         if not (k == 1 and _is_own_report(run_dir, out)):
-            shutil.copytree(run_dir / "report" / "runs" / SOURCE_RUN, out / "runs" / rid,
-                            dirs_exist_ok=True)
+            # A previous build's files would otherwise pair with the new _index.js.
+            if dst.exists():
+                if dst.resolve() == src.resolve():
+                    raise RuntimeError(f"refusing to replace {dst}: it is the source tree")
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
         summaries.append(run_summary(run_dir, rid, label))
 
     env = Environment(loader=FileSystemLoader(HERE / "templates"), autoescape=False,
