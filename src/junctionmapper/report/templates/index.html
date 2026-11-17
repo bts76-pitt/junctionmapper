@@ -14,12 +14,15 @@
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>junctionmapper</div>
     <nav class="crumbs" id="crumbs" aria-label="Location"></nav>
     <div class="topbar-actions">
+      <a class="text-btn" id="prov-link" href="#/provenance" data-tip="Inputs, model, parameters, thresholds and versions of each run">Provenance</a>
+      <button type="button" class="icon-btn" id="help-toggle" aria-expanded="false" aria-controls="help" data-tip="Definitions" aria-label="Help">?</button>
       <button type="button" class="icon-btn" id="theme-toggle" data-tip="Switch light / dark theme" aria-label="Switch light / dark theme">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z" fill="currentColor"/></svg>
       </button>
     </div>
   </header>
   <section class="filters" id="filters" aria-label="Filters"></section>
+  <section class="help-panel" id="help" aria-label="Help" hidden></section>
   <main id="view" class="view"></main>
 </div>
 <div id="tooltip" class="tooltip" role="tooltip" hidden></div>

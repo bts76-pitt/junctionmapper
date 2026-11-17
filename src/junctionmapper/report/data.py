@@ -16,7 +16,9 @@ import pandas as pd
 from PIL import Image
 
 from junctionmapper.config import RunConfig
-from junctionmapper.report.build import PARAMETERS, _has_pixel_size
+from junctionmapper.report.summary import (PARAMETERS, has_pixel_size, provenance_rows,
+                                           qc as qc_accounting, run_roles, run_warnings,
+                                           threshold_info)
 
 RUN = "r1"          # the run id inside a run directory
 THUMB_PX = 240
@@ -177,7 +179,11 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
     ifc = pd.read_parquet(run_dir / "interfaces.parquet")
     cells = pd.read_parquet(run_dir / "cells.parquet")
     flags = pd.read_parquet(run_dir / "flags.parquet")
-    calibrated = _has_pixel_size(cells, cfg)
+    nuclei = pd.read_parquet(run_dir / "nuclei.parquet")
+    prov = doc["provenance"]
+    calibrated = has_pixel_size(cells, cfg)
+    tinfo = threshold_info(ifc, run_roles(prov))
+    _, lost = qc_accounting(doc["fields"], cells, flags, nuclei, ifc)
     # Only measured cells (at least one interface row) count, the denominator of tiles.cells.
     measured_cells = ifc[["field_id", "cell_id"]].drop_duplicates().astype({"cell_id": "int64"})
     flags = flags.dropna(subset=["cell_id"]).astype({"cell_id": "int64"}).merge(
@@ -213,5 +219,7 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
                   "junctions": int(tcj["pair_id"].nunique()),
                   "fields": len(fields),
                   "flagged_cells": int(any_flag.sum())},
-        "provenance": doc["provenance"],
+        "warnings": run_warnings(prov, tinfo, lost),
+        "provenance_rows": provenance_rows(cfg, prov, cells, tinfo, len(fields)),
+        "provenance": prov,
     }

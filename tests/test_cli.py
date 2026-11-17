@@ -1145,9 +1145,10 @@ def test_degraded_note_counts_the_files_actually_opened_not_the_candidate_list(t
 
 def test_a_run_whose_calibration_resolved_nothing_does_not_blame_a_human(tmp_path):
     """N3, the load-bearing half: when every calibration candidate fails, no run value is
-    resolved, every field falls back to Otsu on its own plane, the applied values then differ
-    across fields -- and the red banner used to say the threshold "was overridden somewhere",
-    which is false and contradicts the Provenance section's "no marker role resolved".
+    resolved, every field falls back to Otsu on its own plane, and the applied values then differ
+    across fields. The run's threshold warning must name that cause ("calibration resolved
+    nothing", "Not an override"), never a per-field override -- the old report's banner said the
+    threshold "was overridden somewhere", contradicting its own "no marker role resolved".
 
     Reachable with more inputs than the calibration pass may open: the first ten candidates in
     the spread order are corrupt, so the proposal gets nothing, while the measurement pass
@@ -1176,6 +1177,13 @@ def test_a_run_whose_calibration_resolved_nothing_does_not_blame_a_human(tmp_pat
     html = page_data(out)
     assert "threshold_calibration" in html and "degraded" in html
     assert "no marker role resolved" in html
+    [run] = page_runs(out)
+    varied = [x for x in run["warnings"] if x["kind"] == "threshold_varied"]
+    assert varied and all(x["attribution"] == "fallback" for x in varied)
+    [w] = [x for x in varied if x["role"] == "JM1"]
+    assert w["text"] == "JM1 threshold varied: calibration resolved nothing"
+    assert "Not an override" in w["detail"] and "set per field" not in w["detail"]
+    assert any(x["kind"] == "fields_failed" and x["text"] == "10 fields failed" for x in run["warnings"])
 
 
 # ---- segmenting needs a segment channel, refused before any field is read -------------

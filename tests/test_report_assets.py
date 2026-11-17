@@ -75,7 +75,7 @@ def test_field_asset_registers_one_field_with_every_configured_channel(tmp_path,
 
 
 def test_field_asset_lists_each_cell_side_with_the_table_values(tmp_path, setup):
-    from junctionmapper.report.build import PARAMETERS
+    from junctionmapper.report.summary import PARAMETERS
     f, seg, cfg = setup
     r = measure_field(f, seg, cfg)
     d = _load(write_field_asset(f, seg, r, "r1", tmp_path), "Field")
@@ -96,7 +96,7 @@ def test_field_asset_lists_each_cell_side_with_the_table_values(tmp_path, setup)
 
 
 def test_field_asset_sides_serialise_nan_as_null(tmp_path, setup):
-    from junctionmapper.report.build import PARAMETERS
+    from junctionmapper.report.summary import PARAMETERS
     f, seg, cfg = setup
     r = measure_field(f, seg, cfg)
     key = PARAMETERS[0]["px"]

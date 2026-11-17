@@ -11,13 +11,18 @@ test("decodeF32 keeps NaN", () => {
 });
 
 test("NaN is grey, never a ramp colour", () => { assert.equal(L.colourFor(NaN, 0, 1), "rgb(150,150,150)"); });
-test("colourFor runs light to dark and clamps", () => {
-  const lum = s => s.match(/\d+/g).map(Number).reduce((a, b) => a + b, 0);
-  assert.ok(lum(L.colourFor(0, 0, 1)) > lum(L.colourFor(0.5, 0, 1)));
-  assert.ok(lum(L.colourFor(0.5, 0, 1)) > lum(L.colourFor(1, 0, 1)));
+test("colourFor runs dark to light (viridis) and clamps", () => {
+  const rgb = s => s.match(/\d+/g).map(Number);
+  const lum = s => { const [r, g, b] = rgb(s); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  assert.equal(L.colourFor(0, 0, 1), "rgb(68,1,84)");       // dark purple
+  assert.equal(L.colourFor(1, 0, 1), "rgb(253,231,37)");    // yellow
+  for (let i = 0; i < 10; i++) assert.ok(lum(L.colourFor(i / 10, 0, 1)) < lum(L.colourFor((i + 1) / 10, 0, 1)));
   assert.equal(L.colourFor(-5, 0, 1), L.colourFor(0, 0, 1));
   assert.equal(L.colourFor(9, 0, 1), L.colourFor(1, 0, 1));
   assert.match(L.colourFor(3, 3, 3), /^rgb\(\d+,\d+,\d+\)$/);
+});
+test("no ramp colour is the NaN grey", () => {
+  for (let i = 0; i <= 20; i++) assert.notEqual(L.colourFor(i / 20, 0, 1), L.NAN_GREY);
 });
 
 test("finite drops NaN and keeps positions", () => {
@@ -218,4 +223,14 @@ test("runRows gives one row per run in order", () => {
     {run: "r1", label: "A", fields: 2, cells: 40, junctions: 90, flagged: 4},
     {run: "r2", label: "B", fields: 1, cells: 0, junctions: 0, flagged: 0},
   ]);
+});
+
+test("filterRows matches every term in group, key or value, any case", () => {
+  const rows = [{group: "Model", key: "model", value: "cpsam"},
+                {group: "Thresholds", key: "JM1 · f1", value: "50 (own Otsu 48)"},
+                {group: "Versions", key: "junctionmapper", value: "0.1.0"}];
+  assert.deepEqual(L.filterRows(rows, ""), rows);
+  assert.deepEqual(L.filterRows(rows, "CPSAM"), [rows[0]]);
+  assert.deepEqual(L.filterRows(rows, "jm1 otsu"), [rows[1]]);
+  assert.deepEqual(L.filterRows(rows, "jm1 cpsam"), []);
 });

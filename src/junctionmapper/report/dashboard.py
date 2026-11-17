@@ -13,6 +13,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from junctionmapper.errors import ConfigError
+from junctionmapper.report.data import run_summary
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -65,8 +66,6 @@ def build_dashboard(runs: list[tuple[Path, str]], out: Path) -> Path:
     Run ids are ``r1``, ``r2``, … in argument order. A run's asset tree replaces ``out/runs/rK`` unless
     ``out`` is that run's own ``report/`` folder and it is the first run. Returns the path of ``index.html``.
     """
-    from junctionmapper.report.data import run_summary   # data imports build; keep this lazy
-
     runs = [(Path(d), str(label)) for d, label in runs]
     out = Path(out)
     _check(runs, out)

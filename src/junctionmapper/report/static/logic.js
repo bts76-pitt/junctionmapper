@@ -68,9 +68,10 @@
 
   /*** COLOUR ***/
 
-  // Sequential single-hue blue, light -> dark (steps 100..700 of the reference ramp).
-  const RAMP = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5",
-                "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b"]
+  // Junction ramp: perceptual sequential (viridis), dark purple -> yellow. Every step is
+  // saturated, so with its dark casing a junction reads on bright or dark fluorescence alike.
+  const RAMP = ["#440154", "#482475", "#414487", "#355f8d", "#2a788e", "#21918c", "#22a884",
+                "#44bf70", "#7ad151", "#bddf26", "#fde725"]
     .map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
   const NAN_GREY = "rgb(150,150,150)";
 
@@ -187,6 +188,18 @@
     return x === null || x === undefined ? NaN : x;
   }
 
+  /*** PROVENANCE ***/
+
+  // Rows whose group, key or value contain every whitespace-separated term (any case).
+  function filterRows(rows, query) {
+    const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return rows.slice();
+    return rows.filter(r => {
+      const text = `${r.group} ${r.key} ${r.value}`.toLowerCase();
+      return terms.every(t => text.includes(t));
+    });
+  }
+
   /*** CACHE ***/
 
   // Map with a size cap: get() and set() mark a key most recent; past the cap the least recent
@@ -261,7 +274,8 @@
 
   const api = {decodeF32, decodeU32, finite, quantileRange, summaryStats, fmtCount, fmtShare, fmtValue,
                colourFor, runColour, junctionKey, unitFor, fieldSlice, hitTest, cellAt,
-               selectionFromRoute, sideValue, createLru, createLoader, pointTarget, runRows, NAN_GREY};
+               selectionFromRoute, sideValue, createLru, createLoader, pointTarget, runRows, filterRows,
+               NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

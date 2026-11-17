@@ -28,7 +28,7 @@ rest. The method is the original authors'.
 3. Splits each cell boundary into **interfaces**, one stretch per neighbour.
 4. Measures the published junction parameters along each interface, for up to
    two junction markers.
-5. Writes five tidy tables and a standalone HTML report.
+5. Writes five tidy tables and an interactive report that opens offline.
 
 You declare which protein fills each role (`JM1`, `JM2`, `nucleus`). Nothing is
 inferred from channel order, and the declaration is written into every output
@@ -83,7 +83,7 @@ flowchart TD
     MET --> OUT
     NUC --> OUT
     QC --> OUT
-    OUT["Five tables<br/>.parquet + .csv"] --> REP["report.html<br/>QC · quantification · provenance"]
+    OUT["Five tables<br/>.parquet + .csv"] --> REP["report/index.html<br/>fields · junctions · provenance"]
 ```
 
 Two ways to run it:
@@ -234,7 +234,7 @@ because the band sits on the ridge the outline was snapped to.
   drawing cells. It cuts fewer nuclei, but boundaries can leave the membrane:
   on plate-1 row E the membrane-only outlines tracked junctions better.
   - Interfaces whose boundary cuts a nucleus are flagged `splits_nucleus`;
-    `report.html` counts them per method. Some are real: a neighbour's membrane
+    filter on that column. Some are real: a neighbour's membrane
     can lie over a nucleus in a single optical section.
 
 **3. Check the threshold.** Four parameters depend on an intensity threshold.
@@ -245,7 +245,7 @@ See [Intensity thresholds](#intensity-thresholds-one-value-per-marker-for-the-wh
 ## Outputs
 
 Every run writes five tables, each as `.parquet` and `.csv`, plus
-`report.html`. All tables are keyed by `field_id`, so tables from many fields
+`report/index.html`. All tables are keyed by `field_id`, so tables from many fields
 concatenate.
 
 | Table | One row per | Key columns |
@@ -257,6 +257,32 @@ concatenate.
 | `flags` | cell | `border_touching`, `isolated`, `degenerate`, ... |
 
 Lengths come in `_px` and `_um`; areas in `_px` and `_um2`.
+
+### The report
+
+`OUT/report/index.html`: one page per run, offline, no install.
+
+- **Overview:** cells, junctions, fields, flagged cells; one distribution per metric; a card per field.
+- **Field view:** the image with junctions coloured by the metric; click a junction or a cell for its values.
+- **Warnings:** one chip per run-level problem; hover for detail.
+- **Provenance:** inputs, model, parameters, thresholds per role, versions, code hash. Searchable.
+- **Help (`?`):** each metric's definition.
+
+To open it:
+
+- Double-click `index.html`. Any current browser works; nothing is fetched.
+- On the cluster: copy the whole `report/` folder to your computer, or open it with OnDemand's file browser.
+- Keep the folder together: `index.html` loads `runs/` beside it.
+
+To compare runs on one page:
+
+```bash
+junctionmapper report OUT_A OUT_B -o compare --label control --label treated
+```
+
+- Re-measures nothing; copies each run's report files into `compare/`.
+- Labels default to the folder names.
+- Warns if a run's labels changed since it was measured.
 
 ### The parameters
 
@@ -303,8 +329,8 @@ df.groupby("pair_id").mean()            # one row per junction
 | `interface_id` | One cell-side interface. Shared by its JM1 and JM2 rows. |
 
 Pooling rows without collapsing on `pair_id` over-weights interior junctions,
-and under `dp` by a different amount for each junction. The report repeats this
-next to every `n` it prints.
+and under `dp` by a different amount for each junction. The report plots one
+dot per junction (the mean of its two sides) or per cell, never per row.
 
 Three more columns say how far to trust a row:
 
@@ -347,10 +373,10 @@ one-grey-level floor dominates: with a run value of 2.28, the flag sets on the o
 is intended; the floor exists so 16-bit planes do not trip on noise. Read it as
 "this field's own plane would have been thresholded elsewhere."
 
-A configured `threshold` overrides all of this, per role. The report shows a red
-*threshold varied, not comparable* banner only when applied values differ
-between fields by more than one grey level. It says which cause applies — an
-override, or no run value could be resolved — and names the fields involved.
+A configured `threshold` overrides all of this, per role. The report shows a
+*threshold varied* warning only when applied values differ between fields by
+more than one grey level. It names the cause — an override, or no run value
+could be resolved — and the fields involved.
 
 ### `nuclei_distances` — one row per *ordered* nucleus pair
 

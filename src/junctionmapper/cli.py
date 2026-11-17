@@ -61,7 +61,7 @@ from junctionmapper.pipeline import (
     resolve_thresholds,
 )
 from junctionmapper.report.assets import write_field_asset
-from junctionmapper.report.build import _has_pixel_size
+from junctionmapper.report.summary import has_pixel_size
 from junctionmapper.report.dashboard import SOURCE_RUN, build_dashboard
 from junctionmapper.report.data import write_metric_files, write_run_json, write_thumbs
 from junctionmapper.segment.cellpose import Segmentation, SegmentationParams, segment_field
@@ -593,7 +593,7 @@ def _write_report(out: Path, cfg: RunConfig, prov: dict, fields: list[str]) -> P
     write_run_json(out, cfg, prov, fields)
     cells = pd.read_parquet(out / "cells.parquet")
     interfaces = pd.read_parquet(out / "interfaces.parquet")
-    write_metric_files(interfaces, SOURCE_RUN, assets / "metrics", _has_pixel_size(cells, cfg))
+    write_metric_files(interfaces, SOURCE_RUN, assets / "metrics", has_pixel_size(cells, cfg))
     write_thumbs(out)
     return build_dashboard([(out, out.resolve().name)], out / "report")
 

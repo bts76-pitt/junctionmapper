@@ -18,7 +18,7 @@ from skimage.measure import find_contours
 
 from junctionmapper.io.reader import Field
 from junctionmapper.pipeline import FieldResult
-from junctionmapper.report.build import PARAMETERS
+from junctionmapper.report.summary import PARAMETERS
 from junctionmapper.segment.cellpose import Segmentation
 
 

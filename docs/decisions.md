@@ -384,6 +384,13 @@ that the click changes the result at all — was observed directly by driving th
 
 ## 5. The QC report
 
+**An interactive dashboard (`report/index.html`) replaces `report.html`.**
+The static page and its matplotlib figures are gone; QC counts, threshold warnings and
+provenance moved to `report/summary.py` and feed the dashboard.
+*Why:* the static report showed no cells, so a number could not be traced to the image; the
+user asked for an interactive dashboard that shows the cells.
+*Cost if wrong:* the old page is in git history; its figures were built from the same tables.
+
 **Per-field detail stays in the HTML, uncapped** (~16.7 KB per field of rows, ~8.5 MB at 500
 fields × markers); no pooled-only mode.
 *Why:* the rows sit in collapsed `details`, a local file that size opens fine, and the

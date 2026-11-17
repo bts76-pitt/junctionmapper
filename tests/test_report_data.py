@@ -10,7 +10,7 @@ import pytest
 from junctionmapper.config import Role
 from junctionmapper.pipeline import measure_field
 from junctionmapper.report.assets import write_field_asset
-from junctionmapper.report.build import PARAMETERS
+from junctionmapper.report.summary import PARAMETERS
 from junctionmapper.report.data import (b64_f32, b64_u32, cell_table, junction_table,
                                         run_summary, write_metric_files, write_run_json,
                                         write_thumbs)
@@ -226,3 +226,20 @@ def test_field_with_no_interfaces_still_builds_a_summary(tmp_path):
 
 def test_every_parameter_has_a_one_line_help():
     assert all(p["help"] and "\n" not in p["help"] and len(p["help"]) <= 120 for p in PARAMETERS)
+
+
+def test_run_summary_carries_warnings_and_provenance_rows(setup_tables):
+    s = run_summary(setup_tables.dir, "r1", "x")
+    assert s["warnings"] == []
+    assert {"group": "Markers", "key": "JM1", "value": "Na/K-ATPase (channel 0)"} in s["provenance_rows"]
+    assert any(r["key"] == "JM1 · f1" for r in s["provenance_rows"])
+
+
+def test_run_summary_warns_about_failed_fields_and_unattributed_labels(setup_tables):
+    doc = json.loads((setup_tables.dir / "run.json").read_text())
+    doc["provenance"].update({"fields_failed": "1", "fields_failed_detail": "b.tif: unreadable",
+                              "threshold_run_roles": "none"})
+    (setup_tables.dir / "run.json").write_text(json.dumps(doc))
+    w = run_summary(setup_tables.dir, "r1", "x")["warnings"]
+    assert [x["kind"] for x in w] == ["fields_failed"]
+    assert w[0] == {"kind": "fields_failed", "text": "1 field failed", "detail": "b.tif: unreadable"}

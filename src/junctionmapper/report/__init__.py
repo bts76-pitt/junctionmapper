@@ -1,4 +1,4 @@
-"""Self-contained HTML report (QC, quantification, provenance)."""
-from junctionmapper.report.build import build_report
+"""The interactive report: per-run asset files and the offline dashboard (``index.html``)."""
+from junctionmapper.report.dashboard import build_dashboard
 
-__all__ = ["build_report"]
+__all__ = ["build_dashboard"]

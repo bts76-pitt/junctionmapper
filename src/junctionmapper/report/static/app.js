@@ -157,7 +157,7 @@
       else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
       else el.setAttribute(k, v === true ? "" : v);
     }
-    for (const kid of kids.flat()) {
+    for (const kid of kids.flat(Infinity)) {
       if (kid === null || kid === undefined || kid === false) continue;
       el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
     }
@@ -230,6 +230,7 @@
       return {view: "field", run: m[1], field: decodeURIComponent(m[2]),
               junction: params.get("j"), cell: params.get("c")};
     }
+    if (/^#\/provenance\/?$/.test(location.hash)) return {view: "provenance"};
     return {view: "overview"};
   }
   JM.route = route;
@@ -240,6 +241,8 @@
   function renderFilters(r) {
     const box = document.getElementById("filters");
     box.replaceChildren();
+    box.hidden = r.view === "provenance";
+    if (box.hidden) return;
     const runs = selectedRuns();
     if (r.view === "overview" && JM.runs.length > 1) {
       box.append(control("Run", null, select(
@@ -276,6 +279,8 @@
     const label = JM.runs.length === 1 ? JM.runs[0].label : `Comparison · ${JM.runs.length} runs`;
     if (r.view === "overview") {
       nav.append(h("span", {class: "here"}, label));
+    } else if (r.view === "provenance") {
+      nav.append(h("a", {href: "#/"}, label), h("span", {class: "sep"}, "/"), h("span", {class: "here"}, "Provenance"));
     } else {
       const run = runById(r.run);
       nav.append(h("a", {href: "#/"}, label), h("span", {class: "sep"}, "/"),
@@ -284,6 +289,12 @@
   }
 
   /*** OVERVIEW ***/
+
+  // One chip per run-level warning; the detail is in the tooltip and in the provenance view.
+  function warningChips(run) {
+    return (run.warnings || []).map(w => h("a", {class: "warn-chip", href: "#/provenance", tip: w.detail,
+                                                 "data-kind": w.kind}, icon("warning"), w.text));
+  }
 
   function tile(label, tip, value, sub) {
     return h("div", {class: "card tile"},
@@ -471,7 +482,8 @@
   function renderRunTable(runs) {
     const head = [["Run"], ["Fields"], ["Cells", "Cells with at least one measured interface"],
                   ["Junctions", "Distinct cell–cell junctions (tricellular corners)"],
-                  ["Flagged cells", "Measured cells with at least one QC flag (TCJ/DP corner disagreement not counted)"]];
+                  ["Flagged cells", "Measured cells with at least one QC flag (TCJ/DP corner disagreement not counted)"],
+                  ["Warnings", "Run-level problems; hover a warning for detail"]];
     return h("section", {class: "card run-card"},
       h("table", {class: "data-table run-table"},
         h("thead", null, h("tr", null, head.map(([c, tip]) => h("th", {scope: "col"},
@@ -483,12 +495,20 @@
           h("td", null, L.fmtCount(row.fields)),
           h("td", null, L.fmtCount(row.cells)),
           h("td", null, L.fmtCount(row.junctions)),
-          h("td", null, L.fmtShare(row.flagged, row.cells)))))));
+          h("td", null, L.fmtShare(row.flagged, row.cells)),
+          h("td", {class: "warn-cell"}, warnOrDash(runById(row.run))))))));
+  }
+
+  function warnOrDash(run) {
+    const chips = warningChips(run);
+    return chips.length ? chips : h("span", {class: "muted"}, "–");
   }
 
   JM.views.overview = function (root) {
     const runs = selectedRuns();
     const compare = JM.runs.length > 1 && state.run === "all";
+    const chips = compare ? [] : runs.flatMap(warningChips);
+    if (chips.length) root.append(h("div", {class: "warn-row", "aria-label": "Run warnings"}, chips));
     root.append(compare ? renderRunTable(runs) : renderTiles(runs), renderDistribution(runs),
                 renderFieldGrid(runs));
     fillThumbs(root);
@@ -501,7 +521,8 @@
   const TINT_OTHER = [1, 1, 1];
   const LINE_PX = 2.5;            // junction stroke, screen px
   const HIT_PX = 6;               // junction hit tolerance, screen px
-  const FLAG_COLOUR = "#fab219";  // amber: never on the blue ramp
+  const FLAG_COLOUR = "#ec835a";  // status orange: not on the viridis junction ramp
+  const CASING = "rgba(11,11,11,0.9)";   // dark casing under every junction line
   const NO_JUNCTIONS = "No junctions measured in this field.";
 
   // Viewer settings outlive re-renders: channel layers by role, overlays, and per-field view/selection.
@@ -631,7 +652,8 @@
       if (state.dot !== "cell") return new Set(sel.brush);
       return new Set(sel.brush.flatMap(c => model.byCell.get(c) || []));
     }
-    if (sel.junction) return new Set([sel.junction]);
+    // A junction this field does not have (a stale link) highlights nothing rather than dims everything.
+    if (sel.junction) return model.jValue.has(sel.junction) ? new Set([sel.junction]) : null;
     if (sel.cell) return new Set(model.byCell.get(sel.cell) || []);
     return null;
   }
@@ -706,12 +728,12 @@
           const v = model.jValue.has(key) ? model.jValue.get(key) : NaN;
           const dim = lit && !lit.has(key);
           const hot = key === sel.junction || (hover && hover.junction === key);
-          ctx.globalAlpha = dim ? 0.22 : 1;
-          if (hot) {
-            ctx.lineWidth = (LINE_PX + 8) / k; ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.stroke(paths[key]);
-            ctx.lineWidth = (LINE_PX + 4) / k; ctx.strokeStyle = "#0b0b0b"; ctx.stroke(paths[key]);
+          ctx.globalAlpha = dim ? 0.35 : 1;
+          if (hot) {   // selected or hovered: white halo outside the casing
+            ctx.lineWidth = (LINE_PX + 8) / k; ctx.strokeStyle = "#ffffff"; ctx.stroke(paths[key]);
+            ctx.lineWidth = (LINE_PX + 4) / k; ctx.strokeStyle = CASING; ctx.stroke(paths[key]);
           } else {
-            ctx.lineWidth = (LINE_PX + 2) / k; ctx.strokeStyle = "rgba(255,255,255,0.8)"; ctx.stroke(paths[key]);
+            ctx.lineWidth = (LINE_PX + 2) / k; ctx.strokeStyle = CASING; ctx.stroke(paths[key]);
           }
           ctx.lineWidth = (hot ? LINE_PX + 1 : LINE_PX) / k;
           ctx.strokeStyle = L.colourFor(v, model.lo, model.hi);
@@ -1050,7 +1072,7 @@
           h("div", {class: "bar-group", role: "group", "aria-label": "Channels"}, channelControls(fd, viewer)),
           h("div", {class: "bar-group", role: "group", "aria-label": "Overlays"}, overlayControls(viewer), fitBtn)),
         flags.length ? h("div", {class: "viewer-bar flags-bar", role: "group", "aria-label": "QC flags"},
-          h("span", {class: "bar-label", tip: "QC flags; flagged cells get a dashed amber outline"}, "QC"), flags) : null,
+          h("span", {class: "bar-label", tip: "QC flags; flagged cells get a dashed orange outline"}, "QC"), flags) : null,
         viewer.el,
         h("div", {class: "viewer-foot"},
           empty ? h("span", {class: "empty-note"}, NO_JUNCTIONS)
@@ -1074,6 +1096,80 @@
       body.replaceChildren(h("p", {class: "empty-note"}, `Could not load this field: ${err.message}`));
     });
   };
+
+  /*** PROVENANCE ***/
+
+  let provQuery = "";
+
+  // Warnings first, then the run's provenance rows, as one searchable key-value table.
+  function provRows(run) {
+    return (run.warnings || []).map(w => ({group: "Warnings", key: w.text, value: w.detail}))
+      .concat(run.provenance_rows || []);
+  }
+
+  function provTable(rows) {
+    const body = h("tbody");
+    let group = null;
+    rows.forEach(r => {
+      if (r.group !== group) {
+        group = r.group;
+        body.append(h("tr", {class: "prov-group"}, h("th", {scope: "colgroup", colspan: "2"}, group)));
+      }
+      body.append(h("tr", {class: r.group === "Warnings" ? "is-warning" : null},
+        h("th", {scope: "row"}, r.key), h("td", null, r.value)));
+    });
+    return h("table", {class: "data-table prov-table"}, body);
+  }
+
+  function provSection(run, query) {
+    const all = provRows(run), rows = L.filterRows(all, query);
+    return h("section", {class: "card prov-card"},
+      h("div", {class: "section-head"},
+        JM.runs.length > 1 ? h("span", {class: "swatch", style: `background:${L.runColour(runIndex(run.run), theme())}`}) : null,
+        h("h2", null, run.label),
+        h("span", {class: "count"}, query ? `${L.fmtCount(rows.length)} of ${L.fmtCount(all.length)}` : L.fmtCount(all.length))),
+      rows.length ? provTable(rows) : h("p", {class: "detail-empty"}, "No match"));
+  }
+
+  JM.views.provenance = function (root) {
+    const search = h("input", {type: "search", class: "search", value: provQuery, placeholder: "Search",
+                               "aria-label": "Search provenance", tip: "Every word must match a group, key or value"});
+    const body = h("div", {class: "prov-body"});
+    const draw = () => body.replaceChildren(...JM.runs.map(run => provSection(run, provQuery)));
+    search.addEventListener("input", () => { provQuery = search.value; draw(); });
+    root.append(h("div", {class: "prov-head"}, h("h1", null, "Provenance"), search), body);
+    draw();
+  };
+
+  /*** HELP ***/
+
+  // One collapsed panel: each metric's label and definition, then the few terms the views use.
+  function initHelp() {
+    const panel = document.getElementById("help"), btn = document.getElementById("help-toggle");
+    const run = JM.runs[0];
+    const item = (term, def, tag) => [h("dt", null, term, tag ? h("span", {class: "help-tag"}, tag) : null), h("dd", null, def)];
+    const unit = m => [m.unit_px, run.calibrated ? m.unit_um : ""].filter(Boolean).join(" / ");
+    panel.append(
+      h("div", {class: "help-inner"},
+        h("div", {class: "help-col"},
+          h("h2", null, "Metrics"),
+          h("dl", {class: "help-list"}, run.metrics.map(m => item(m.label, m.help + (unit(m) ? ` Unit: ${unit(m)}.` : ""),
+                                                                   m.td ? "threshold" : null)))),
+        h("div", {class: "help-col"},
+          h("h2", null, "Terms"),
+          h("dl", {class: "help-list"},
+            Object.keys(METHOD_NAMES).map(k => item(`${k} · ${METHOD_NAMES[k]}`, METHOD_HELP[k])),
+            item("Junction value", "Mean of its two cell sides."),
+            item("Cell value", "Median over its junctions."),
+            item("threshold", "Metric depends on the marker threshold."),
+            item("Flagged cell", "Measured cell with a QC flag. Corner-method disagreement not counted."),
+            item("Junction colour", "2nd–98th percentile of the field, dark purple to yellow. Grey: no value."),
+            item("Warnings", "Run-level problems. Hover for detail; full record under Provenance.")))));
+    btn.addEventListener("click", () => {
+      panel.hidden = !panel.hidden;
+      btn.setAttribute("aria-expanded", String(!panel.hidden));
+    });
+  }
 
   /*** RENDER ***/
 
@@ -1115,6 +1211,7 @@
     initState();
     initTheme();
     initTooltip();
+    initHelp();
     window.addEventListener("hashchange", render);
     render();
   });
