@@ -150,6 +150,8 @@ class BandMetrics:
         occupancy           a percentage
         intensity_per_area  intensity per pixel
         cluster_density     intensity per pixel
+        band_mean_intensity mean raw value over EVERY band pixel; no threshold
+        band_saturated_pct  a percentage of band pixels at the saturation value
 
     Ratios are NaN when undefined.
     """
@@ -160,9 +162,49 @@ class BandMetrics:
     marker_intensity: float
     intensity_per_area: float
     cluster_density: float
+    band_mean_intensity: float
+    band_saturated_pct: float
 
 
-def band_metrics(band, marker_image, t) -> BandMetrics:
+def band_brightness(band, image, saturation=None) -> tuple[float, float]:
+    """Threshold-free brightness of ``image`` over ``band``.
+
+        band         a bool mask, from ``dilated_band``
+        image        any greyscale plane of the same shape
+        saturation   the value a clipped pixel reads (``Field.saturation``), or None
+
+    Returns ``(band_mean_intensity, band_saturated_pct)``:
+
+        band_mean_intensity   mean raw value over every band pixel, in float64;
+                              NaN for an empty band, and NaN if any band pixel is NaN
+        band_saturated_pct    100 * band pixels >= saturation / band pixels;
+                              NaN for an empty band or when saturation is None
+
+    No threshold is applied, so a dim marker reads as a low number rather than as
+    a low occupancy. This is the column for comparing absolute marker levels
+    between conditions imaged with the same settings.
+
+    Clipped pixels hold the saturation value, not their true value, so a band with
+    a high ``band_saturated_pct`` under-reports its mean.
+
+    Raises ConfigError for a non-bool ``band`` or a shape mismatch.
+    """
+    band = np.asarray(band)
+    image = np.asarray(image)
+    if band.dtype != bool or band.ndim != 2:
+        raise ConfigError("band must be a 2-D boolean mask (see dilated_band)")
+    if image.shape != band.shape:
+        raise ConfigError(f"image shape {image.shape} does not match band shape {band.shape}")
+    vals = image[band].astype(np.float64)
+    if vals.size == 0:
+        return float("nan"), float("nan")
+    mean = float(vals.mean())
+    sat = (float("nan") if saturation is None
+           else 100.0 * float(np.count_nonzero(vals >= saturation)) / vals.size)
+    return mean, sat
+
+
+def band_metrics(band, marker_image, t, saturation=None) -> BandMetrics:
     """Interface Area, Marker Area, Marker Intensity and derived ratios.
 
         band           a bool mask, from ``dilated_band``
@@ -179,6 +221,8 @@ def band_metrics(band, marker_image, t) -> BandMetrics:
         interface_occupancy_pct   100 * marker area / interface area
         intensity_per_area        intensity / interface area   (per pixel)
         cluster_density           intensity / marker area      (per pixel)
+        band_mean_intensity       mean of the UNTHRESHOLDED channel over the band
+        band_saturated_pct        band pixels at ``saturation``; see ``band_brightness``
 
     Ratios are NaN on a zero denominator.
 
@@ -204,6 +248,7 @@ def band_metrics(band, marker_image, t) -> BandMetrics:
             f"marker_image shape {marker_image.shape} does not match band shape {band.shape}"
         )
     masked = mask_above(marker_image, t)[band]
+    mean, sat = band_brightness(band, marker_image, saturation)
     interface_area = int(band.sum())
     marker_area = int(np.count_nonzero(masked > 0))
     intensity = float(masked.astype(np.float64).sum())
@@ -218,6 +263,8 @@ def band_metrics(band, marker_image, t) -> BandMetrics:
         marker_intensity=intensity,
         intensity_per_area=ratio(intensity, interface_area),
         cluster_density=ratio(intensity, marker_area),
+        band_mean_intensity=mean,
+        band_saturated_pct=sat,
     )
 
 

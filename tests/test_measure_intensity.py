@@ -178,3 +178,28 @@ def test_two_cycles_on_a_line_has_the_square_element_area():
     pixels = np.array([[5, c] for c in range(2, 11)])  # kept off the border: no clipping
     assert dilated_band(pixels, (20, 20), cycles=1).sum() == 3 * 11
     assert dilated_band(pixels, (20, 20), cycles=2).sum() == 5 * 13
+
+
+# ---- threshold-free band brightness ---------------------------------------------------
+
+def test_band_mean_intensity_ignores_the_threshold():
+    """Every band pixel counts, so a threshold above every pixel changes nothing."""
+    band, img = band_of(10, marker_px=3)
+    for t in (0.0, 150.0, 1000.0):
+        assert band_metrics(band, img, t).band_mean_intensity == pytest.approx(60.0)
+
+
+def test_band_mean_intensity_is_nan_for_an_empty_band():
+    band, img = band_of(0)
+    assert math.isnan(band_metrics(band, img, 0.0).band_mean_intensity)
+
+
+def test_band_saturated_pct_counts_pixels_at_the_saturation_value():
+    band, img = band_of(10, marker_px=3)
+    assert band_metrics(band, img, 0.0, saturation=200.0).band_saturated_pct == pytest.approx(30.0)
+    assert band_metrics(band, img, 0.0, saturation=255.0).band_saturated_pct == 0.0
+
+
+def test_band_saturated_pct_is_nan_without_a_saturation_value():
+    band, img = band_of(10, marker_px=3)
+    assert math.isnan(band_metrics(band, img, 0.0).band_saturated_pct)

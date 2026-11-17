@@ -23,7 +23,30 @@ FORMULAS
     intensity_per_um2         intensity_per_px2 / s**2
     cluster_density_per_px2   marker_intensity / marker_area_px
     cluster_density_per_um2   cluster_density_per_px2 / s**2
+    band_mean_intensity       mean of ALL band pixels, no threshold (raw units)
+    band_saturated_pct        100 * band pixels at the source dtype's ceiling / band pixels
+                              (NaN for a float source)
+    segment_band_*            the same two, read from the segment channel in the same band
+                              (NaN when no segment channel is configured)
     n_neighbours              distinct non-zero neighbour ids, both corner methods
+
+
+THRESHOLD-FREE BRIGHTNESS
+-------------------------
+Every threshold-based column scales with the threshold. Choose the threshold per
+condition and a dim condition can still read as well occupied. ``band_mean_intensity``
+has no threshold. Use it to compare absolute marker levels between conditions
+imaged with the same acquisition settings.
+
+    Clipped pixels read the ceiling, not their true value. A high
+    ``band_saturated_pct`` means the mean is an underestimate.
+
+    ``segment_band_mean_intensity`` is biased upward. The outline was drawn and
+    snapped on that channel, so the band sits on its brightest ridge. The bias
+    is larger in a dim condition, where the ridge is mostly noise. A difference
+    in which the dim condition still reads lower is therefore conservative.
+    The segment channel is never thresholded: occupancy on it would be ~100% by
+    construction.
 
 
 WHAT ONE ``interfaces`` ROW IS
@@ -127,6 +150,8 @@ INTERFACE_COLUMNS = [
     "marker_intensity", "interface_occupancy_pct",
     "intensity_per_px2", "intensity_per_um2",
     "cluster_density_per_px2", "cluster_density_per_um2",
+    "band_mean_intensity", "band_saturated_pct",
+    "segment_band_mean_intensity", "segment_band_saturated_pct",
 ]
 CELL_COLUMNS = [
     "field_id", "cell_id", "area_px", "area_um2", "measured",

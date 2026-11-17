@@ -20,13 +20,19 @@ from junctionmapper.errors import CalibrationError, ChannelError, FormatError
 
 @dataclass
 class Field:
-    """One 2D plane set: a float32 plane per configured role."""
+    """One 2D plane set: a float32 plane per configured role.
+
+        saturation   the source dtype's ceiling (255 for uint8, 65535 for uint16),
+                     kept because the float32 cast loses it; None for a float source,
+                     which has no ceiling to hit
+    """
 
     planes: dict[Role, np.ndarray]
     pixel_size_um: float
     markers: dict[Role, str]
     source: Path
     field_id: str
+    saturation: float | None = None
 
 
 def _oneline(text: object) -> str:
@@ -118,7 +124,9 @@ def _build_field(
 ) -> Field:
     planes = {role: np.asarray(data[i], dtype=np.float32) for role, i in indices.items()}
     markers = {role: cfg.marker_for(role) for role in indices}
-    return Field(planes, pixel_size, markers, path, field_id)
+    saturation = (float(np.iinfo(data.dtype).max) if np.issubdtype(data.dtype, np.integer)
+                  else None)
+    return Field(planes, pixel_size, markers, path, field_id, saturation)
 
 
 _ISOTROPY_RTOL = 1e-6

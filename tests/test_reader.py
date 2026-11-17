@@ -337,3 +337,19 @@ def _write_zarr(path: Path, unit: str, scale: float) -> Path:
     ]
     group.attrs["omero"] = {"channels": [{"label": n} for n in NAMES]}
     return path
+
+
+# ---- saturation value: the source dtype's ceiling, kept after the float32 cast -------
+
+def test_uint16_source_records_its_saturation_value(tmp_plain_tiff, tmp_ome_tiff):
+    cfg = make_cfg(jm1=1, jm2=2, nucleus=0)
+    assert list(read_fields(tmp_plain_tiff, cfg))[0].saturation == 65535.0
+    assert list(read_fields(tmp_ome_tiff, make_cfg()))[0].saturation == 65535.0
+
+
+@pytest.mark.parametrize("dtype, expected", [(np.uint8, 255.0), (np.float32, None)])
+def test_saturation_value_follows_the_source_dtype(tmp_path, dtype, expected):
+    path = tmp_path / "p.tif"
+    tifffile.imwrite(path, planes_with_distinct_values().astype(dtype), photometric="minisblack")
+    f = list(read_fields(path, make_cfg(jm1=1, jm2=2, nucleus=0)))[0]
+    assert f.saturation == expected
