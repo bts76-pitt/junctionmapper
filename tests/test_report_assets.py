@@ -12,7 +12,7 @@ from junctionmapper.io.reader import Field
 from junctionmapper.pipeline import measure_field
 from junctionmapper.config import Role
 from junctionmapper.measure import interface as mi
-from junctionmapper.report.assets import (cell_outlines, junction_polylines, junction_profile, preview,
+from junctionmapper.report.assets import (cell_outlines, junction_polylines, junction_profile, band_crop, preview,
                                           preview_scale, simplify, to_preview,
                                           write_field_asset)
 from junctionmapper.segment.cellpose import Segmentation
@@ -210,3 +210,16 @@ def test_a_nan_threshold_becomes_null(tmp_path, setup):
     d = _load(write_field_asset(f, seg, measure_field(f, seg, cfg), "r1", tmp_path,
                                 thresholds={"JM1": float("nan")}), "Field")
     assert d["thresholds"] == {"JM1": None}
+
+
+@pytest.mark.parametrize("path", [
+    np.array([[1, c] for c in range(0, 12)]),                       # touches the top-left corner
+    np.array([[28, c] for c in range(50, 59)] + [[29, 59]]),        # touches the bottom-right corner
+    np.array([[20, c] for c in range(15, 30)]),                     # interior
+])
+def test_cropped_profile_equals_the_full_image_profile(path):
+    img = np.random.default_rng(3).random((30, 60)) * 100
+    for cyc in (0, 1, 3):
+        full = junction_profile(path, img, mi.dilated_band(path, img.shape, cyc), cyc, 0.5)
+        sl, local, band = band_crop(path, img.shape, cyc)
+        assert junction_profile(local, img[sl], band, cyc, 0.5) == full

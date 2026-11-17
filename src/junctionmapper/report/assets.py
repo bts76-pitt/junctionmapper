@@ -195,6 +195,21 @@ def junction_profile(path_rc: np.ndarray, image: np.ndarray, band: np.ndarray, r
             "y": [None if not np.isfinite(v) else round(float(v), 4) for v in y]}
 
 
+def band_crop(path_rc: np.ndarray, shape: tuple[int, int], cycles: int):
+    """``(slices, path_in_crop, band_in_crop)``: the junction's band built on a sub-array.
+
+    The crop is the path's bounding box grown by ``2*cycles`` (band dilation plus profile window
+    radius) and clamped to the image, so profiles read from it equal those from the full image.
+    """
+    path = np.asarray(path_rc, dtype=int)
+    m = 2 * int(cycles)
+    lo = np.maximum(path.min(axis=0) - m, 0)
+    hi = np.minimum(path.max(axis=0) + m + 1, shape)
+    sl = (slice(int(lo[0]), int(hi[0])), slice(int(lo[1]), int(hi[1])))
+    local = path - lo
+    return sl, local, mi.dilated_band(local, (int(hi[0] - lo[0]), int(hi[1] - lo[1])), int(cycles))
+
+
 def junction_profiles(field: Field, result: FieldResult) -> dict:
     """``{method: {"<lo>-<hi>": {role: profile}}}``, along the lower-id cell's walk of each junction.
 
@@ -225,11 +240,13 @@ def junction_profiles(field: Field, result: FieldResult) -> dict:
         if cyc is None or not np.isfinite(cyc):
             continue
         cyc = int(cyc)
+        shape = field.planes[roles[0]].shape if roles else None
+        if shape is None:
+            continue
+        sl, local, band = band_crop(path, shape, cyc)
         for role in roles:
-            plane = field.planes[role]
-            band = mi.dilated_band(path, plane.shape, cyc)
             out.setdefault(method, {}).setdefault(key, {})[role.value] = junction_profile(
-                path, plane, band, cyc, px)
+                local, field.planes[role][sl], band, cyc, px)
     return out
 
 
