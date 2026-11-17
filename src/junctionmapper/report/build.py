@@ -50,20 +50,20 @@ _TABLES = ("interfaces", "cells", "nuclei", "flags", "nuclei_distances")
 
 # key, label, px column, um column (None: unit-free / intensity), threshold-dependent
 PARAMETERS: list[dict[str, Any]] = [
-    {"key": "interface_contour", "label": "Interface contour", "px": "interface_contour_px", "um": "interface_contour_um", "td": False},
-    {"key": "straight_line_length", "label": "Straight-line interface length", "px": "straight_line_length_px", "um": "straight_line_length_um", "td": False},
-    {"key": "linearity_index", "label": "Linearity index (straight / contour)", "px": "linearity_index", "um": None, "td": False},
-    {"key": "interface_area", "label": "Interface area", "px": "interface_area_px", "um": "interface_area_um2", "td": False},
-    {"key": "fragmented_contour", "label": "Fragmented junction contour", "px": "fragmented_contour_px", "um": "fragmented_contour_um", "td": True},
-    {"key": "junction_contour", "label": "Junction contour", "px": "junction_contour_px", "um": "junction_contour_um", "td": True},
-    {"key": "junction_straight_line", "label": "Straight-line junction length", "px": "junction_straight_line_px", "um": "junction_straight_line_um", "td": True},
-    {"key": "coverage_index", "label": "Coverage index (fragmented / interface contour)", "px": "coverage_index", "um": None, "td": True},
-    {"key": "marker_area", "label": "Marker area", "px": "marker_area_px", "um": "marker_area_um2", "td": True},
-    {"key": "marker_intensity", "label": "Marker intensity (sum above threshold)", "px": "marker_intensity", "um": None, "td": True},
-    {"key": "interface_occupancy_pct", "label": "Interface occupancy (%)", "px": "interface_occupancy_pct", "um": None, "td": True},
-    {"key": "intensity_per_area", "label": "Intensity per interface area", "px": "intensity_per_px2", "um": "intensity_per_um2", "td": True},
-    {"key": "cluster_density", "label": "Cluster density (intensity per marker area)", "px": "cluster_density_per_px2", "um": "cluster_density_per_um2", "td": True},
-    {"key": "band_mean_intensity", "label": "Band mean intensity (no threshold)", "px": "band_mean_intensity", "um": None, "td": False},
+    {"key": "interface_contour", "label": "Interface contour", "px": "interface_contour_px", "um": "interface_contour_um", "td": False, "help": "Length of the interface pixel walk (1 per orthogonal step, sqrt 2 per diagonal)."},
+    {"key": "straight_line_length", "label": "Straight-line interface length", "px": "straight_line_length_px", "um": "straight_line_length_um", "td": False, "help": "Straight-line distance between the interface's two end corners."},
+    {"key": "linearity_index", "label": "Linearity index (straight / contour)", "px": "linearity_index", "um": None, "td": False, "help": "Straight-line length / contour length. At most 1; 1 is a straight interface."},
+    {"key": "interface_area", "label": "Interface area", "px": "interface_area_px", "um": "interface_area_um2", "td": False, "help": "Pixel count of the dilated band around the interface."},
+    {"key": "fragmented_contour", "label": "Fragmented junction contour", "px": "fragmented_contour_px", "um": "fragmented_contour_um", "td": True, "help": "Walk length over connected above-threshold interface pixels; gaps are not bridged."},
+    {"key": "junction_contour", "label": "Junction contour", "px": "junction_contour_px", "um": "junction_contour_um", "td": True, "help": "Walk length from first to last above-threshold pixel, gaps included."},
+    {"key": "junction_straight_line", "label": "Straight-line junction length", "px": "junction_straight_line_px", "um": "junction_straight_line_um", "td": True, "help": "Straight-line distance from the first to the last above-threshold interface pixel."},
+    {"key": "coverage_index", "label": "Coverage index (fragmented / interface contour)", "px": "coverage_index", "um": None, "td": True, "help": "Fragmented junction contour / interface contour."},
+    {"key": "marker_area", "label": "Marker area", "px": "marker_area_px", "um": "marker_area_um2", "td": True, "help": "Pixel count of band pixels above the marker threshold."},
+    {"key": "marker_intensity", "label": "Marker intensity (sum above threshold)", "px": "marker_intensity", "um": None, "td": True, "help": "Sum of above-threshold values in the band, in raw intensity units."},
+    {"key": "interface_occupancy_pct", "label": "Interface occupancy (%)", "px": "interface_occupancy_pct", "um": None, "td": True, "help": "100 * marker area / interface area, from pixel counts."},
+    {"key": "intensity_per_area", "label": "Intensity per interface area", "px": "intensity_per_px2", "um": "intensity_per_um2", "td": True, "help": "Marker intensity / interface area."},
+    {"key": "cluster_density", "label": "Cluster density (intensity per marker area)", "px": "cluster_density_per_px2", "um": "cluster_density_per_um2", "td": True, "help": "Marker intensity / marker area."},
+    {"key": "band_mean_intensity", "label": "Band mean intensity (no threshold)", "px": "band_mean_intensity", "um": None, "td": False, "help": "Mean of all band pixels, no threshold, in raw intensity units."},
 ]
 
 # Exclusion accounting: every cell that contributes no interface is assigned to exactly one
