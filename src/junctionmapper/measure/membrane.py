@@ -37,6 +37,7 @@ NUCLEUS_SMOOTH_SIGMA_PX = 2.0    # Gaussian smoothing of the nucleus plane befor
 BACKGROUND_PERCENTILE = 1.0      # field floor: confluent fields have no cell-free pixels
 NOISE_HIGHPASS_SIGMA_PX = 2.0    # residual = plane - gaussian(plane, this); its MAD is noise
 MAD_TO_SD = 1.4826               # MAD of a Gaussian times this = its standard deviation
+NOISE_ZERO_RTOL = 1e-9           # noise at or below this x max |pixel| is roundoff: treated as 0
 DIM_NOISE_MULTIPLE = 3.0         # too dim when (region mean - floor) < this x noise
 MIN_REGION_FRACTION = 0.5        # a patch is scored when at least this much is cell region
 MIN_SIDE_FRACTION = 0.5          # a clipped edge patch is scored only when both its sides are
@@ -85,6 +86,7 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
                      exact-constant floor (zeroed or clipped pixels) neither zeroes the
                      MAD nor puts its edges into it. If that is 0, the robust spread of
                      the finite ``region`` pixels (all finite pixels without a region).
+                     A residual MAD at roundoff level (<= 1e-9 x max |pixel|) counts as 0.
                      0 for a constant or quantisation-level plane
 
     Both scale with the plane and shift-cancel under an offset, so the too-dim test built
@@ -103,6 +105,10 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
         total = ndi.gaussian_filter(np.where(above, plane, 0.0), NOISE_HIGHPASS_SIGMA_PX)
         noise = _mad_sd(plane[above] - total[above] / weight[above])
     else:
+        noise = 0.0
+    # Isolated pixels of one value (hot or saturated specks) leave a residual of roundoff
+    # (~1e-14), not exactly 0; it must not pass for noise.
+    if noise <= NOISE_ZERO_RTOL * float(np.max(np.abs(vals))):
         noise = 0.0
     if noise == 0.0:
         use = finite if region is None or not (region & finite).any() else region & finite

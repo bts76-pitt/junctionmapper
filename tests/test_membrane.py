@@ -138,6 +138,23 @@ def test_bright_lines_on_a_mostly_exact_zero_field_are_scored():
     assert left.too_dim.all()                     # all floor: genuinely no signal
 
 
+def _specks(fraction, value, floor):
+    """A constant ``floor`` with ``fraction`` of pixels, at random, at one constant ``value``."""
+    img = np.full(N * N, floor, np.float32)
+    img[np.random.default_rng(2).choice(N * N, int(N * N * fraction), replace=False)] = value
+    return img.reshape(N, N)
+
+
+@pytest.mark.parametrize("fraction, value, floor", [(0.02, 50.0, 0.0), (0.02, 255.0, 3.0),
+                                                    (0.30, 50.0, 0.0)])
+def test_constant_specks_on_a_constant_floor_are_too_dim(fraction, value, floor):
+    # Isolated pixels of one value (hot or saturated specks) leave a high-pass residual of
+    # floating-point roundoff, not exactly 0: that must still count as no noise, so the
+    # region-spread fallback (0 here) decides and the channel reads as blank.
+    s = score_field(field_with(jm1=_specks(fraction, value, floor)), MembraneScoreConfig())[0]
+    assert s.too_dim.all() and s.score.isna().all() and s.membrane_like.isna().all()
+
+
 def test_score_is_invariant_to_intensity_scale():
     a = score_field(field_with(jm1=lines()), MembraneScoreConfig())[0]
     b = score_field(field_with(jm1=lines() * 10), MembraneScoreConfig())[0]
