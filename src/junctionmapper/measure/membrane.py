@@ -38,6 +38,8 @@ NOISE_HIGHPASS_SIGMA_PX = 2.0    # residual = plane - gaussian(plane, this); its
 MAD_TO_SD = 1.4826               # MAD of a Gaussian times this = its standard deviation
 DIM_NOISE_MULTIPLE = 3.0         # too dim when (region mean - floor) < this x noise
 MIN_REGION_FRACTION = 0.5        # a patch is scored when at least this much is cell region
+MIN_SIDE_FRACTION = 0.5          # a clipped edge patch is scored only when both its sides are
+                                 # at least this fraction of a full side
 MIN_SIGMA_PX = 1.0               # filter scales never go below one pixel
 
 
@@ -157,7 +159,8 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
             region_fraction = float(reg.mean())
             vals = plane[y0:y1, x0:x1][reg & finite[y0:y1, x0:x1]]
             mean = float(vals.mean()) if vals.size else math.nan
-            scored = region_fraction >= MIN_REGION_FRACTION
+            scored = (region_fraction >= MIN_REGION_FRACTION
+                      and min(y1 - y0, x1 - x0) >= MIN_SIDE_FRACTION * size)
             too_dim = scored and not (
                 noise > 0 and np.isfinite(mean) and mean - background >= DIM_NOISE_MULTIPLE * noise)
             contrast = baseline = score = math.nan
@@ -190,16 +193,20 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
                 region_fraction=region_fraction, mean_intensity=mean,
                 background=background, noise=noise, too_dim=too_dim,
                 contrast=contrast, baseline=baseline, score=score,
-                membrane_like=bool(np.isfinite(score) and score >= cfg.cutoff)))
+                membrane_like=bool(np.isfinite(score) and score >= cfg.cutoff),
+                _region_px=int(reg.sum())))     # weight for the field row; make_frame drops it
     return rows
 
 
 def _field_row(field: Field, role: Role, rows: list[dict]) -> dict:
-    """One channel's summary. ``n_scored`` counts patches that got a score; the fraction
-    weights each by its ``region_fraction`` so a half-region patch counts half."""
+    """One channel's summary. ``n_scored`` counts patches that got a score.
+
+    ``membrane_like_fraction`` is the share of scored cell-region pixels that lie in
+    membrane-like patches, so a clipped edge patch weighs by the region it actually holds.
+    """
     scored = [x for x in rows if np.isfinite(x["score"])]
-    weight = sum(x["region_fraction"] for x in scored)
-    like = sum(x["region_fraction"] for x in scored if x["membrane_like"])
+    weight = sum(x["_region_px"] for x in scored)
+    like = sum(x["_region_px"] for x in scored if x["membrane_like"])
     return dict(
         field_id=field.field_id, role=str(role), marker=field.markers.get(role, ""),
         n_patches=len(rows), n_scored=len(scored), n_too_dim=sum(x["too_dim"] for x in rows),
@@ -211,9 +218,11 @@ def score_field(field: Field, cfg: MembraneScoreConfig) -> tuple[pd.DataFrame, p
     """Score every non-nucleus channel of ``field``: ``(membrane_patches, membrane_fields)``.
 
     Patches of ``round(patch_um / px)`` px tile the field from (0, 0); edge patches are
-    clipped. A patch is scored when at least half of it is cell region, it is not too dim,
-    and (an edge sliver aside) it spans at least one filter block; otherwise ``contrast``, ``baseline`` and ``score`` are NaN and ``membrane_like`` is
-    False. ``too_dim`` is only ever True for a patch with enough cell region.
+    clipped. A patch is scored when at least half of it is cell region, both its sides are
+    at least half a full side, it is not too dim, and it spans at least one filter block
+    (true at half a side; kept as a guard). Otherwise ``contrast``, ``baseline`` and
+    ``score`` are NaN and ``membrane_like`` is False. ``too_dim`` is only ever True for a
+    patch that passes the region and side tests.
     """
     px = field.pixel_size_um
     region = cell_region(field.planes[Role.NUCLEUS], px, cfg.region_um)

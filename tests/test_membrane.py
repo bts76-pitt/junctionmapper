@@ -160,9 +160,12 @@ def test_coarse_pixels_clamp_the_filter_scale():
 def test_the_downsampled_filter_path_scores_like_the_native_one(jm1, lo, hi):
     # At 0.075 um the smallest sigma is 2 px, so the filter runs on a 2x-downsampled plane.
     # The baseline must be shuffled before downsampling, or lone bright pixels at the
-    # 1 px scale inflate it and thin lines fall below the cutoff.
+    # 1 px scale inflate it and thin lines fall below the cutoff. Patches are 267 px, so
+    # only the top-left one is full; the 133 px edge patches are under half a side.
     p, _ = score_field(field_with(jm1=jm1(), px=0.075), MembraneScoreConfig())
-    assert not p.too_dim.any() and p.score.between(lo, hi).all()
+    full = p[(p.y0_px == 0) & (p.x0_px == 0)]
+    assert not p.too_dim.any() and full.score.between(lo, hi).all()
+    assert p.loc[(p.y0_px > 0) | (p.x0_px > 0), "score"].isna().all()
 
 
 def test_an_edge_patch_narrower_than_a_filter_block_is_left_unscored():
@@ -173,7 +176,43 @@ def test_an_edge_patch_narrower_than_a_filter_block_is_left_unscored():
     p, _ = score_field(f, MembraneScoreConfig())
     edge = p[p.x0_px == 286]
     assert len(edge) == 2 and edge.score.isna().all() and not edge.membrane_like.any()
-    assert np.isfinite(p.loc[p.x0_px == 0, "score"]).all()
+    assert np.isfinite(p.loc[(p.x0_px == 0) & (p.y0_px == 0), "score"]).all()
+
+
+def _widened(width):
+    """The lines fixture with its columns repeated out to ``width`` px (same 50 px grid)."""
+    f = field_with(jm1=lines())
+    f.planes = {r: np.take(p, np.arange(width) % N, axis=1) for r, p in f.planes.items()}
+    return f
+
+
+def test_a_thin_edge_sliver_is_not_scored_and_does_not_dilute_the_fraction():
+    # 404 px: the last patch column is 4 px wide, under half a 200 px patch side.
+    p, f = score_field(_widened(404), MembraneScoreConfig())
+    sliver = p[p.x0_px == 400]
+    assert len(sliver) == 2 and (sliver.region_fraction == 1).all()
+    assert sliver.score.isna().all() and not sliver.too_dim.any() and not sliver.membrane_like.any()
+    row = f.set_index("role").loc["JM1"]
+    assert row.n_patches == 6 and row.n_scored == 4
+    assert row.membrane_like_fraction == pytest.approx(1.0)
+
+
+def test_a_clipped_patch_of_at_least_half_a_side_is_scored():
+    # 500 px: the last patch column is 100 px wide, exactly half a side.
+    p, _ = score_field(_widened(500), MembraneScoreConfig())
+    edge = p[p.x0_px == 400]
+    assert len(edge) == 2 and np.isfinite(edge.score).all() and edge.membrane_like.all()
+
+
+def test_the_fraction_is_weighted_by_region_pixels_not_region_fraction():
+    # 500 px: two full columns (40000 region px per patch) and a half-width one (20000).
+    # Make only the half-width column membrane-like: its share of the region is
+    # 2 x 20000 / 200000 = 0.2, where counting patches by region_fraction would give 1/3.
+    f = _widened(500)
+    f.planes[Role.JM1][:, :400] = noise_on_floor()[:, :400]
+    p, fields = score_field(f, MembraneScoreConfig())
+    assert p.loc[p.x0_px == 400, "membrane_like"].all() and not p.loc[p.x0_px < 400, "membrane_like"].any()
+    assert fields.set_index("role").loc["JM1", "membrane_like_fraction"] == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize("value", [0.0, 255.0])
