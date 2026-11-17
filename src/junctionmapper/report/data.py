@@ -128,8 +128,14 @@ def write_run_json(out: Path, cfg: RunConfig, prov: dict, fields: list[str]) -> 
 
 
 def _unit(col: str | None) -> str:
-    """Unit string of a metric column; unit-free and intensity metrics have none."""
-    if col is None or col.startswith(("intensity", "cluster")):
+    """Unit string of a metric column. Intensity is unit-less; a per-area density is "per px²"."""
+    if col is None:
+        return ""
+    if col.endswith("_per_um2"):
+        return "per µm²"
+    if col.endswith("_per_px2"):
+        return "per px²"
+    if col.startswith(("intensity", "cluster")):
         return ""
     if col.endswith("_um2"):
         return "µm²"
@@ -193,6 +199,7 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
     flagging = [c for c in bool_cols if c not in NOT_FLAGGING]
     any_flag = flags[flagging].any(axis=1) if flagging else pd.Series(False, index=flags.index)
     tcj = ifc[ifc["corner_method"] == "tcj"]
+    asset_dir = run_dir / "report" / "runs" / RUN / "fields"
     fields = []
     for fid in doc["fields"]:
         fl = flags[flags["field_id"] == fid]
@@ -203,6 +210,8 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
             "n_cells": int(ifc.loc[ifc["field_id"] == fid, "cell_id"].nunique()),
             "n_junctions": int(tcj.loc[tcj["field_id"] == fid, "pair_id"].nunique()),
             "qc": qc,
+            # False when the run could not write this field's image and geometry
+            "assets": (asset_dir / f"{fid}.js").is_file(),
         })
     measured = {"JM1", "JM2"}
     return {
@@ -221,5 +230,4 @@ def run_summary(run_dir: Path, run: str, label: str) -> dict:
                   "flagged_cells": int(any_flag.sum())},
         "warnings": run_warnings(prov, tinfo, lost),
         "provenance_rows": provenance_rows(cfg, prov, cells, tinfo, len(fields)),
-        "provenance": prov,
     }

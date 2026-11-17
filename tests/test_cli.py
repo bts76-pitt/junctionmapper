@@ -73,6 +73,11 @@ def page_runs(out):
             for line in html.splitlines() if line.startswith("JM.registerRun(")]
 
 
+def run_provenance(out):
+    """The raw provenance record of a run: in ``run.json``, never inlined in the page."""
+    return json.loads((out / "run.json").read_text())["provenance"]
+
+
 def page_data(out):
     """The run data on the page as text, without the page's code (Plotly could hold any word)."""
     return json.dumps(page_runs(out), ensure_ascii=False)
@@ -222,9 +227,10 @@ def test_report_is_deterministic_and_has_no_timestamp(env):
 
 def test_labels_run_provenance_records_disk_and_directory(env):
     run_ok(env)
-    html = (env["out"] / "report/index.html").read_text()
-    assert "labels_source" in html and "disk" in html
-    assert "labels_dir" in html and str(env["labels"]) in html
+    used = run_provenance(env["out"])["params_used"]
+    assert used["labels_source"] == "disk" and used["labels_dir"] == str(env["labels"].resolve())
+    [row] = [x for x in page_runs(env["out"])[0]["provenance_rows"] if x["key"] == "labels"]
+    assert row["value"] == f"disk: {env['labels'].resolve()}"
 
 
 def test_fresh_run_provenance_records_segmentation_params(env, monkeypatch):
@@ -640,7 +646,7 @@ def test_version_resolves_and_reaches_report_without_installed_metadata(env, mon
     monkeypatch.setattr(cli.metadata, "version", missing)       # the container: nothing installed
     assert cli._version() == junctionmapper.__version__ != "unknown"
     assert run_ok(env).exit_code == 0
-    prov = page_runs(env["out"])[0]["provenance"]
+    prov = run_provenance(env["out"])
     # the version itself must not read "unknown". (The MODEL may legitimately be unknown
     # here: these labels carry no provenance sidecar, and the report now says so per field.)
     assert prov["junctionmapper_version"] == junctionmapper.__version__
@@ -707,7 +713,7 @@ def test_report_provenance_carries_thresholds_version_and_failures(env):
     r = invoke("run", "--config", env["cfg"], "--input", d, "--labels", env["labels"],
                "--out", env["out"])
     assert r.exit_code == 3
-    prov = page_runs(env["out"])[0]["provenance"]
+    prov = run_provenance(env["out"])
     assert prov["junctionmapper_version"] == junctionmapper.__version__
     assert "fields_failed" in prov
     assert '"a_t0_z0": {"JM1": 50.0' in prov["thresholds"]      # per-field thresholds record
@@ -739,7 +745,7 @@ def test_labels_run_report_names_the_model_parameters_device_and_code(env, monke
     html = (env["out"] / "report/index.html").read_text()
     for s in ("cpsam", "0.55", "cuda:0", "37.5", "4.0.1",      # the segmentation behind it
               "labels_created", side["created"],                # when the labels were made
-              "code_identity", "library_versions", "numpy"):    # and the code behind the figure
+              "code identity", "libraries", "numpy"):           # and the code behind the figure
         assert s in html, s
     import junctionmapper.provenance as pv
     from tests.test_provenance import RESOLVED_PREFIXES
@@ -760,7 +766,8 @@ def test_labels_without_a_sidecar_are_reported_per_field_not_globally(env):
     assert FID in html
     assert "labels_without_provenance" in html
     # and the code identity is still recorded, because that does not depend on the labels
-    assert "code_identity" in html and "library_versions" in html
+    keys = {x["key"] for x in page_runs(env["out"])[0]["provenance_rows"]}
+    assert {"code identity", "libraries"} <= keys
 
 
 # ---- sidecar --------------------------------------------------------------------------
@@ -1174,10 +1181,10 @@ def test_a_run_whose_calibration_resolved_nothing_does_not_blame_a_human(tmp_pat
     assert r.exit_code == 3, r.output                           # the corrupt files failed
     ifc = pd.read_parquet(out / "interfaces.parquet")
     assert ifc[ifc.role == "JM1"].threshold.nunique() == 3      # per-field fallback, not one T
-    html = page_data(out)
-    assert "threshold_calibration" in html and "degraded" in html
-    assert "no marker role resolved" in html
     [run] = page_runs(out)
+    [calib] = [x for x in run["provenance_rows"] if x["key"] == "calibration"]
+    assert calib["group"] == "Thresholds" and "degraded" in calib["value"]
+    assert "no marker role resolved" in page_data(out)
     varied = [x for x in run["warnings"] if x["kind"] == "threshold_varied"]
     assert varied and all(x["attribution"] == "fallback" for x in varied)
     [w] = [x for x in varied if x["role"] == "JM1"]
@@ -1404,3 +1411,82 @@ def test_report_checks_a_segmenting_runs_own_labels(env, monkeypatch):
     np.save(run_dir / "labels" / f"{FID}.JM1.npy", edited)
     res = invoke("report", run_dir, "-o", env["tmp"] / "cmp")
     assert res.exit_code == 0 and "WARNING" in res.stderr and FID in res.stderr
+
+
+def test_a_report_asset_failure_keeps_the_fields_measurements(env, monkeypatch):
+    d = make_batch(env)
+    real = cli.write_field_asset
+
+    def flaky(field, *a, **k):
+        if field.field_id == "b_t0_z0":
+            raise RuntimeError("disk hiccup")
+        return real(field, *a, **k)
+    monkeypatch.setattr(cli, "write_field_asset", flaky)
+    r = invoke("run", "--config", env["cfg"], "--input", d, "--labels", env["labels"],
+               "--out", env["out"])
+    assert r.exit_code == 0, r.output
+    out = env["out"]
+    assert set(pd.read_parquet(out / "cells.parquet").field_id) == {"a_t0_z0", "b_t0_z0"}
+    assert "WARNING" in r.stderr and "b_t0_z0" in r.stderr and "disk hiccup" in r.stderr
+    assert not (out / "report/runs/r1/fields/b_t0_z0.js").exists()
+    [run] = page_runs(out)
+    [w] = [x for x in run["warnings"] if x["kind"] == "assets_missing"]
+    assert "b_t0_z0" in w["detail"] and "disk hiccup" in w["detail"]
+    assert {f["field_id"]: f["assets"] for f in run["fields"]} == {"a_t0_z0": True, "b_t0_z0": False}
+
+
+def test_junction_paths_are_dropped_once_the_asset_is_written(env, monkeypatch):
+    seen = []
+    real = cli.write_tables
+
+    def spy(results, out):
+        seen.extend(r.paths for r in results)
+        return real(results, out)
+    monkeypatch.setattr(cli, "write_tables", spy)
+    assert run_ok(env).exit_code == 0
+    assert seen == [{}]
+
+
+def _snapshot(d):
+    return {p.relative_to(d): p.read_bytes() for p in d.rglob("*") if p.is_file()}
+
+
+def test_run_refuses_an_out_at_or_inside_its_labels(env):
+    before = _snapshot(env["labels"])
+    for out in (env["labels"], env["labels"] / "sub"):
+        r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels", env["labels"],
+                   "--out", out)
+        assert r.exit_code == 1 and "labels" in r.output and "Traceback" not in r.output
+    assert _snapshot(env["labels"]) == before and not (env["labels"] / "sub").exists()
+
+
+def test_report_refuses_an_out_at_or_inside_a_runs_labels(env, tmp_path):
+    labels = tmp_path / "own_labels"
+    save_labels(labels, FID, env["seg"])
+    run_dir = tmp_path / "run"
+    assert invoke("run", "--config", env["cfg"], "--input", env["tif"], "--labels", labels,
+                  "--out", run_dir).exit_code == 0
+    before = _snapshot(labels)
+    for out in (labels, labels / "cmp"):
+        res = invoke("report", run_dir, "-o", out)
+        assert res.exit_code == 1 and "labels" in res.output and "Traceback" not in res.output
+    assert _snapshot(labels) == before and not (labels / "cmp").exists()
+
+
+def test_report_refuses_an_out_inside_a_segmenting_runs_own_labels(env, monkeypatch):
+    stub_segment(monkeypatch, env["seg"])
+    run_dir = env["tmp"] / "seg_run"
+    assert invoke("run", "--config", env["cfg"], "--input", env["tif"], "--out", run_dir).exit_code == 0
+    res = invoke("report", run_dir, "-o", run_dir / "labels" / "cmp")
+    assert res.exit_code == 1 and not (run_dir / "labels" / "cmp").exists()
+
+
+def test_a_run_whose_every_asset_failed_still_writes_tables_and_report(env, monkeypatch):
+    def boom(*a, **k):
+        raise MemoryError("preview")
+    monkeypatch.setattr(cli, "write_field_asset", boom)
+    r = run_ok(env)
+    assert r.exit_code == 0, r.output
+    assert (env["out"] / "cells.parquet").exists() and (env["out"] / "report/index.html").exists()
+    [run] = page_runs(env["out"])
+    assert [f["assets"] for f in run["fields"]] == [False]

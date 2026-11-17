@@ -191,8 +191,7 @@ def test_threshold_warning_names_the_right_cause(results_varying_t, roles, attri
     assert "50 vs 60" in w["detail"] and "not comparable" in w["detail"]
     if attribution == "fallback":
         assert "Not an override" in w["detail"] and "set per field" not in w["detail"]
-    if attribution == "override":
-        assert "f1, f2" in w["detail"]
+    assert "f1, f2" in w["detail"]          # every cause names the fields involved
 
 
 def test_no_warnings_for_a_clean_run(results):

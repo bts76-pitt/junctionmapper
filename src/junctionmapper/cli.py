@@ -589,6 +589,7 @@ def _write_report(out: Path, cfg: RunConfig, prov: dict, fields: list[str]) -> P
     """
     assets = _assets_dir(out)
     _remove_tree(assets)
+    (_staging_dir(out) / "fields").mkdir(parents=True, exist_ok=True)   # even if no asset was written
     _staging_dir(out).rename(assets)
     write_run_json(out, cfg, prov, fields)
     cells = pd.read_parquet(out / "cells.parquet")
@@ -630,6 +631,30 @@ def _stale_fields(run_dir: Path) -> list[str]:
         if found and hashlib.sha256(arr.tobytes()).hexdigest() != found.group(1):
             stale.append(fid)
     return stale
+
+
+def _refuse_out_in_labels(out: Path, labels: Path, what: str) -> None:
+    """A labels directory may be hand-corrected work: no output lands in or under it."""
+    target = out.resolve()
+    if labels in (target, *target.parents):
+        raise ConfigError(f"output {out} is inside {what} ({labels}); labels directories are "
+                          f"never written; choose an output outside it")
+
+
+def _write_asset(field: Field, seg: Segmentation, result: FieldResult, out_dir: Path,
+                 missing: dict[str, str]) -> None:
+    """Write one field's report asset. A failure here loses that field's image in the report,
+    never its measurements: it is recorded in ``missing`` and the run goes on."""
+    try:
+        write_field_asset(field, seg, result, SOURCE_RUN, out_dir)
+    except Exception as exc:  # noqa: BLE001 - any report-side failure must not cost the tables
+        reason = f"{type(exc).__name__}: {_oneline(exc)}"
+        missing[field.field_id] = reason
+        partial = out_dir / f"{field.field_id}.js"
+        if partial.exists():
+            partial.unlink()
+        typer.echo(f"WARNING: field {field.field_id!r}: report image and geometry not written "
+                   f"({reason}); its measurements are kept", err=True)
 
 
 # ---- commands -------------------------------------------------------------------------
@@ -766,17 +791,19 @@ def run(
                           "labels, run `junctionmapper snap` and pass its labels to --labels")
     if labels is not None:
         labels = labels.resolve()
+        _refuse_out_in_labels(out, labels, "--labels")
+        if (out / "report").resolve() in (labels, *labels.parents):
+            raise ConfigError(f"--labels {labels} is inside {out / 'report'}, which this run replaces")
     _ensure_out_dir(out)
     if labels is None and not overwrite_labels:
         _refuse_label_overwrite(out / "labels", files, cfg)
-    if labels is not None and (out / "report").resolve() in (labels, *labels.parents):
-        raise ConfigError(f"--labels {labels} is inside {out / 'report'}, which this run replaces")
     staging = _staging_dir(out)
     _remove_tree(staging)
     params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu,
                          with_nucleus)
 
     run_t, calib_note = _calibrate(files, cfg)
+    assets_missing: dict[str, str] = {}
 
     def work(field: Field) -> tuple[FieldResult, dict, dict]:
         if labels is not None:
@@ -789,7 +816,8 @@ def run(
         result = measure_field(field, seg, cfg, run_thresholds=run_t)
         thresholds = {r.value: t for r, t in resolve_thresholds(field, cfg, run_t).items()}
         # The planes and labels exist only here; the report's previews and geometry come from them.
-        write_field_asset(field, seg, result, SOURCE_RUN, staging / "fields")
+        _write_asset(field, seg, result, staging / "fields", assets_missing)
+        result.paths = {}           # only the asset needs the walks; do not hold them for every field
         return result, seg.params_used, thresholds
 
     ok, failures = _process(files, cfg, work)
@@ -825,6 +853,10 @@ def run(
     mism = [w[1]["source_mismatch"] for _, w in ok if "source_mismatch" in w[1]]
     if mism:
         prov["labels_source_mismatch"] = json.dumps(mism, sort_keys=True)
+    kept = {f.field_id for f, _ in ok}
+    if any(fid in kept for fid in assets_missing):
+        prov["assets_missing"] = json.dumps({k: v for k, v in assets_missing.items() if k in kept},
+                                            sort_keys=True)
     if failures:
         prov["fields_failed"] = str(len(failures))
         prov["fields_failed_detail"] = "; ".join(f"{who}: {why}" for who, why in failures)
@@ -857,6 +889,9 @@ def report(
         if not (r / "run.json").is_file():
             raise ConfigError(f"{r}: no run.json; it was made before the interactive report; "
                               f"re-run with `run --labels` (CPU only, no re-segmentation)")
+    for r in runs:
+        doc = json.loads((r / "run.json").read_text(encoding="utf-8"))
+        _refuse_out_in_labels(out, _run_labels_dir(r, doc).resolve(), f"the labels of {r}")
     for r in runs:
         stale = _stale_fields(r)
         if stale:

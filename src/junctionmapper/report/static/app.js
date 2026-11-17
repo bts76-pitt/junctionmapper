@@ -110,8 +110,8 @@
   const runIndex = id => JM.runs.findIndex(r => r.run === id);
   const runById = id => JM.runs.find(r => r.run === id);
   const allCalibrated = runs => runs.length > 0 && runs.every(r => r.calibrated);
-  const metricInfo = key => JM.runs[0].metrics.find(m => m.key === key);
-  const useUm = () => state.useUm && allCalibrated(selectedRuns());
+  // Definitions are the same in every run; search them all so a metric only a later run has resolves.
+  const metricInfo = key => L.unionMetrics(JM.runs).find(m => m.key === key);
 
   const rank = role => (ROLE_ORDER.includes(role) ? ROLE_ORDER.indexOf(role) : ROLE_ORDER.length);
 
@@ -130,11 +130,22 @@
 
   function initState() {
     if (JM.runs.length === 1) state.run = JM.runs[0].run;
-    const rs = roles(JM.runs);
-    if (rs.length && !rs.some(r => r.role === state.role)) state.role = rs[0].role;
-    const ms = methods(JM.runs);
+  }
+
+  // The runs a view shows: the field's own run in a field view, else the run filter's.
+  function viewRuns(r) {
+    const run = r.view === "field" ? runById(r.run) : null;
+    return run ? [run] : selectedRuns();
+  }
+
+  // Marker, corner method and metric must exist in the runs in view; a run filter can remove them.
+  function normalizeState(r) {
+    const runs = viewRuns(r);
+    state.role = L.pickRole(roles(runs), state.role);
+    const ms = methods(runs);
     if (ms.length && !ms.includes(state.method)) state.method = ms[0];
-    if (!metricInfo(state.metric)) state.metric = JM.runs[0].metrics[0].key;
+    const mets = L.unionMetrics(runs);
+    if (mets.length && !mets.some(m => m.key === state.metric)) state.metric = mets[0].key;
   }
 
   function theme() {
@@ -243,7 +254,7 @@
     box.replaceChildren();
     box.hidden = r.view === "provenance";
     if (box.hidden) return;
-    const runs = selectedRuns();
+    const runs = viewRuns(r);
     if (r.view === "overview" && JM.runs.length > 1) {
       box.append(control("Run", null, select(
         [{value: "all", label: `All runs (${JM.runs.length})`}]
@@ -255,16 +266,17 @@
       state.role, v => set({role: v}))));
     const m = metricInfo(state.metric);
     box.append(control("Metric", m.help + (m.td ? " Depends on the marker threshold." : ""), select(
-      JM.runs[0].metrics.map(x => ({value: x.key, label: x.label, title: x.help})),
+      L.unionMetrics(runs).map(x => ({value: x.key, label: x.label, title: x.help})),
       state.metric, v => set({metric: v}))));
     box.append(control("Corners", null, segmented(
       methods(runs).map(x => ({value: x, label: x, tip: `${METHOD_NAMES[x] || x}. ${METHOD_HELP[x] || ""}`})),
       state.method, v => set({method: v}), "Corner method")));
     if (allCalibrated(runs)) {
-      const unitless = !m.unit_um;
+      // Never disabled: it also sets the units of every metric in the detail panel.
+      const note = m.unit_um ? "" : " (this metric has no length unit)";
       box.append(control("Units", null, segmented([
-        {value: true, label: "µm", tip: unitless ? "This metric has no length unit" : "Calibrated units", disabled: unitless},
-        {value: false, label: "px", tip: unitless ? "This metric has no length unit" : "Image pixels", disabled: unitless},
+        {value: true, label: "µm", tip: `Calibrated units${note}`},
+        {value: false, label: "px", tip: `Image pixels${note}`},
       ], state.useUm, v => set({useUm: v}), "Units")));
     }
     box.append(control("Dots", null, segmented([
@@ -353,15 +365,14 @@
   let renderToken = 0;
 
   // One trace per run: values, hover text and click targets for the current state.
-  function seriesFor(run, index, metric) {
+  function seriesFor(run, index, metric, m, calibrated) {
     const cell = state.dot === "cell";
-    const um = useUm() && metric[cell ? "cell_um" : "junction_um"];
-    const raw = um || metric[cell ? "cell_px" : "junction_px"];
-    const {values, index: pos} = L.finite(raw);
+    const picked = L.metricValues(metric, cell ? "cell" : "junction", m, calibrated, state.useUm);
+    const {values, index: pos} = L.finite(picked.values);
     const text = pos.map(i => (cell
       ? `${index.fields[index.cField[i]]} · cell ${index.cId[i]}`
       : `${index.fields[index.jField[i]]} · junction ${L.junctionKey(index.jLo[i], index.jHi[i])}`));
-    return {run, values, pos, text, index};
+    return {run, values, pos, text, index, unit: picked.unit};
   }
 
   function plotTraces(series, unit) {
@@ -428,17 +439,20 @@
 
   function renderDistribution(runs) {
     const m = metricInfo(state.metric);
-    const unit = L.unitFor(m, allCalibrated(runs), state.useUm);
+    const calibrated = allCalibrated(runs);
+    let unit = L.unitFor(m, calibrated, state.useUm);
     // The plot element outlives re-renders, so a reload holds the previous chart, dimmed.
     const plot = JM._lastPlot || h("div", {class: "plot", id: "dist-plot"});
     const note = h("div", {class: "chart-note", hidden: true});
     const tableBox = h("div", {hidden: !state.table});
     plot.hidden = state.table;
     const dotWord = state.dot === "cell" ? "cell" : "junction";
+    const subText = () => `${state.role} · ${state.method} · one dot per ${dotWord}${unit ? " · " + unit : ""}`;
+    const sub = h("span", {class: "chart-sub"}, subText());
     const card = h("section", {class: "card chart-card"},
       h("div", {class: "chart-head"},
         h("h2", {class: "chart-title", tip: m.help}, m.label),
-        h("span", {class: "chart-sub"}, `${state.role} · ${state.method} · one dot per ${dotWord}${unit ? " · " + unit : ""}`),
+        sub,
         segmented([{value: false, label: "Chart"}, {value: true, label: "Table"}], state.table,
                   v => set({table: v}), "Chart or table")),
       plot, tableBox, note);
@@ -449,11 +463,13 @@
     Promise.all(runs.map(run => Promise.all([
       loadIndex(run.run, state.method),
       loadMetric(run.run, state.method, state.role, state.metric),
-    ]).then(([index, metric]) => seriesFor(run, index, metric), () => null)))
+    ]).then(([index, metric]) => seriesFor(run, index, metric, m, calibrated), () => null)))
       .then(all => {
         if (token !== renderToken) return;
         plot.classList.remove("is-loading");
         const series = all.filter(Boolean);
+        // The unit of the arrays actually plotted (one rule for every run in view).
+        if (series.length) { unit = series[0].unit; sub.textContent = subText(); }
         const missing = runs.filter((r, i) => !all[i]).map(r => r.label);
         if (missing.length) {
           note.hidden = false;
@@ -519,17 +535,20 @@
   // Additive tints per channel role; the image well is always dark.
   const TINT = {segment: [1, 1, 1], JM1: [0.25, 1, 0.35], JM2: [1, 0.3, 1], nucleus: [0.35, 0.55, 1]};
   const TINT_OTHER = [1, 1, 1];
-  const LINE_PX = 2.5;            // junction stroke, screen px
+  const LINE_PX = 3;              // junction stroke, screen px
   const HIT_PX = 6;               // junction hit tolerance, screen px
   const FLAG_COLOUR = "#ec835a";  // status orange: not on the viridis junction ramp
-  const CASING = "rgba(11,11,11,0.9)";   // dark casing under every junction line
+  // A light casing under every junction keeps the ramp's dark end readable on a dark image; the
+  // selected or hovered junction adds a dark outer ring, so it never looks like the others.
+  const CASING = "rgba(255,255,255,0.85)";
+  const HOT_RING = "rgba(11,11,11,0.9)";
   const NO_JUNCTIONS = "No junctions measured in this field.";
 
   // Viewer settings outlive re-renders: channel layers by role, overlays, and per-field view/selection.
   const layers = {};               // role -> {on, gain}
   const overlay = {junctions: true, outlines: true};
   let fieldUi = {key: null, xf: null, sel: null};
-  // "run/field" -> {src, promise of the decoded field}. Each holds full-size planes, a composite and
+  // "run/field" -> {src, promise of the decoded field}. Each holds preview-size planes, a composite and
   // paths (~15 MB), so only the last FIELD_CACHE opened stay; the loader forgets the evicted file too.
   const FIELD_CACHE = 4;
   const fieldData = L.createLru(FIELD_CACHE, (key, v) => {
@@ -577,7 +596,9 @@
   }
 
   function decodeField(f) {
-    return Promise.all(f.channels.map(c => greyPlane(c.src, f.width, f.height))).then(planes => {
+    // Planes are decoded at the preview size, the space every outline and junction is in.
+    const {width, height} = L.planeSize(f);
+    return Promise.all(f.channels.map(c => greyPlane(c.src, width, height))).then(planes => {
       const cellPath = {};
       for (const id in f.cells) { const p = pathOf([f.cells[id]]); p.closePath(); cellPath[id] = p; }
       const allOutlines = new Path2D();
@@ -587,7 +608,7 @@
         junctionPath[m] = {};
         for (const k in f.junctions[m]) junctionPath[m][k] = pathOf(f.junctions[m][k]);
       }
-      return {raw: f, width: f.width, height: f.height, planes,
+      return {raw: f, width, height, planes,
               channels: f.channels.map(c => ({role: c.role, marker: c.marker})),
               cellPath, allOutlines, junctionPath, composite: null, compositeSig: null};
     });
@@ -630,9 +651,9 @@
     const fieldPos = index.fields.indexOf(fd.raw.field_id);
     const slice = L.fieldSlice({junction_field: index.jField, junction_lo: index.jLo, junction_hi: index.jHi,
                                 cell_field: index.cField, cell_id: index.cId}, fieldPos);
-    const um = run.calibrated && state.useUm && m.unit_um;
-    const arr = kind => (metric ? (um && metric[`${kind}_um`]) || metric[`${kind}_px`] : null);
-    const jArr = arr("junction"), cArr = arr("cell");
+    const jPick = L.metricValues(metric, "junction", m, run.calibrated, state.useUm);
+    const cPick = L.metricValues(metric, "cell", m, run.calibrated, state.useUm);
+    const jArr = jPick.values, cArr = cPick.values;
     const jValue = new Map(slice.junctions.map(j => [j.key, jArr ? jArr[j.i] : NaN]));
     const cValue = new Map(slice.cells.map(c => [String(c.cell_id), cArr ? cArr[c.i] : NaN]));
     const [lo, hi] = L.quantileRange([...jValue.values()]);
@@ -641,7 +662,7 @@
       if (!byCell.has(c)) byCell.set(c, []);
       byCell.get(c).push(j.key);
     }));
-    return {slice, jValue, cValue, lo, hi, byCell, unit: L.unitFor(m, run.calibrated, state.useUm),
+    return {slice, jValue, cValue, lo, hi, byCell, unit: jPick.unit, cUnit: cPick.unit,
             measured: new Set(slice.cells.map(c => String(c.cell_id))), missing: !metric,
             polylines: fd.raw.junctions[state.method] || {}};
   }
@@ -726,12 +747,11 @@
         const sorted = Object.keys(paths).sort((a, b) => (lit ? lit.has(a) - lit.has(b) : 0));
         for (const key of sorted) {
           const v = model.jValue.has(key) ? model.jValue.get(key) : NaN;
-          const dim = lit && !lit.has(key);
           const hot = key === sel.junction || (hover && hover.junction === key);
-          ctx.globalAlpha = dim ? 0.35 : 1;
-          if (hot) {   // selected or hovered: white halo outside the casing
-            ctx.lineWidth = (LINE_PX + 8) / k; ctx.strokeStyle = "#ffffff"; ctx.stroke(paths[key]);
-            ctx.lineWidth = (LINE_PX + 4) / k; ctx.strokeStyle = CASING; ctx.stroke(paths[key]);
+          ctx.globalAlpha = L.junctionAlpha(sel, lit, key);
+          if (hot) {   // selected or hovered: dark ring outside a wider light halo
+            ctx.lineWidth = (LINE_PX + 9) / k; ctx.strokeStyle = HOT_RING; ctx.stroke(paths[key]);
+            ctx.lineWidth = (LINE_PX + 5) / k; ctx.strokeStyle = "#ffffff"; ctx.stroke(paths[key]);
           } else {
             ctx.lineWidth = (LINE_PX + 2) / k; ctx.strokeStyle = CASING; ctx.stroke(paths[key]);
           }
@@ -763,8 +783,9 @@
     function showReadout(e, target) {
       if (!target) { readout.hidden = true; return; }
       const v = target.junction ? model.jValue.get(target.junction) : model.cValue.get(target.cell);
+      const unit = target.junction ? model.unit : model.cUnit;
       readout.replaceChildren(
-        h("b", null, `${L.fmtValue(v)}${model.unit && Number.isFinite(v) ? " " + model.unit : ""}`),
+        h("b", null, `${L.fmtValue(v)}${unit && Number.isFinite(v) ? " " + unit : ""}`),
         h("span", null, target.junction ? `Junction ${jLabel(target.junction)}` : `Cell ${target.cell}`));
       const r = wrap.getBoundingClientRect();
       readout.hidden = false;
@@ -894,7 +915,7 @@
     const cells = isJ ? sel.junction.split("-") : [sel.cell];
     const pos = isJ ? model.slice.junctions.find(j => j.key === sel.junction)
                     : model.slice.cells.find(c => String(c.cell_id) === sel.cell);
-    const um = m => run.calibrated && state.useUm && !!m.unit_um;
+    const um = m => L.wantsUm(m, run.calibrated, state.useUm);
     // Junction: one column per cell side (from the field asset) and the junction mean.
     const sides = isJ && fd.raw.sides ? cells : [];
     const flagTags = id => (fd.raw.flags[id] || []).map(n => h("span", {class: "flag-tag", tip: "QC flag"}, pretty(n)));
@@ -919,7 +940,7 @@
         sides.map(id => h("td", null, L.fmtValue(
           L.sideValue(fd.raw.sides, state.method, sel.junction, state.role, id, m.key, um(m))))),
         h("td", {"data-metric": m.key}, "…"),
-        h("td", {class: "unit"}, L.unitFor(m, run.calibrated, state.useUm))))));
+        h("td", {class: "unit", "data-unit": m.key}, L.unitFor(m, run.calibrated, state.useUm))))));
     box.replaceChildren(head, flagsBox, table);
     if (!pos) {
       table.querySelectorAll("td[data-metric]").forEach(td => { td.textContent = "–"; });
@@ -929,9 +950,11 @@
     run.metrics.forEach(m => {
       loadMetric(run.run, state.method, state.role, m.key).then(v => {
         if (token !== box._token) return;
-        const arr = (um(m) && v[`${kind}_um`]) || v[`${kind}_px`];
+        const picked = L.metricValues(v, kind, m, run.calibrated, state.useUm);
         const td = table.querySelector(`td[data-metric="${m.key}"]`);
-        if (td) td.textContent = L.fmtValue(arr[pos.i]);
+        if (td) td.textContent = L.fmtValue(picked.values[pos.i]);
+        const ut = table.querySelector(`td[data-unit="${m.key}"]`);
+        if (ut) ut.textContent = picked.unit;
       }, () => {
         const td = table.querySelector(`td[data-metric="${m.key}"]`);
         if (td) td.textContent = "–";
@@ -950,7 +973,7 @@
     const m = metricInfo(state.metric);
     if (!pts.length) { Plotly.purge(plot); return null; }
     const at = new Map(pts.map((p, i) => [p.id, i]));
-    const ink2 = cssVar("--ink-2"), unit = model.unit, ys = pts.map(p => p.v);
+    const ink2 = cssVar("--ink-2"), unit = cell ? model.cUnit : model.unit, ys = pts.map(p => p.v);
     // Violin for the shape; the dots are a jittered scatter so each can carry its ramp colour.
     const violin = {
       type: "violin", x0: 0, y: ys, points: false, spanmode: "hard", width: 0.9, hoverinfo: "skip",
@@ -1007,6 +1030,13 @@
       root.append(h("p", null, "Field not found. ", h("a", {href: "#/"}, "Back to overview")));
       return;
     }
+    if (f.assets === false) {
+      root.append(h("div", {class: "field-head"}, h("a", {class: "back", href: "#/"}, "← Overview"),
+                    h("h1", null, f.field_id)),
+                  h("p", {class: "empty-note"}, "Could not load this field: the run wrote no image for it. ",
+                    h("a", {href: "#/provenance"}, "Provenance")));
+      return;
+    }
     const key = `${run.run}/${f.field_id}`;
     // The route's ?j= / ?c= is the selection (sync() keeps it current); a brush lives only here.
     const sameField = fieldUi.key === key;
@@ -1038,7 +1068,7 @@
       if (!body.isConnected) return;
       const model = index ? fieldModel(run, fd, index, metric, m)
         : {slice: {junctions: [], cells: []}, jValue: new Map(), cValue: new Map(), lo: 0, hi: 1,
-           byCell: new Map(), unit: "", measured: new Set(), missing: true, polylines: {}};
+           byCell: new Map(), unit: "", cUnit: "", measured: new Set(), missing: true, polylines: {}};
       const empty = !model.slice.junctions.length;
       const detail = h("div", {class: "detail"});
       const plot = h("div", {class: "plot field-plot"});
@@ -1175,6 +1205,7 @@
 
   function render() {
     const r = route();
+    normalizeState(r);
     renderCrumbs(r);
     renderFilters(r);
     const root = document.getElementById("view");

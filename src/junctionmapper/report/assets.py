@@ -26,6 +26,12 @@ def preview_scale(shape: tuple[int, int], max_side: int = 1500) -> float:
     return min(1.0, max_side / max(shape))
 
 
+def preview_size(shape: tuple[int, int], scale: float) -> tuple[int, int]:
+    """``(width, height)`` of the preview of a ``(rows, cols)`` plane: the size the viewer draws."""
+    h, w = shape
+    return max(1, round(w * scale)), max(1, round(h * scale))
+
+
 def preview(plane: np.ndarray, scale: float) -> str:
     """JPEG data URI of ``plane``, stretched 0.5-99.5 percentile to 0-255."""
     a = np.asarray(plane, dtype=np.float64)
@@ -39,9 +45,8 @@ def preview(plane: np.ndarray, scale: float) -> str:
     else:
         u8 = np.full(a.shape, 128.0)
     img = Image.fromarray(u8.round().astype(np.uint8), "L")
-    h, w = a.shape
-    size = (max(1, round(w * scale)), max(1, round(h * scale)))
-    if size != (w, h):
+    size = preview_size(a.shape, scale)
+    if size != img.size:
         img = img.resize(size, Image.BILINEAR)
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=85)
@@ -78,8 +83,12 @@ def simplify(path: np.ndarray, tol: float) -> np.ndarray:
 
 
 def to_preview(path_rc: np.ndarray, scale: float) -> list[list[float]]:
-    """``(row, col)`` pixels to ``[x, y]`` preview pixels, rounded to 0.5."""
-    xy = np.asarray(path_rc, dtype=float)[:, ::-1] * scale
+    """``(row, col)`` pixel indices to ``[x, y]`` preview pixels, rounded to 0.5.
+
+    Pixel ``(r, c)`` covers ``[c, c+1] x [r, r+1]`` of the drawn image, so its centre is
+    ``(c + 0.5, r + 0.5)``; without the half pixel every line sits up and left of its membrane.
+    """
+    xy = (np.asarray(path_rc, dtype=float)[:, ::-1] + 0.5) * scale
     return (np.round(xy * 2) / 2).tolist()
 
 
@@ -148,6 +157,7 @@ def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run:
     labels = seg.cells
     h, w = labels.shape
     scale = preview_scale((h, w))
+    pw, ph = preview_size((h, w), scale)
     channels = [{"role": role.value, "marker": field.markers.get(role, ""),
                  "src": preview(plane, scale)} for role, plane in field.planes.items()]
     flags: dict[str, list[str]] = {}
@@ -158,7 +168,9 @@ def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run:
         if on:
             flags[str(int(row["cell_id"]))] = on
     data = {
-        "run": run, "field_id": field.field_id, "width": w, "height": h, "scale": scale,
+        # width/height: the preview, which every coordinate is in; raw_*: the label image.
+        "run": run, "field_id": field.field_id, "width": pw, "height": ph, "scale": scale,
+        "raw_width": w, "raw_height": h,
         "labels_sha256": hashlib.sha256(labels.tobytes()).hexdigest(),
         "channels": channels, "cells": cell_outlines(labels, scale),
         "junctions": junction_polylines(result, scale), "sides": junction_sides(result),

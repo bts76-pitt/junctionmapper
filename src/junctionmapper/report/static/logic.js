@@ -97,8 +97,35 @@
 
   const junctionKey = (lo, hi) => `${lo}-${hi}`;
 
-  function unitFor(metric, calibrated, useUm) {
-    return calibrated && useUm && metric.unit_um ? metric.unit_um : metric.unit_px;
+  // The one rule for "show this metric in µm?": the run is calibrated, the user asked, and the
+  // metric has a µm form. Every view goes through it, so a number reads the same everywhere.
+  const wantsUm = (m, calibrated, useUm) => !!(calibrated && useUm && m.unit_um);
+
+  function unitFor(m, calibrated, useUm) {
+    return wantsUm(m, calibrated, useUm) ? m.unit_um : m.unit_px;
+  }
+
+  // The values of one metric file for kind "junction" | "cell", and the unit of the array
+  // actually used: a missing µm array falls back to px and is labelled px.
+  function metricValues(metric, kind, m, calibrated, useUm) {
+    const want = wantsUm(m, calibrated, useUm);
+    if (!metric) return {values: null, unit: want ? m.unit_um : m.unit_px, um: want};
+    const um = want && !!metric[`${kind}_um`];
+    return {values: um ? metric[`${kind}_um`] : metric[`${kind}_px`], unit: um ? m.unit_um : m.unit_px, um};
+  }
+
+  /*** FILTERS ***/
+
+  // roles: [{role}, ...] of the runs in view. The current role if they have it, else the first.
+  function pickRole(roles, current) {
+    return !roles.length || roles.some(r => r.role === current) ? current : roles[0].role;
+  }
+
+  // Every metric of the runs in view, each once, in the order first seen.
+  function unionMetrics(runs) {
+    const seen = new Map();
+    runs.forEach(r => r.metrics.forEach(m => { if (!seen.has(m.key)) seen.set(m.key, m); }));
+    return [...seen.values()];
   }
 
   /*** COMPARISON ***/
@@ -164,6 +191,21 @@
       if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
     }
     return hit;
+  }
+
+  // Width and height of the preview planes; every coordinate in the asset is in this space.
+  // Assets from before raw_width held the raw size in width/height.
+  function planeSize(f) {
+    if (f.raw_width !== undefined) return {width: f.width, height: f.height};
+    const s = f.scale || 1;
+    return {width: Math.max(1, Math.round(f.width * s)), height: Math.max(1, Math.round(f.height * s))};
+  }
+
+  // Junction opacity: only a brush (lasso / box) dims what it did not catch. A click selection
+  // halos its junction and leaves every other junction as it was.
+  const DIM_ALPHA = 0.6;
+  function junctionAlpha(sel, lit, key) {
+    return sel && sel.brush && lit && !lit.has(key) ? DIM_ALPHA : 1;
   }
 
   function cellAt(outlines, x, y) {
@@ -273,7 +315,8 @@
   }
 
   const api = {decodeF32, decodeU32, finite, quantileRange, summaryStats, fmtCount, fmtShare, fmtValue,
-               colourFor, runColour, junctionKey, unitFor, fieldSlice, hitTest, cellAt,
+               colourFor, runColour, junctionKey, unitFor, wantsUm, metricValues, pickRole, unionMetrics,
+               planeSize, junctionAlpha, fieldSlice, hitTest, cellAt,
                selectionFromRoute, sideValue, createLru, createLoader, pointTarget, runRows, filterRows,
                NAN_GREY};
   root.JMLogic = api;

@@ -1,4 +1,5 @@
 import base64
+import dataclasses
 import hashlib
 import io
 import json
@@ -7,10 +8,12 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from junctionmapper.io.reader import Field
 from junctionmapper.pipeline import measure_field
 from junctionmapper.report.assets import (cell_outlines, junction_polylines, preview,
                                           preview_scale, simplify, to_preview,
                                           write_field_asset)
+from junctionmapper.segment.cellpose import Segmentation
 from tests.fixtures13 import build, make_cfg
 
 
@@ -48,8 +51,31 @@ def test_simplify_keeps_endpoints_and_drops_collinear_points():
     assert simplify(line, 1.0).tolist() == [[0, 0], [0, 49]]
 
 
-def test_to_preview_swaps_to_xy_and_scales():
-    assert to_preview(np.array([[10, 20]]), 0.5) == [[10.0, 5.0]]
+def test_to_preview_swaps_to_xy_and_puts_a_pixel_at_its_centre():
+    # raw pixel (row 10, col 20) covers x 20..21, y 10..11 of the drawn image
+    assert to_preview(np.array([[10, 20]]), 1.0) == [[20.5, 10.5]]
+    assert to_preview(np.array([[9, 20]]), 0.25) == [[5.0, 2.5]]
+
+
+def test_a_field_longer_than_the_preview_is_sized_and_drawn_at_the_preview(tmp_path, setup):
+    f, seg, cfg = setup
+    r = measure_field(f, seg, cfg)
+    h, w = 1600, 3000
+    labels = np.ones((h, w), np.int32)                      # one cell filling the field
+    big = Field(planes={role: np.zeros((h, w), np.float32) for role in f.planes},
+                pixel_size_um=f.pixel_size_um, markers=f.markers, source=f.source, field_id="big")
+    empty = dataclasses.replace(r, interfaces=r.interfaces.iloc[0:0], flags=r.flags.iloc[0:0], paths={})
+    d = _load(write_field_asset(big, Segmentation(labels, np.zeros_like(labels), {}), empty, "r1",
+                                tmp_path), "Field")
+    assert d["scale"] == pytest.approx(0.5)
+    assert (d["width"], d["height"]) == (1500, 800)            # the planes the viewer draws
+    assert (d["raw_width"], d["raw_height"]) == (3000, 1600)
+    for c in d["channels"]:
+        img = Image.open(io.BytesIO(base64.b64decode(c["src"].split(",", 1)[1])))
+        assert img.size == (1500, 800)
+    xy = np.array(d["cells"]["1"])                         # the outline spans exactly the preview
+    assert (xy[:, 0].min(), xy[:, 0].max()) == (0, 1500)
+    assert (xy[:, 1].min(), xy[:, 1].max()) == (0, 800)
 
 
 def test_cell_outlines_cover_every_label(setup):

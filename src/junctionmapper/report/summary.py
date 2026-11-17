@@ -57,7 +57,7 @@ IDS_SHOWN = 5           # field ids named in a warning line; the full list is in
 _PROV_SHOWN = {"junctionmapper_version", "code_identity", "library_versions", "params_used",
                "thresholds", "threshold_proposal", "threshold_run_roles", "threshold_calibration",
                "config", "input", "timestamp", "fields_failed", "fields_failed_detail",
-               "labels_without_provenance", "labels_source_mismatch"}
+               "labels_without_provenance", "labels_source_mismatch", "assets_missing"}
 
 
 # ---- small helpers -----------------------------------------------------------------
@@ -189,8 +189,10 @@ def threshold_info(ifc: pd.DataFrame, roles: "set[str] | None" = None) -> dict[s
 _CAUSE = {
     "override": ("per-field override", "A run value was carried for {role}; these fields were set per field: {ids}."),
     "fallback": ("calibration resolved nothing",
-                 "No run value was resolved for {role}: each field used Otsu on its own plane. Not an override."),
-    "unknown": ("cause not recorded", "The run did not record whether a run value was carried for {role}."),
+                 "No run value was resolved for {role}: each field used Otsu on its own plane. "
+                 "Not an override. Fields involved: {ids}."),
+    "unknown": ("cause not recorded", "The run did not record whether a run value was carried for "
+                                      "{role}. Fields involved: {ids}."),
 }
 
 
@@ -238,6 +240,18 @@ def run_warnings(prov: dict, tinfo: dict[str, dict[str, Any]], lost: list[dict])
         out.append({"kind": "labels_source_mismatch",
                     "text": f"{n} field{'s' if n != 1 else ''}: labels from another image",
                     "detail": scrub(detail or prov["labels_source_mismatch"])})
+    if prov.get("assets_missing"):
+        try:
+            missing = json.loads(prov["assets_missing"])
+        except (TypeError, ValueError):
+            missing = {}
+        missing = missing if isinstance(missing, dict) else {}
+        n = len(missing) or 1
+        out.append({"kind": "assets_missing",
+                    "text": f"{n} field{'s' if n != 1 else ''}: no image in the report",
+                    "detail": scrub("; ".join(f"{k}: {v}" for k, v in sorted(missing.items()))
+                                    or prov["assets_missing"])
+                              + ". Their measurements are in the tables."})
     return out
 
 

@@ -155,14 +155,17 @@ def test_run_summary_of_a_real_run(setup_tables):
     assert [m["key"] for m in s["metrics"]] == [p["key"] for p in PARAMETERS]
     units = {m["key"]: (m["unit_px"], m["unit_um"]) for m in s["metrics"]}
     assert units["interface_contour"] == ("px", "µm") and units["interface_area"] == ("px²", "µm²")
-    assert units["linearity_index"] == ("", "") and units["intensity_per_area"] == ("", "")
+    assert units["linearity_index"] == ("", "") and units["marker_intensity"] == ("", "")
+    assert units["intensity_per_area"] == ("per px²", "per µm²")
+    assert units["cluster_density"] == ("per px²", "per µm²")
     assert all(m["help"] for m in s["metrics"])
     f = s["fields"][0]
     assert f["field_id"] == "f1" and "thumb" not in f
     assert f["qc"]["flagged_cells"] >= 0 and f["n_junctions"] > 0
     assert s["tiles"]["fields"] == 1 and s["tiles"]["cells"] == f["n_cells"]
     assert s["tiles"]["junctions"] == f["n_junctions"]
-    assert s["provenance"] == {"tool": "x"}
+    assert "provenance" not in s           # raw provenance stays in run.json, never on the page
+    assert f["assets"] is True
 
 
 def test_flagged_cells_count_only_measured_cells(tmp_path):
@@ -243,3 +246,42 @@ def test_run_summary_warns_about_failed_fields_and_unattributed_labels(setup_tab
     w = run_summary(setup_tables.dir, "r1", "x")["warnings"]
     assert [x["kind"] for x in w] == ["fields_failed"]
     assert w[0] == {"kind": "fields_failed", "text": "1 field failed", "detail": "b.tif: unreadable"}
+
+
+@pytest.mark.parametrize("key", ["interface_contour", "intensity_per_area", "interface_area"])
+def test_each_value_sits_at_its_index_position(tmp_path, setup_tables, key):
+    """The value at a junction's (cell's) index position is that junction's mean (cell's
+    median) in the table, px and µm alike."""
+    ifc = setup_tables.interfaces
+    write_metric_files(ifc, "r1", tmp_path, calibrated=True)
+    p = next(x for x in PARAMETERS if x["key"] == key)
+    idx = _load(tmp_path / "tcj/_index.js")
+    m = _load(tmp_path / f"tcj/JM1/{key}.js")
+    rows = ifc[(ifc.corner_method == "tcj") & (ifc.role == "JM1")]
+    lo, hi, cid = _u32(idx["junction_lo"]), _u32(idx["junction_hi"]), _u32(idx["cell_id"])
+
+    def check(got, want):
+        assert np.isnan(got) if np.isnan(want) else got == pytest.approx(want, rel=1e-6)
+
+    assert rows.pair_id.nunique() > 1 and rows.cell_id.nunique() > 1
+    for pid, g in rows.groupby("pair_id"):
+        a, b = (int(x) for x in pid.split("|")[-1].split("-"))
+        [i] = np.flatnonzero((lo == a) & (hi == b))
+        check(_f32(m["junction_px"])[i], g[p["px"]].astype(float).mean())
+        check(_f32(m["junction_um"])[i], g[p["um"]].astype(float).mean())
+    for cell, g in rows.groupby("cell_id"):
+        [i] = np.flatnonzero(cid == int(cell))
+        check(_f32(m["cell_px"])[i], g[p["px"]].astype(float).median())
+        check(_f32(m["cell_um"])[i], g[p["um"]].astype(float).median())
+
+
+def test_a_field_without_its_asset_is_marked_and_warned(setup_tables):
+    (setup_tables.dir / "report/runs/r1/fields/f1.js").unlink()
+    doc = json.loads((setup_tables.dir / "run.json").read_text())
+    doc["provenance"]["assets_missing"] = json.dumps({"f1": "RuntimeError: disk full"})
+    (setup_tables.dir / "run.json").write_text(json.dumps(doc))
+    s = run_summary(setup_tables.dir, "r1", "x")
+    assert s["fields"][0]["assets"] is False
+    [w] = [x for x in s["warnings"] if x["kind"] == "assets_missing"]
+    assert w["text"] == "1 field: no image in the report"
+    assert "f1: RuntimeError: disk full" in w["detail"]

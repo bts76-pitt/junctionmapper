@@ -234,3 +234,54 @@ test("filterRows matches every term in group, key or value, any case", () => {
   assert.deepEqual(L.filterRows(rows, "jm1 otsu"), [rows[1]]);
   assert.deepEqual(L.filterRows(rows, "jm1 cpsam"), []);
 });
+
+// ---- final review fixes ----
+
+test("planeSize is the preview size the coordinates are in", () => {
+  assert.deepEqual(L.planeSize({width: 1500, height: 1257, scale: 0.5025, raw_width: 2985, raw_height: 2500}),
+                   {width: 1500, height: 1257});
+  // an asset written before raw_width existed held the raw size: scale it down
+  assert.deepEqual(L.planeSize({width: 2984, height: 2500, scale: 1500 / 2984}), {width: 1500, height: 1257});
+  assert.deepEqual(L.planeSize({width: 800, height: 600, scale: 1}), {width: 800, height: 600});
+});
+
+test("metricValues: one decision for the array and its unit", () => {
+  const px = new Float32Array([1]), um = new Float32Array([0.25]);
+  const area = {unit_px: "px²", unit_um: "µm²"};
+  const dens = {unit_px: "per px²", unit_um: "per µm²"};
+  const ratio = {unit_px: "", unit_um: ""};
+  const metric = {junction_px: px, junction_um: um, cell_px: px, cell_um: null};
+  assert.deepEqual(L.metricValues(metric, "junction", area, true, true), {values: um, unit: "µm²", um: true});
+  assert.deepEqual(L.metricValues(metric, "junction", dens, true, true), {values: um, unit: "per µm²", um: true});
+  assert.deepEqual(L.metricValues(metric, "junction", area, true, false), {values: px, unit: "px²", um: false});
+  assert.deepEqual(L.metricValues(metric, "junction", area, false, true), {values: px, unit: "px²", um: false});
+  assert.deepEqual(L.metricValues(metric, "junction", ratio, true, true), {values: px, unit: "", um: false});
+  // the µm array is missing: the px array is used and labelled px, never µm
+  assert.deepEqual(L.metricValues(metric, "cell", area, true, true), {values: px, unit: "px²", um: false});
+  assert.deepEqual(L.metricValues(null, "cell", area, true, true), {values: null, unit: "µm²", um: true});
+  assert.equal(L.wantsUm(dens, true, true), true);
+  assert.equal(L.wantsUm(ratio, true, true), false);
+});
+
+test("pickRole keeps the role when the runs have it, else the first", () => {
+  const roles = [{role: "JM1"}, {role: "JM2"}];
+  assert.equal(L.pickRole(roles, "JM2"), "JM2");
+  assert.equal(L.pickRole([{role: "JM1"}], "JM2"), "JM1");
+  assert.equal(L.pickRole([], "JM2"), "JM2");
+});
+
+test("unionMetrics lists every metric of the selected runs once, in first-seen order", () => {
+  const runs = [{metrics: [{key: "a"}, {key: "b"}]}, {metrics: [{key: "b"}, {key: "c"}]}];
+  assert.deepEqual(L.unionMetrics(runs).map(m => m.key), ["a", "b", "c"]);
+  assert.deepEqual(L.unionMetrics([]), []);
+});
+
+test("junctionAlpha dims only for a brush, never for a click selection", () => {
+  const lit = new Set(["1-2"]);
+  assert.equal(L.junctionAlpha({junction: "1-2", brush: null}, lit, "3-4"), 1);
+  assert.equal(L.junctionAlpha({cell: "1", brush: null}, lit, "3-4"), 1);
+  assert.equal(L.junctionAlpha({brush: ["1-2"]}, lit, "1-2"), 1);
+  const dimmed = L.junctionAlpha({brush: ["1-2"]}, lit, "3-4");
+  assert.ok(dimmed >= 0.5 && dimmed < 1);
+  assert.equal(L.junctionAlpha({brush: null}, null, "3-4"), 1);
+});

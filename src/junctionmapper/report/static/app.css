@@ -315,7 +315,7 @@ button, select, input { font: inherit; color: inherit; }
 .detail-table { margin: 4px 0 0; font-size: 12px; }
 .detail-table th, .detail-table td { padding: 4px 0 4px 8px; }
 .detail-table th { text-align: left; font-weight: 400; padding-left: 0; }
-.detail-table td.unit { color: var(--muted); text-align: left; width: 32px; }
+.detail-table td.unit { color: var(--muted); text-align: left; white-space: nowrap; }
 .detail-table thead th { text-align: right; color: var(--muted); font-weight: 500; white-space: nowrap; padding-left: 8px; cursor: help; }
 .detail-table thead th:first-child, .detail-table thead th:last-child { cursor: default; }
 .detail-table tr.is-current th .metric-link, .detail-table tr.is-current td { font-weight: 600; color: var(--ink); }
