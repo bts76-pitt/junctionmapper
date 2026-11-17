@@ -4,7 +4,7 @@ Core library functions return pixels; this module is where scaling to micrometre
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 
 import numpy as np
 import pandas as pd
@@ -94,6 +94,8 @@ class FieldResult:
     nuclei: pd.DataFrame
     flags: pd.DataFrame
     nuclei_distances: pd.DataFrame
+    # interface_id -> (N, 2) int (row, col) walk of that interface; one per interface, not per role
+    paths: dict = dc_field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -360,6 +362,7 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
     split_pairs = split_nucleus_pairs(labels, nuc_labels)
 
     iface_rows, cell_rows, flag_rows = [], [], []
+    paths: dict[str, np.ndarray] = {}
     for cid in (int(c) for c in np.unique(labels) if c != 0):
         fl = assess_cell(labels, cid, epsilon, cfg.tcj_min_run, cfg.neighbour_radius_px)
         area = int((labels == cid).sum())
@@ -382,6 +385,8 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
                     contour = mi.interface_contour(pix)
                     straight = mi.straight_line_length(pix)
                     lin = mi.linearity_index(pix)
+                    if roles:
+                        paths[_interface_id(fid, itf.method, cid, itf.start_idx)] = np.asarray(pix)
                     band = mi.dilated_band(pix, labels.shape, cycles)
                     # The segment channel is never thresholded, only read for brightness.
                     # The outline was drawn and snapped on it, so the band sits on its
@@ -496,5 +501,5 @@ def measure_field(field: Field, seg: Segmentation, cfg: RunConfig,
     return FieldResult(
         interfaces=make_frame("interfaces", iface_rows), cells=make_frame("cells", cell_rows),
         nuclei=make_frame("nuclei", nuc_rows), flags=make_frame("flags", flag_rows),
-        nuclei_distances=make_frame("nuclei_distances", dist_rows),
+        nuclei_distances=make_frame("nuclei_distances", dist_rows), paths=paths,
     )
