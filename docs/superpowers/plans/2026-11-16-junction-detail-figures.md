@@ -37,6 +37,9 @@
 
 ```js
 profiles:   {"<method>": {"<lo-hi>": {"<role>": {"x": [..], "y": [..]}}}},   // x µm or px, y raw intensity; NaN → null
+            // one cell side's walk: the lower id's, else the higher id's; every interface of that side
+            // for the pair joined in walk order, x cumulative, a null y at each join (dp corner)
+profile_start: {"<method>": {"<lo-hi>": [x, y]}},   // preview px of the walk's first pixel (profile x = 0)
 thresholds: {"<role>": t | null},
 profile_unit: "µm" | "px"
 ```
@@ -53,7 +56,7 @@ profile_unit: "µm" | "px"
 - Consumes: `FieldResult.paths`, `result.interfaces` (`interface_id, pair_id, corner_method, cell_id, role`), `result.cells.dilation_cycles`, `Field.planes`, `Field.pixel_size_um`, `resolve_thresholds(field, cfg, run_t) -> {Role: float}`.
 - Produces:
   - `junction_profile(path_rc: np.ndarray, image: np.ndarray, band: np.ndarray, radius: int, px_um: float | None, max_points: int = 200) -> dict` — `{"x": list[float], "y": list[float|None]}`. y[i] = mean of `image` over `band` pixels in the `(2r+1)²` window centred on path pixel i (clamped at borders; None if no band pixel). x = cumulative path length (diagonal steps √2) × `px_um` if given, else px. Resample to ≤ `max_points` by linear interpolation on x; keep both endpoints; length-1 path → x [0, 0], y [v, v].
-  - `junction_profiles(field: Field, result: FieldResult) -> dict` — `{method: {"lo-hi": {role: profile}}}` using `mi.dilated_band(path, shape, cycles)` and `radius = cycles`, for the side whose `cell_id` is the lower id.
+  - `junction_profiles(field: Field, result: FieldResult, scale: float = 1.0) -> (profiles, starts)` — `{method: {"lo-hi": {role: profile}}}` using `mi.dilated_band(path, shape, cycles)` and `radius = cycles`, for the side whose `cell_id` is the lower id (the higher id when the lower has no interface for the pair), its pieces joined in walk order; `starts` as `profile_start` above. (Revised in the final fix wave.)
   - `write_field_asset(field, seg, result, run, out_dir, thresholds: dict[str, float] | None = None)` — adds `profiles`, `thresholds` (role value → float or null), `profile_unit`.
 
 - [ ] **Step 1: Write the failing tests**

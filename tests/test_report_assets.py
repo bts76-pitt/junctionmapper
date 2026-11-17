@@ -223,3 +223,106 @@ def test_cropped_profile_equals_the_full_image_profile(path):
         full = junction_profile(path, img, mi.dilated_band(path, img.shape, cyc), cyc, 0.5)
         sl, local, band = band_crop(path, img.shape, cyc)
         assert junction_profile(local, img[sl], band, cyc, 0.5) == full
+
+
+def _synthetic(pieces, cycles=1, shape=(40, 60)):
+    """FieldResult with the given dp pieces: [(cell_id, start_idx, end_idx, path), ...] of pair 1-2."""
+    import pandas as pd
+    from junctionmapper.pipeline import FieldResult
+    rows, paths = [], {}
+    for cid, s, e, path in pieces:
+        iid = f"f|dp|{cid}@{s}"
+        paths[iid] = np.asarray(path)
+        for role in ("JM1", "JM2"):
+            rows.append({"interface_id": iid, "pair_id": "f|1-2", "corner_method": "dp",
+                         "cell_id": cid, "start_idx": s, "end_idx": e, "role": role})
+    itf = pd.DataFrame(rows)
+    cells = pd.DataFrame({"cell_id": [1, 2], "dilation_cycles": [cycles, cycles]})
+    empty = pd.DataFrame()
+    res = FieldResult(interfaces=itf, cells=cells, nuclei=empty, flags=empty, nuclei_distances=empty,
+                      paths=paths)
+    img = np.full(shape, 5.0)
+    f = Field(planes={Role.JM1: img, Role.JM2: img * 2}, pixel_size_um=None, markers={},
+              source=None, field_id="f")
+    return f, res
+
+
+def test_dp_pieces_join_into_one_profile_broken_at_each_corner():
+    from junctionmapper.report.assets import junction_profiles
+    a = [[10, c] for c in range(5, 16)]          # 10 px long
+    b = [[10 + r, 15] for r in range(0, 7)]      # 6 px long, shares the corner (10, 15)
+    f, res = _synthetic([(1, 30, 40, a), (1, 40, 46, b)])
+    prof, start = junction_profiles(f, res)
+    p = prof["dp"]["1-2"]["JM1"]
+    assert p["x"][0] == 0 and p["x"][-1] == pytest.approx(16)
+    assert p["y"].count(None) == 1
+    j = p["y"].index(None)
+    assert p["x"][j] == pytest.approx(10) and p["x"][j - 1] == pytest.approx(10)
+    assert p["x"][j + 1] == pytest.approx(10)
+    assert start["dp"]["1-2"] == [5.5, 10.5]
+
+
+def test_dp_pieces_are_joined_in_walk_order_across_the_boundary_wrap():
+    from junctionmapper.report.assets import junction_profiles
+    a = [[10, c] for c in range(5, 16)]
+    b = [[10 + r, 15] for r in range(0, 7)]
+    # b wraps through index 0 (start 40 > end 2); a runs 30 -> 40, so the walk is a then b.
+    f, res = _synthetic([(1, 40, 2, b), (1, 30, 40, a)])
+    prof, start = junction_profiles(f, res)
+    p = prof["dp"]["1-2"]["JM1"]
+    assert p["x"][p["y"].index(None)] == pytest.approx(10)
+    assert start["dp"]["1-2"] == [5.5, 10.5]
+    # a wraps: start 50 > end 4, then b 4 -> 10: still a then b
+    f, res = _synthetic([(1, 4, 10, b), (1, 50, 4, a)])
+    prof, start = junction_profiles(f, res)
+    assert start["dp"]["1-2"] == [5.5, 10.5]
+
+
+def test_a_junction_with_only_the_higher_cell_measured_still_has_a_profile():
+    from junctionmapper.report.assets import junction_profiles
+    b = [[12, c] for c in range(20, 31)]
+    f, res = _synthetic([(2, 3, 13, b)])
+    prof, start = junction_profiles(f, res)
+    assert prof["dp"]["1-2"]["JM2"]["y"][0] == pytest.approx(10.0)
+    assert start["dp"]["1-2"] == [20.5, 12.5]
+
+
+def test_the_lower_cell_side_is_preferred_when_both_exist():
+    from junctionmapper.report.assets import junction_profiles
+    a = [[10, c] for c in range(5, 16)]
+    b = [[11, c] for c in range(20, 40)]
+    f, res = _synthetic([(2, 0, 20, b), (1, 30, 40, a)])
+    prof, start = junction_profiles(f, res)
+    assert prof["dp"]["1-2"]["JM1"]["x"][-1] == pytest.approx(10)
+    assert start["dp"]["1-2"] == [5.5, 10.5]
+
+
+def test_an_empty_path_is_skipped_not_fatal():
+    from junctionmapper.report.assets import junction_profiles
+    f, res = _synthetic([(1, 30, 40, np.zeros((0, 2), int))])
+    assert junction_profiles(f, res) == ({}, {})
+
+
+def test_every_measured_pair_of_the_fixture_has_a_profile_and_start(tmp_path, setup):
+    f, seg, cfg = setup
+    r = measure_field(f, seg, cfg)
+    d = _load(write_field_asset(f, seg, r, "r1", tmp_path), "Field")
+    for method in ("tcj", "dp"):
+        assert set(d["profiles"][method]) == set(d["junctions"][method])
+        assert set(d["profile_start"][method]) == set(d["junctions"][method])
+        for key, xy in d["profile_start"][method].items():
+            assert 0 <= xy[0] <= d["width"] and 0 <= xy[1] <= d["height"]
+
+
+def test_a_profile_failure_keeps_the_rest_of_the_field_asset(tmp_path, setup, monkeypatch, capsys):
+    import junctionmapper.report.assets as A
+    f, seg, cfg = setup
+
+    def boom(*a, **k):
+        raise ValueError("bad walk")
+    monkeypatch.setattr(A, "junction_profiles", boom)
+    d = _load(write_field_asset(f, seg, measure_field(f, seg, cfg), "r1", tmp_path), "Field")
+    assert d["profiles"] == {} and d["profile_start"] == {}
+    assert d["channels"] and d["cells"] and d["junctions"]["tcj"]
+    err = capsys.readouterr().err
+    assert f.field_id in err and "bad walk" in err

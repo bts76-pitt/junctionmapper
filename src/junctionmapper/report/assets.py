@@ -9,6 +9,7 @@ import base64
 import hashlib
 import io
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -210,44 +211,78 @@ def band_crop(path_rc: np.ndarray, shape: tuple[int, int], cycles: int):
     return sl, local, mi.dilated_band(local, (int(hi[0] - lo[0]), int(hi[1] - lo[1])), int(cycles))
 
 
-def junction_profiles(field: Field, result: FieldResult) -> dict:
-    """``{method: {"<lo>-<hi>": {role: profile}}}``, along the lower-id cell's walk of each junction.
+def walk_order(pieces: list) -> list:
+    """``pieces`` (``(start_idx, end_idx, ...)`` tuples of one cell side) in boundary walk order.
 
-    Roles are every plane the field has among JM1, JM2 and segment.
+    Sorted by ``start_idx``, then rotated to begin at the first piece that does not continue
+    another (its start is no piece's end), so a run of pieces through boundary index 0 stays
+    in order.
     """
-    out: dict = {}
+    ordered = sorted(pieces, key=lambda p: p[0])
+    ends = {p[1] for p in ordered}
+    first = next((i for i, p in enumerate(ordered) if p[0] not in ends), 0)
+    return ordered[first:] + ordered[:first]
+
+
+def junction_profiles(field: Field, result: FieldResult, scale: float = 1.0,
+                      max_points: int = 200) -> tuple[dict, dict]:
+    """``(profiles, starts)`` for every junction, along one cell side's walk.
+
+    ``profiles``: ``{method: {"<lo>-<hi>": {role: profile}}}``; roles are every plane the field
+    has among JM1, JM2 and segment. ``starts``: ``{method: {"<lo>-<hi>": [x, y]}}``, the walk's
+    first pixel in preview px (``scale``), i.e. where the profile's x = 0 sits.
+
+    The side is the lower-id cell's, or the higher-id cell's when the lower has no measured
+    interface for the pair. All of that side's interfaces for the pair (dp splits one contact
+    into several) are joined in walk order into one profile: x runs on cumulatively and a None y
+    at each join breaks the line at the corner. Points are shared out by piece length.
+    """
+    profiles: dict = {}
+    starts: dict = {}
     itf = result.interfaces
     if not len(itf):
-        return out
+        return profiles, starts
     roles = [r for r in (Role.JM1, Role.JM2, Role.SEGMENT) if r in field.planes]
+    if not roles:
+        return profiles, starts
+    shape = field.planes[roles[0]].shape
     cycles = dict(zip(result.cells["cell_id"].astype(int), result.cells["dilation_cycles"]))
     px = field.pixel_size_um if field.pixel_size_um and np.isfinite(field.pixel_size_um) else None
     rows = itf.drop_duplicates("interface_id")
-    best: dict = {}
-    for iid, pair, method, cid in zip(rows.interface_id, rows.pair_id, rows.corner_method,
-                                      rows.cell_id):
+    sides: dict = {}
+    for iid, pair, method, cid, s0, e0 in zip(rows.interface_id, rows.pair_id, rows.corner_method,
+                                              rows.cell_id, rows.start_idx, rows.end_idx):
         path = result.paths.get(iid)
-        if path is None:
+        cyc = cycles.get(int(cid))
+        if path is None or len(path) == 0 or cyc is None or not np.isfinite(cyc):
             continue
         key = (str(method), str(pair).split("|")[-1])
-        lo = int(key[1].split("-")[0])
-        if int(cid) != lo:
-            continue
-        if key not in best or len(path) > len(best[key][1]):
-            best[key] = (int(cid), path)
-    for (method, key), (cid, path) in best.items():
-        cyc = cycles.get(cid)
-        if cyc is None or not np.isfinite(cyc):
-            continue
-        cyc = int(cyc)
-        shape = field.planes[roles[0]].shape if roles else None
-        if shape is None:
-            continue
-        sl, local, band = band_crop(path, shape, cyc)
-        for role in roles:
-            out.setdefault(method, {}).setdefault(key, {})[role.value] = junction_profile(
-                local, field.planes[role][sl], band, cyc, px)
-    return out
+        sides.setdefault(key, {}).setdefault(int(cid), []).append((int(s0), int(e0), np.asarray(path)))
+    for (method, key), by_cell in sides.items():
+        lo, hi = (int(v) for v in key.split("-"))
+        cid = lo if lo in by_cell else hi
+        pieces = walk_order(by_cell[cid])
+        cyc = int(cycles[cid])
+        total = sum(len(p[2]) for p in pieces)
+        joined = {role.value: {"x": [], "y": []} for role in roles}
+        offset = 0.0
+        for n, (_, _, path) in enumerate(pieces):
+            sl, local, band = band_crop(path, shape, cyc)
+            budget = max(2, round(max_points * len(path) / total))
+            end = offset
+            for role in roles:
+                prof = junction_profile(local, field.planes[role][sl], band, cyc, px, budget)
+                out = joined[role.value]
+                if n:
+                    out["x"].append(round(offset, 4))
+                    out["y"].append(None)
+                out["x"].extend(round(offset + v, 4) for v in prof["x"])
+                out["y"].extend(prof["y"])
+                end = offset + prof["x"][-1]
+            offset = end
+        profiles.setdefault(method, {})[key] = joined
+        starts.setdefault(method, {})[key] = to_preview(pieces[0][2][:1], scale)[0]
+    return profiles, starts
 
 
 def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run: str,
@@ -265,6 +300,12 @@ def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run:
         on = [c for c in bool_cols if row[c]]
         if on:
             flags[str(int(row["cell_id"]))] = on
+    try:
+        profiles, starts = junction_profiles(field, result, scale)
+    except Exception as e:  # a profile is a figure, never worth losing the field's images for
+        print(f"junctionmapper report: warning: field {field.field_id}: junction profiles "
+              f"skipped ({type(e).__name__}: {e})", file=sys.stderr)
+        profiles, starts = {}, {}
     data = {
         # width/height: the preview, which every coordinate is in; raw_*: the label image.
         "run": run, "field_id": field.field_id, "width": pw, "height": ph, "scale": scale,
@@ -273,7 +314,7 @@ def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run:
         "channels": channels, "cells": cell_outlines(labels, scale),
         "junctions": junction_polylines(result, scale), "sides": junction_sides(result),
         "flags": flags,
-        "profiles": junction_profiles(field, result),
+        "profiles": profiles, "profile_start": starts,
         "thresholds": {str(k): _num(v) for k, v in (thresholds or {}).items()},
         "profile_unit": "µm" if field.pixel_size_um and np.isfinite(field.pixel_size_um) else "px",
     }

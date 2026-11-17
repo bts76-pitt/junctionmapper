@@ -273,6 +273,44 @@
     return out.length >= 2 ? out : [];
   }
 
+  // Merge tile colours by merge order, not by role: a colocalisation set where the first two
+  // overlap to white and the third (cyan) stays distinct from both.
+  const MERGE_TINTS = [[0, 1, 0], [1, 0, 1], [0, 1, 1]];
+  function mergeTints(merged) {
+    return merged.map((_, i) => MERGE_TINTS[i % MERGE_TINTS.length]);
+  }
+
+  // Does segment (ax,ay)-(bx,by) touch the box {x, y, w, h}? Liang-Barsky clip.
+  function segmentHitsBox(ax, ay, bx, by, b) {
+    let t0 = 0, t1 = 1;
+    const dx = bx - ax, dy = by - ay;
+    const edges = [[-dx, ax - b.x], [dx, b.x + b.w - ax], [-dy, ay - b.y], [dy, b.y + b.h - ay]];
+    for (const [p, q] of edges) {
+      if (p === 0) { if (q < 0) return false; continue; }
+      const r = q / p;
+      if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+      else { if (r < t0) return false; if (r < t1) t1 = r; }
+    }
+    return true;
+  }
+
+  // {box, crossings}: the candidate box the fewest line segments cross, the first on a tie;
+  // null with no boxes. lines: [[[x, y], ...], ...], one array per unbroken run of the drawn line.
+  function labelBoxAt(lines, boxes) {
+    let best = null, bestN = Infinity;
+    boxes.forEach(b => {
+      let n = 0;
+      lines.forEach(line => {
+        if (line.length === 1) { const [x, y] = line[0]; if (segmentHitsBox(x, y, x, y, b)) n++; }
+        for (let i = 1; i < line.length; i++) {
+          if (segmentHitsBox(line[i - 1][0], line[i - 1][1], line[i][0], line[i][1], b)) n++;
+        }
+      });
+      if (n < bestN) { bestN = n; best = b; }
+    });
+    return best ? {box: best, crossings: bestN} : null;
+  }
+
   // "P-cadherin (JM1)": marker first, role in brackets; the segment channel reads "outline".
   function channelLabel(role, marker) {
     const name = role === "segment" ? "outline" : role;
@@ -367,7 +405,7 @@
                colourFor, runColour, junctionKey, unitFor, wantsUm, metricValues, pickRole, unionMetrics,
                planeSize, junctionAlpha, fieldSlice, hitTest, cellAt,
                selectionFromRoute, sideValue, createLru, createLoader, pointTarget, runRows, filterRows,
-               cropWindow, percentileOf, profileScale, channelLabel, mergeRoles, NAN_GREY};
+               cropWindow, percentileOf, profileScale, channelLabel, mergeRoles, mergeTints, labelBoxAt, NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

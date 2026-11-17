@@ -320,3 +320,27 @@ test("mergeRoles merges any two or more of JM1, JM2 and outline, never the nucle
   assert.deepEqual(L.mergeRoles(["JM1", "nucleus"]), []);
   assert.deepEqual(L.mergeRoles(["nucleus", "segment", "JM2", "JM1"]), ["JM1", "JM2", "segment"]);
 });
+test("mergeTints colours the merged channels by merge order: green, magenta, cyan", () => {
+  assert.deepEqual(L.mergeTints(["JM1", "JM2", "segment"]), [[0, 1, 0], [1, 0, 1], [0, 1, 1]]);
+  assert.deepEqual(L.mergeTints(["JM2", "segment"]), [[0, 1, 0], [1, 0, 1]]);
+  assert.deepEqual(L.mergeTints([]), []);
+  // first two overlap to white; outline-only pixels are not white
+  const [a, b, c] = L.mergeTints(["JM1", "JM2", "segment"]);
+  assert.deepEqual(a.map((v, i) => Math.min(1, v + b[i])), [1, 1, 1]);
+  assert.notDeepEqual(c, [1, 1, 1]);
+});
+test("labelBoxAt avoids a box the line crosses even with no sample point inside it", () => {
+  // Line from (0,100) to (200,0): its only points lie outside every box, but it crosses the right box.
+  const line = [[0, 100], [200, 0]];
+  const boxes = [{x: 140, y: 20, w: 50, h: 12}, {x: 10, y: 10, w: 50, h: 12}];
+  assert.deepEqual(L.labelBoxAt([line], boxes), {box: boxes[1], crossings: 0});
+  assert.deepEqual(L.labelBoxAt([line], [boxes[0]]), {box: boxes[0], crossings: 1});
+});
+test("labelBoxAt counts crossings, ignores null breaks and keeps the first box on a tie", () => {
+  const boxes = [{x: 0, y: 0, w: 10, h: 10}, {x: 20, y: 0, w: 10, h: 10}];
+  assert.deepEqual(L.labelBoxAt([], boxes), {box: boxes[0], crossings: 0});
+  // two pieces separated by a break: the gap between them spans box 1, so nothing crosses it
+  assert.deepEqual(L.labelBoxAt([[[-5, 5], [15, 5]], [[35, 5], [40, 5]]], boxes), {box: boxes[1], crossings: 0});
+  assert.deepEqual(L.labelBoxAt([[[-5, 5], [40, 5]]], boxes), {box: boxes[0], crossings: 1});
+  assert.equal(L.labelBoxAt([[[0, 0], [1, 1]]], []), null);
+});

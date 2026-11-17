@@ -11,7 +11,8 @@ a junction. Replace it with figures that show the junction and why its numbers c
 ## What gets built (approved)
 
 1. **Close-up.** One crop per channel of the selected junction, from the field previews.
-   The junction's band is outlined; both cells' outlines faint.
+   The junction's band is outlined; both cells' outlines faint; a dot marks where the profile
+   starts. Merge colours follow merge order (green, magenta, cyan), not channel roles.
 2. **Intensity along the junction.** Marker brightness from corner to corner, JM1 and JM2
    (whichever exist), with each marker's applied threshold as a line.
 3. **Where it sits.** One strip per metric: every junction of the field (toggle: whole run)
@@ -35,7 +36,8 @@ a junction. Replace it with figures that show the junction and why its numbers c
 ## My calls
 
 - Profile = one per junction (`pair_id`) and marker role, sampled along the interface pixel
-  walk of the lower cell id's side. Value at each path pixel = mean marker intensity over
+  walk of the lower cell id's side (the higher id's when the lower has none). A dp junction's
+  pieces are joined in walk order, the line broken at each corner. Value at each path pixel = mean marker intensity over
   band pixels within the band half-width of it (the same dilated band the metrics use).
   Resampled to at most 200 points. x axis = distance along the path in µm (px if uncalibrated).
 - Threshold per role per field = the applied threshold already recorded in provenance

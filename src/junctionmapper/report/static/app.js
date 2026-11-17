@@ -952,9 +952,10 @@
     ["JM1", "JM2"].forEach(role => { if (ci(role) >= 0) specs.push(single(role)); });
     const merged = L.mergeRoles(fd.channels.map(c => c.role));
     if (merged.length) {
-      specs.push({label: "Merge", tip: `Merge of ${merged.map(r => L.channelLabel(r, markerOf(fd, r))).join(", ")}, in the viewer's channel colours`,
-                  dots: merged.map(r => TINT[r] || TINT_OTHER),
-                  parts: merged.map(role => ({ci: ci(role), role, tint: TINT[role] || TINT_OTHER}))});
+      const tints = L.mergeTints(merged), names = ["green", "magenta", "cyan"];
+      specs.push({label: "Merge", tip: `Merge of ${merged.map((r, i) => `${L.channelLabel(r, markerOf(fd, r))} in ${names[i]}`).join(", ")}; where they overlap reads white`,
+                  dots: tints,
+                  parts: merged.map((role, i) => ({ci: ci(role), role, tint: tints[i]}))});
     }
     TILE_ROLES.forEach(role => { if (ci(role) >= 0) specs.push(single(role)); });
     fd.channels.forEach((c, i) => {
@@ -1003,6 +1004,12 @@
       o.lineWidth = (gap + 3 * dpr) / k; o.stroke(focus.path);
       o.globalCompositeOperation = "destination-out";
       o.lineWidth = gap / k; o.stroke(focus.path);
+      o.globalCompositeOperation = "source-over";
+      if (focus.start) {   // where the profile's x = 0 sits
+        o.beginPath(); o.arc(focus.start[0], focus.start[1], (3.5 * dpr) / k, 0, 2 * Math.PI);
+        o.fillStyle = cssVar("--accent"); o.fill();
+        o.lineWidth = (1.5 * dpr) / k; o.strokeStyle = "rgba(0,0,0,0.85)"; o.stroke();
+      }
     }
     g.drawImage(ov, 0, 0);
   }
@@ -1012,7 +1019,8 @@
     if (!lines.length || !lines[0].length) return null;
     const win = L.cropWindow(lines, fd.width, fd.height);
     const cells = sel.junction ? sel.junction.split("-") : [sel.cell];
-    const focus = sel.junction ? {path: fd.junctionPath[state.method][sel.junction]}
+    const ps = fd.raw.profile_start && fd.raw.profile_start[state.method];
+    const focus = sel.junction ? {path: fd.junctionPath[state.method][sel.junction], start: ps ? ps[sel.junction] : null}
                                : {cell: true, path: fd.cellPath[sel.cell]};
     const others = sel.junction ? cells.map(id => fd.cellPath[id]).filter(Boolean) : [];
     const tiles = tileSpecs(fd).map(spec => {
@@ -1022,7 +1030,7 @@
           h("span", {class: "tile-cap"}, spec.label)))};
     });
     const el = h("section", {class: "detail-sec"},
-      h("h4", {class: "detail-sec-head"}, h("span", {tip: "The selected junction's band is outlined; both cells' outlines faint. Brightness follows the channel sliders."}, "Close-up")),
+      h("h4", {class: "detail-sec-head"}, h("span", {tip: "The selected junction's band is outlined; both cells' outlines faint. The dot marks where the intensity profile starts. Brightness follows the channel sliders."}, "Close-up")),
       h("div", {class: "tiles-grid", role: "img",
                 "aria-label": `Close-up of ${sel.junction ? "junction " + jLabel(sel.junction) : "cell " + sel.cell} in each channel`},
         tiles.map(t => t.el)));
@@ -1058,7 +1066,7 @@
     const hasT = roles.some(r => Number.isFinite(thresholds[r]));
     const el = h("section", {class: "detail-sec"},
       h("div", {class: "detail-sec-head"},
-        h("h4", null, h("span", {tip: "Mean marker intensity across the band, corner to corner along the junction, in raw intensity units. Each channel has its own y axis."},
+        h("h4", null, h("span", {tip: "Mean marker intensity across the band, corner to corner along the junction, in raw intensity units, starting at the dot in the close-up. Dotted verticals mark corners between the junction's pieces. Each channel has its own y axis."},
           "Intensity along the junction")),
         hasT ? h("span", {class: "legend-item detail-sec-sub", tip: "The applied marker threshold for this field"},
           h("span", {class: "key-line dashed"}), "threshold") : null),
@@ -1077,21 +1085,36 @@
       const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: "profile-svg", role: "img",
                             "aria-label": `Intensity along junction ${jLabel(key)}: ${roles.map(label).join(", ")}`});
       const muted = cssVar("--muted"), ink2 = cssVar("--ink-2"), grid = cssVar("--grid"), axis = cssVar("--axis");
-      // The "threshold" label goes where the fewest profile points would sit under it: right, left
-      // or middle of the line, above it or below.
+      // A join between two pieces of the junction is a null at the x where the last piece ended:
+      // a dotted vertical marks that corner in every panel, under the lines.
+      const p0 = prof[roles[0]];
+      p0.x.forEach((x, i) => {
+        if (i > 0 && i < p0.x.length - 1 && p0.y[i] === null && x === p0.x[i - 1] && x === p0.x[i + 1]) {
+          panels.forEach(p => svg.append(s("line", {x1: X(x), x2: X(x), y1: p.top, y2: p.top + p.height, stroke: axis,
+                                                   "stroke-width": 1, "stroke-dasharray": "1 3", class: "profile-corner"})));
+        }
+      });
+      // The "threshold" label sits by the threshold line where no segment of the drawn line
+      // crosses it: nearest the line first (above, then below), rightmost first. With no clear
+      // place it goes to the right end of the panel's title row, which the line never reaches.
       const LABEL_W = 54, LABEL_H = 12;
       function thresholdLabelAt(p, t) {
-        const yt = Y(p, t), pr = prof[p.role];
-        const pts = pr.x.map((x, i) => [X(x), Number.isFinite(pr.y[i]) ? Y(p, pr.y[i]) : null]).filter(q => q[1] !== null);
-        const xs = [W - m.r - LABEL_W, m.l + 2, (m.l + W - m.r - LABEL_W) / 2];
-        const ys = [yt - LABEL_H - 2, yt + 2].filter(y => y >= p.top - 2 && y + LABEL_H <= p.top + p.height + 2);
-        let best = null;
-        ys.forEach(y => xs.forEach(x => {
-          const n = pts.filter(([px, py]) => px >= x - 2 && px <= x + LABEL_W + 2 && py >= y - 2 && py <= y + LABEL_H + 2).length;
-          if (!best || n < best.n) best = {n, x, y};
-        }));
-        if (!best) best = {x: W - m.r - LABEL_W, y: yt - LABEL_H - 2};
-        return {x: best.x, y: best.y + LABEL_H - 2, fill: muted, class: "tick halo"};
+        const yt = Y(p, t), pr = prof[p.role], runs = [];
+        let run = [];
+        pr.x.forEach((x, i) => {
+          if (!Number.isFinite(pr.y[i]) || !Number.isFinite(x)) { if (run.length) runs.push(run); run = []; return; }
+          run.push([X(x), Y(p, pr.y[i])]);
+        });
+        if (run.length) runs.push(run);
+        const xs = [];   // right to left in small steps, so a clear gap anywhere along the line is found
+        for (let x = W - m.r - LABEL_W; x >= m.l + 2; x -= 6) xs.push(x);
+        const ys = [2, 10, 18].flatMap(d => [yt - LABEL_H - d, yt + d])
+          .filter(y => y >= p.top - 2 && y + LABEL_H <= p.top + p.height + 2);
+        const boxes = [];
+        ys.forEach(y => xs.forEach(x => boxes.push({x: x - 2, y: y - 2, w: LABEL_W + 4, h: LABEL_H + 4, lx: x, ly: y})));
+        const best = L.labelBoxAt(runs, boxes);
+        if (!best || best.crossings > 0) return {x: W - m.r, y: p.top - 5, "text-anchor": "end", fill: muted, class: "tick halo"};
+        return {x: best.box.lx, y: best.box.ly + LABEL_H - 2, fill: muted, class: "tick halo"};
       }
       panels.forEach(p => {
         // Panel name: a line key in the series colour, the text in a text colour.
