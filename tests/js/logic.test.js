@@ -315,3 +315,8 @@ test("profileScale ignores a missing threshold", () => {
   assert.equal(L.profileScale({x: [0, 5], y: [1, 2]}, {JM1: null}, "JM1").ymax < 10, true);
   assert.ok(L.profileScale({x: [0, 5], y: [1, null]}, {}, "JM1").ymax >= 1);
 });
+test("mergeRoles merges any two or more of JM1, JM2 and outline, never the nucleus", () => {
+  assert.deepEqual(L.mergeRoles(["segment", "JM1", "nucleus"]), ["JM1", "segment"]);
+  assert.deepEqual(L.mergeRoles(["JM1", "nucleus"]), []);
+  assert.deepEqual(L.mergeRoles(["nucleus", "segment", "JM2", "JM1"]), ["JM1", "JM2", "segment"]);
+});

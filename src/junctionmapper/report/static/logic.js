@@ -265,6 +265,14 @@
     return {xmax, ymax};
   }
 
+  // The channels the close-up's Merge tile composites: JM1, JM2 and outline (segment), in that
+  // order, when at least two of them exist; never the nucleus. [] means no Merge tile.
+  const MERGE_ROLES = ["JM1", "JM2", "segment"];
+  function mergeRoles(roles) {
+    const out = MERGE_ROLES.filter(r => roles.includes(r));
+    return out.length >= 2 ? out : [];
+  }
+
   // "P-cadherin (JM1)": marker first, role in brackets; the segment channel reads "outline".
   function channelLabel(role, marker) {
     const name = role === "segment" ? "outline" : role;
@@ -359,7 +367,7 @@
                colourFor, runColour, junctionKey, unitFor, wantsUm, metricValues, pickRole, unionMetrics,
                planeSize, junctionAlpha, fieldSlice, hitTest, cellAt,
                selectionFromRoute, sideValue, createLru, createLoader, pointTarget, runRows, filterRows,
-               cropWindow, percentileOf, profileScale, channelLabel, NAN_GREY};
+               cropWindow, percentileOf, profileScale, channelLabel, mergeRoles, NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

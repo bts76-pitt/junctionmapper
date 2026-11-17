@@ -950,9 +950,11 @@
     const single = role => ({label: L.channelLabel(role, markerOf(fd, role)), dots: [TINT[role] || TINT_OTHER],
                              parts: [{ci: ci(role), role, tint: grey}]});
     ["JM1", "JM2"].forEach(role => { if (ci(role) >= 0) specs.push(single(role)); });
-    if (ci("JM1") >= 0 && ci("JM2") >= 0) {
-      specs.push({label: "Merge", tip: "JM1 and JM2 in their channel colours, outline off", dots: [TINT.JM1, TINT.JM2],
-                  parts: ["JM1", "JM2"].map(role => ({ci: ci(role), role, tint: TINT[role]}))});
+    const merged = L.mergeRoles(fd.channels.map(c => c.role));
+    if (merged.length) {
+      specs.push({label: "Merge", tip: `Merge of ${merged.map(r => L.channelLabel(r, markerOf(fd, r))).join(", ")}, in the viewer's channel colours`,
+                  dots: merged.map(r => TINT[r] || TINT_OTHER),
+                  parts: merged.map(role => ({ci: ci(role), role, tint: TINT[role] || TINT_OTHER}))});
     }
     TILE_ROLES.forEach(role => { if (ci(role) >= 0) specs.push(single(role)); });
     fd.channels.forEach((c, i) => {
