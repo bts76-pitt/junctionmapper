@@ -202,3 +202,20 @@ test("loader.forget drops a cached file so the next load re-requests it", async 
   await ld.load("a.js");
   assert.equal(n, 2);
 });
+
+// Comparison view
+const IDX = {fields: ["f1", "f2"], jField: [0, 1], jLo: [3, 7], jHi: [5, 9], cField: [1, 0], cId: [4, 2]};
+test("pointTarget opens the junction's field with the junction selected", () => {
+  assert.deepEqual(L.pointTarget(IDX, 1, "junction"), {field: "f2", sel: "j=7-9"}); });
+test("pointTarget opens the cell's field with the cell selected", () => {
+  assert.deepEqual(L.pointTarget(IDX, 0, "cell"), {field: "f2", sel: "c=4"}); });
+test("runRows gives one row per run in order", () => {
+  const runs = [
+    {run: "r1", label: "A", tiles: {fields: 2, cells: 40, junctions: 90, flagged_cells: 4}},
+    {run: "r2", label: "B", tiles: {fields: 1, cells: 0, junctions: 0, flagged_cells: 0}},
+  ];
+  assert.deepEqual(L.runRows(runs), [
+    {run: "r1", label: "A", fields: 2, cells: 40, junctions: 90, flagged: 4},
+    {run: "r2", label: "B", fields: 1, cells: 0, junctions: 0, flagged: 0},
+  ]);
+});

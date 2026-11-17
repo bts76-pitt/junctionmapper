@@ -273,7 +273,7 @@
   function renderCrumbs(r) {
     const nav = document.getElementById("crumbs");
     nav.replaceChildren();
-    const label = JM.runs.length === 1 ? JM.runs[0].label : `${JM.runs.length} runs`;
+    const label = JM.runs.length === 1 ? JM.runs[0].label : `Comparison · ${JM.runs.length} runs`;
     if (r.view === "overview") {
       nav.append(h("span", {class: "here"}, label));
     } else {
@@ -381,14 +381,15 @@
     return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   }
 
-  function plotLayout(title, multi) {
+  function plotLayout(title) {
     const ink2 = cssVar("--ink-2"), muted = cssVar("--muted"), grid = cssVar("--grid"), axis = cssVar("--axis");
     return {
       paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
       font: {family: cssVar("--font"), size: 12, color: ink2},
       margin: {l: 64, r: 16, t: 8, b: 56},
-      showlegend: multi, legend: {orientation: "h", x: 0, y: 1.08, font: {color: ink2}},
-      violinmode: "group", violingap: 0.3,
+      // Each run is its own x category, so the run names sit under the violins: no legend.
+      showlegend: false,
+      violinmode: "overlay", violingap: 0.3,
       xaxis: {type: "category", showgrid: false, linecolor: axis, tickfont: {color: ink2}, fixedrange: true},
       yaxis: {title: {text: title, font: {color: muted, size: 12}}, gridcolor: grid, zeroline: false,
               linecolor: axis, tickfont: {color: muted}},
@@ -451,25 +452,45 @@
         if (!series.length) { Plotly.purge(plot); plot.hidden = true; return; }
         if (state.table) return;
         const title = `${m.label}${unit ? ` (${unit})` : ""}`;
-        Plotly.react(plot, plotTraces(series, unit), plotLayout(title, series.length > 1), PLOT_CONFIG);
+        Plotly.react(plot, plotTraces(series, unit), plotLayout(title), PLOT_CONFIG);
         plot.removeAllListeners("plotly_click");
         plot.on("plotly_click", ev => {
           const pt = ev.points && ev.points[0];
           if (!pt || pt.customdata === undefined) return;
-          const s = series[pt.curveNumber], i = pt.customdata;
-          const sel = state.dot === "cell"
-            ? `c=${s.index.cId[i]}`
-            : `j=${L.junctionKey(s.index.jLo[i], s.index.jHi[i])}`;
-          const field = state.dot === "cell" ? s.index.fields[s.index.cField[i]] : s.index.fields[s.index.jField[i]];
-          location.hash = JM.fieldHref(s.run.run, field, sel);
+          const s = series[pt.curveNumber];
+          const t = L.pointTarget(s.index, pt.customdata, state.dot);
+          location.hash = JM.fieldHref(s.run.run, t.field, t.sel);
         });
       });
     return card;
   }
 
+  /*** COMPARISON ***/
+
+  // Several runs side by side: one row per run (click to show only that run), then one violin per run.
+  function renderRunTable(runs) {
+    const head = [["Run"], ["Fields"], ["Cells", "Cells with at least one measured interface"],
+                  ["Junctions", "Distinct cell–cell junctions (tricellular corners)"],
+                  ["Flagged cells", "Measured cells with at least one QC flag (TCJ/DP corner disagreement not counted)"]];
+    return h("section", {class: "card run-card"},
+      h("table", {class: "data-table run-table"},
+        h("thead", null, h("tr", null, head.map(([c, tip]) => h("th", {scope: "col"},
+          tip ? h("span", {tip, tabindex: "0"}, c) : c)))),
+        h("tbody", null, L.runRows(runs).map(row => h("tr", null,
+          h("td", null, h("button", {type: "button", class: "run-link", tip: "Show only this run",
+                                     onclick: () => set({run: row.run})},
+            h("span", {class: "swatch", style: `background:${L.runColour(runIndex(row.run), theme())}`}), row.label)),
+          h("td", null, L.fmtCount(row.fields)),
+          h("td", null, L.fmtCount(row.cells)),
+          h("td", null, L.fmtCount(row.junctions)),
+          h("td", null, L.fmtShare(row.flagged, row.cells)))))));
+  }
+
   JM.views.overview = function (root) {
     const runs = selectedRuns();
-    root.append(renderTiles(runs), renderDistribution(runs), renderFieldGrid(runs));
+    const compare = JM.runs.length > 1 && state.run === "all";
+    root.append(compare ? renderRunTable(runs) : renderTiles(runs), renderDistribution(runs),
+                renderFieldGrid(runs));
     fillThumbs(root);
   };
 
@@ -924,7 +945,7 @@
       hovertemplate: `<b>%{y:.4~g}${unit ? " " + unit : ""}</b><br>%{text}<extra></extra>`,
       showlegend: false,
     };
-    const layout = plotLayout(`${m.label}${unit ? ` (${unit})` : ""}`, false);
+    const layout = plotLayout(`${m.label}${unit ? ` (${unit})` : ""}`);
     layout.margin = {l: 56, r: 8, t: 8, b: 16};
     layout.xaxis = {type: "linear", range: [-0.55, 0.55], visible: false, fixedrange: true};
     layout.dragmode = "lasso";

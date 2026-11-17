@@ -100,6 +100,23 @@
     return calibrated && useUm && metric.unit_um ? metric.unit_um : metric.unit_px;
   }
 
+  /*** COMPARISON ***/
+
+  // Where a distribution point leads: its field, and the junction (j=) or cell (c=) to select.
+  function pointTarget(index, i, dot) {
+    return dot === "cell"
+      ? {field: index.fields[index.cField[i]], sel: `c=${index.cId[i]}`}
+      : {field: index.fields[index.jField[i]], sel: `j=${junctionKey(index.jLo[i], index.jHi[i])}`};
+  }
+
+  // One row per run for the comparison table, in run order; flagged counts measured cells only.
+  function runRows(runs) {
+    return runs.map(r => ({
+      run: r.run, label: r.label, fields: r.tiles.fields, cells: r.tiles.cells,
+      junctions: r.tiles.junctions, flagged: r.tiles.flagged_cells,
+    }));
+  }
+
   /*** FIELD GEOMETRY ***/
 
   // Positions in the metric index arrays that belong to one field (fieldPos = its place in fields).
@@ -244,7 +261,7 @@
 
   const api = {decodeF32, decodeU32, finite, quantileRange, summaryStats, fmtCount, fmtShare, fmtValue,
                colourFor, runColour, junctionKey, unitFor, fieldSlice, hitTest, cellAt,
-               selectionFromRoute, sideValue, createLru, createLoader, NAN_GREY};
+               selectionFromRoute, sideValue, createLru, createLoader, pointTarget, runRows, NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

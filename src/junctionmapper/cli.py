@@ -1,4 +1,4 @@
-"""Command line interface: ``junctionmapper run`` and ``junctionmapper segment``.
+"""Command line interface: ``junctionmapper run``, ``segment``, ``snap`` and ``report``.
 
 Error policy
 ------------
@@ -32,9 +32,12 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
 import json
 import logging
 import os
+import re
+import shutil
 from datetime import datetime, timezone
 from collections.abc import Callable, Iterator
 from importlib import metadata
@@ -42,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import tifffile
 import typer
 import yaml
@@ -56,7 +60,10 @@ from junctionmapper.pipeline import (
     CALIBRATION_FIELDS, FieldResult, RunThresholds, measure_field, propose_run_thresholds,
     resolve_thresholds,
 )
-from junctionmapper.report.build import build_report
+from junctionmapper.report.assets import write_field_asset
+from junctionmapper.report.build import _has_pixel_size
+from junctionmapper.report.dashboard import SOURCE_RUN, build_dashboard
+from junctionmapper.report.data import write_metric_files, write_run_json, write_thumbs
 from junctionmapper.segment.cellpose import Segmentation, SegmentationParams, segment_field
 from junctionmapper.segment.snap import ERODE_PX, SIGMA_PX, SMOOTH_PX, snap_params, snap_to_membrane
 from junctionmapper.tables import write_tables
@@ -558,6 +565,73 @@ def _merge_params(all_params: list[dict], sidecar_dir: Path) -> dict:
     return same
 
 
+# ---- the interactive report -----------------------------------------------------------
+
+def _assets_dir(out: Path) -> Path:
+    """A run's report asset tree, ``OUT/report/runs/r1``."""
+    return out / "report" / "runs" / SOURCE_RUN
+
+
+def _staging_dir(out: Path) -> Path:
+    """Where a run writes its field assets until it succeeds; a failed run keeps the old report."""
+    return out / "report" / "runs" / f"{SOURCE_RUN}.partial"
+
+
+def _remove_tree(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+
+
+def _write_report(out: Path, cfg: RunConfig, prov: dict, fields: list[str]) -> Path:
+    """``run.json``, the metric files and thumbnails, and ``OUT/report/index.html``.
+
+    The field assets are already in the staging folder; they replace the previous run's tree.
+    """
+    assets = _assets_dir(out)
+    _remove_tree(assets)
+    _staging_dir(out).rename(assets)
+    write_run_json(out, cfg, prov, fields)
+    cells = pd.read_parquet(out / "cells.parquet")
+    interfaces = pd.read_parquet(out / "interfaces.parquet")
+    write_metric_files(interfaces, SOURCE_RUN, assets / "metrics", _has_pixel_size(cells, cfg))
+    write_thumbs(out)
+    return build_dashboard([(out, out.resolve().name)], out / "report")
+
+
+_SHA = re.compile(r'"labels_sha256":"([0-9a-f]{64})"')
+
+
+def _run_labels_dir(run_dir: Path, doc: dict) -> Path:
+    """Where a run's labels were read from (``--labels``) or written to (``OUT/labels``)."""
+    used = doc.get("provenance", {}).get("params_used")
+    if isinstance(used, dict) and used.get("labels_dir"):
+        return Path(used["labels_dir"])
+    return run_dir / "labels"
+
+
+def _stale_fields(run_dir: Path) -> list[str]:
+    """Fields whose label file, where still present, no longer matches the geometry in the report.
+
+    Reads only: the labels directory may be hand-corrected work and is never written.
+    """
+    doc = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    labels_dir = _run_labels_dir(run_dir, doc)
+    stale = []
+    for fid in doc.get("fields", []):
+        label_file = _label_file(labels_dir, fid, Role.JM1)
+        asset = _assets_dir(run_dir) / "fields" / f"{fid}.js"
+        if not label_file.is_file() or not asset.is_file():
+            continue
+        found = _SHA.search(asset.read_text(encoding="utf-8"))
+        try:
+            arr = np.load(label_file, allow_pickle=False)
+        except (OSError, ValueError, EOFError):
+            continue
+        if found and hashlib.sha256(arr.tobytes()).hexdigest() != found.group(1):
+            stale.append(fid)
+    return stale
+
+
 # ---- commands -------------------------------------------------------------------------
 
 @app.command()
@@ -674,7 +748,7 @@ def run(
     overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
                                           "files in OUT/labels (default: refuse)."),
 ) -> None:
-    """Segment (or load labels), measure, write the five tables and report.html to OUT.
+    """Segment (or load labels), measure, write the five tables and report/index.html to OUT.
 
     \b
     Exit codes: 0 every field succeeded; 1 command failed, or every field failed
@@ -695,6 +769,10 @@ def run(
     _ensure_out_dir(out)
     if labels is None and not overwrite_labels:
         _refuse_label_overwrite(out / "labels", files, cfg)
+    if labels is not None and (out / "report").resolve() in (labels, *labels.parents):
+        raise ConfigError(f"--labels {labels} is inside {out / 'report'}, which this run replaces")
+    staging = _staging_dir(out)
+    _remove_tree(staging)
     params = _seg_params(model, diameter, flow_threshold, cellprob_threshold, gpu,
                          with_nucleus)
 
@@ -710,11 +788,14 @@ def run(
             _save_labels(out / "labels", field, seg, cfg, raw)
         result = measure_field(field, seg, cfg, run_thresholds=run_t)
         thresholds = {r.value: t for r, t in resolve_thresholds(field, cfg, run_t).items()}
+        # The planes and labels exist only here; the report's previews and geometry come from them.
+        write_field_asset(field, seg, result, SOURCE_RUN, staging / "fields")
         return result, seg.params_used, thresholds
 
     ok, failures = _process(files, cfg, work)
     _report_outcome(len(ok), failures)
     if not ok:
+        _remove_tree(staging)
         typer.echo("every field failed: no tables or report were written" if failures
                    else f"no fields found in {input}", err=True)
         raise typer.Exit(EXIT_FAILED)
@@ -748,9 +829,45 @@ def run(
         prov["fields_failed"] = str(len(failures))
         prov["fields_failed_detail"] = "; ".join(f"{who}: {why}" for who, why in failures)
     write_tables(results, out)
-    build_report(results, cfg, prov, out / "report.html")
-    typer.echo(f"wrote tables and report.html to {out}")
+    _write_report(out, cfg, prov, [f.field_id for f, _ in ok])
+    typer.echo(f"wrote tables and report/index.html to {out}")
     _finish(len(ok), failures)
+
+
+@app.command()
+@_guard
+def report(
+    runs: list[Path] = typer.Argument(..., metavar="RUN_DIR...", help="Output directories of `run`."),
+    out: Path = OutOpt,
+    label: list[str] = typer.Option(None, "--label", help="Name of each run on the page, in "
+                                    "RUN_DIR order (default: the directory names)."),
+) -> None:
+    """Combine run outputs into one interactive report at OUT/index.html, without re-measuring.
+
+    OUT is self-contained: each run's report files are copied into it.
+    """
+    names = list(label) if label else [r.resolve().name for r in runs]
+    if len(names) != len(runs):
+        raise ConfigError(f"{len(names)} --label value(s) for {len(runs)} run(s); "
+                          f"give one --label per RUN_DIR, or none")
+    if len(set(names)) != len(names):
+        raise ConfigError(f"two runs share the label {next(n for n in names if names.count(n) > 1)!r}; "
+                          f"name each run with --label")
+    for r in runs:
+        if not (r / "run.json").is_file():
+            raise ConfigError(f"{r}: no run.json; it was made before the interactive report; "
+                              f"re-run with `run --labels` (CPU only, no re-segmentation)")
+    for r in runs:
+        stale = _stale_fields(r)
+        if stale:
+            shown = ", ".join(stale[:_MAX_IDS_SHOWN])
+            more = f" (+{len(stale) - _MAX_IDS_SHOWN} more)" if len(stale) > _MAX_IDS_SHOWN else ""
+            typer.echo(f"WARNING: {r}: labels changed since the run for {len(stale)} field(s): "
+                       f"{shown}{more}. The report shows the geometry and values of the run; "
+                       f"re-run with `run --labels` to update them.", err=True)
+    _ensure_out_dir(out)
+    path = build_dashboard(list(zip(runs, names)), out)
+    typer.echo(f"wrote {path}")
 
 
 if __name__ == "__main__":  # pragma: no cover
