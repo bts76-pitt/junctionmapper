@@ -55,11 +55,13 @@ tests/test_report_dashboard.py  tests/js/logic.test.js
 ## Shared data formats (every task reads these)
 
 All coordinates are **preview pixels**, `[x, y]`, rounded to 0.5. `scale` = preview px per raw px.
+Raw pixel `(row, col)` maps to `[(col + 0.5) * scale, (row + 0.5) * scale]` (its centre).
 
 **Field asset** — `report/runs/<run>/fields/<field_id>.js`:
 ```js
 JM.registerField({
-  run: "<run>", field_id: "<id>", width: W, height: H, scale: s,
+  run: "<run>", field_id: "<id>", width: W, height: H, scale: s,   // W, H: PREVIEW size (planes are drawn at it)
+  raw_width: RW, raw_height: RH,                            // the label image's size; W = round(RW * s)
   labels_sha256: "<hex of seg.cells.tobytes()>",            // detects stale geometry
   channels: [{role: "segment"|"JM1"|"JM2"|"nucleus", marker: "<name>", src: "data:image/jpeg;base64,..."}],
   cells: {"<cell_id>": [[x,y], ...]},                       // outer contour, closed
@@ -87,7 +89,10 @@ JM.registerMetric({run, method, role, key,
 Junction value = mean over that `pair_id`'s cell-side rows. Cell value = median over that cell's rows. Order matches the index. NaN stays NaN.
 
 **Run summary** — inlined in `index.html` as `JM.registerRun({...})` per run:
-`{run, label, roles: [{role, marker}], methods: ["tcj","dp"], calibrated: bool, metrics: [{key, label, unit_px, unit_um, td, help}], fields: [{field_id, n_cells, n_junctions, qc: {...}, thumb: "<data URI>"}], tiles: {cells, junctions, fields, flagged_cells}, provenance: {...}}`.
+`{run, label, roles: [{role, marker}], methods: ["tcj","dp"], calibrated: bool, metrics: [{key, label, unit_px, unit_um, td, help}], fields: [{field_id, n_cells, n_junctions, qc: {...}, assets: bool}], tiles: {cells, junctions, fields, flagged_cells}, warnings: [{kind, text, detail}], provenance_rows: [{group, key, value}]}`.
+Thumbnails are in `runs/<run>/thumbs.js`; raw provenance stays in `run.json` and is never inlined.
+Units: lengths `px`/`µm`, areas `px²`/`µm²`, per-area densities `per px²`/`per µm²`; unit-less metrics `""`.
+`assets: false` marks a field whose asset could not be written (warning kind `assets_missing`).
 
 `metrics` comes from `PARAMETERS` (key, label, px, um, td). `help` is a one-line definition per metric, added to `PARAMETERS` in Task 3.
 
