@@ -235,7 +235,7 @@ def test_run_summary_carries_warnings_and_provenance_rows(setup_tables):
     s = run_summary(setup_tables.dir, "r1", "x")
     assert s["warnings"] == []
     assert {"group": "Markers", "key": "JM1", "value": "Na/K-ATPase (channel 0)"} in s["provenance_rows"]
-    assert any(r["key"] == "JM1 · f1" for r in s["provenance_rows"])
+    assert any(r["key"] == "JM1 in f1" for r in s["provenance_rows"])
 
 
 def test_run_summary_warns_about_failed_fields_and_unattributed_labels(setup_tables):

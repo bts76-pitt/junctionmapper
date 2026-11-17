@@ -229,7 +229,7 @@ def test_provenance_lists_markers_model_versions_and_parameters(results, cfg):
     for k in ("epsilon (px)", "tcj_min_run", "neighbour_radius_px", "dilation_cycles", "pixel size (µm/px)"):
         assert ("Parameters", k) in kv, k
     assert kv[("Parameters", "pixel size (µm/px)")] == "0.5"
-    assert kv[("Thresholds", "JM1 · f1")].startswith("50") and kv[("Thresholds", "JM2 · f1")].startswith("20")
+    assert kv[("Thresholds", "JM1 in f1")].startswith("50") and kv[("Thresholds", "JM2 in f1")].startswith("20")
     assert kv[("Thresholds", "JM1 applied")] == "50"
     assert all(set(r) == {"group", "key", "value"} and isinstance(r["value"], str) for r in rows)
 

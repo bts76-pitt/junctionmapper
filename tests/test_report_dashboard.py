@@ -115,3 +115,8 @@ def test_rebuilding_into_the_same_folder_leaves_no_stale_files(tmp_path, built_r
     build_dashboard([(other, "B")], out)
     assert not (out / "runs/r1/metrics/tcj/JM2").exists()
     assert (out / "runs/r1/metrics/tcj/JM1").is_dir()
+
+
+def test_dashboard_text_has_no_middle_dot(tmp_path, built_run):
+    html = build_dashboard([(built_run, "A")], tmp_path / "rep").read_text()
+    assert "\u00b7" not in html.replace(_plotly(), "")

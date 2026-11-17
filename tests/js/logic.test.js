@@ -227,7 +227,7 @@ test("runRows gives one row per run in order", () => {
 
 test("filterRows matches every term in group, key or value, any case", () => {
   const rows = [{group: "Model", key: "model", value: "cpsam"},
-                {group: "Thresholds", key: "JM1 · f1", value: "50 (own Otsu 48)"},
+                {group: "Thresholds", key: "JM1 in f1", value: "50 (own Otsu 48)"},
                 {group: "Versions", key: "junctionmapper", value: "0.1.0"}];
   assert.deepEqual(L.filterRows(rows, ""), rows);
   assert.deepEqual(L.filterRows(rows, "CPSAM"), [rows[0]]);
@@ -284,4 +284,34 @@ test("junctionAlpha dims only for a brush, never for a click selection", () => {
   const dimmed = L.junctionAlpha({brush: ["1-2"]}, lit, "3-4");
   assert.ok(dimmed >= 0.5 && dimmed < 1);
   assert.equal(L.junctionAlpha({brush: null}, null, "3-4"), 1);
+});
+
+test("cropWindow pads, enforces a minimum and clamps to the image", () => {
+  assert.deepEqual(L.cropWindow({"2-4": [[[10, 10], [20, 10]]]}, 100, 100), {x: 0, y: 0, w: 48, h: 48});
+  const w = L.cropWindow({"2-4": [[[500, 500], [600, 520]]]}, 1000, 1000);
+  assert.ok(w.w >= 140 && w.x + w.w <= 1000 && w.y >= 0);
+  assert.equal(w.w, w.h);
+});
+test("cropWindow accepts a bare list of polylines and never exceeds a small image", () => {
+  const w = L.cropWindow([[[1, 1], [3, 3]]], 30, 20);
+  assert.ok(w.x >= 0 && w.y >= 0 && w.x + w.w <= 30 && w.y + w.h <= 20);
+});
+test("percentileOf ignores NaN and is null for NaN input", () => {
+  assert.equal(L.percentileOf([1, 2, NaN, 3, 4], 3), 75);
+  assert.equal(L.percentileOf([1, 2], NaN), null);
+  assert.equal(L.percentileOf([NaN], 1), null);
+});
+test("profileScale includes the threshold", () => {
+  assert.equal(L.profileScale({x: [0, 5], y: [1, 2]}, {JM1: 10}, "JM1").ymax >= 10, true);
+  assert.equal(L.profileScale({x: [0, 5], y: [1, 2]}, {JM1: 10}, "JM1").xmax, 5);
+});
+test("channelLabel puts the marker first and renames segment", () => {
+  assert.equal(L.channelLabel("JM1", "P-cadherin"), "P-cadherin (JM1)");
+  assert.equal(L.channelLabel("segment", "beta-catenin"), "beta-catenin (outline)");
+  assert.equal(L.channelLabel("segment", ""), "outline");
+  assert.equal(L.channelLabel("JM1"), "JM1");
+});
+test("profileScale ignores a missing threshold", () => {
+  assert.equal(L.profileScale({x: [0, 5], y: [1, 2]}, {JM1: null}, "JM1").ymax < 10, true);
+  assert.ok(L.profileScale({x: [0, 5], y: [1, null]}, {}, "JM1").ymax >= 1);
 });

@@ -230,6 +230,47 @@
     return x === null || x === undefined ? NaN : x;
   }
 
+  /*** DETAIL FIGURES ***/
+
+  // Square crop around every point of polylines ({key: [[[x, y], ...], ...]} or [[[x, y], ...], ...]):
+  // the bbox padded by margin x its longer side, at least min, clamped inside width x height.
+  function cropWindow(polylines, width, height, margin = 0.4, min = 48) {
+    const lines = Array.isArray(polylines) ? polylines : Object.values(polylines).flat();
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    lines.forEach(line => line.forEach(([x, y]) => {
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }));
+    if (!Number.isFinite(x0)) { x0 = x1 = width / 2; y0 = y1 = height / 2; }
+    const span = Math.max(x1 - x0, y1 - y0);
+    const side = Math.max(1, Math.min(Math.round(Math.max(min, span * (1 + 2 * margin))), width, height));
+    const clamp = (c, lim) => Math.max(0, Math.min(lim - side, Math.round(c - side / 2)));
+    return {x: clamp((x0 + x1) / 2, width), y: clamp((y0 + y1) / 2, height), w: side, h: side};
+  }
+
+  // Share of the finite values <= v, in whole percent; null when v or every value is not finite.
+  function percentileOf(values, v) {
+    if (!Number.isFinite(v)) return null;
+    let n = 0, below = 0;
+    for (const x of values) if (Number.isFinite(x)) { n++; if (x <= v) below++; }
+    return n ? Math.round((100 * below) / n) : null;
+  }
+
+  // Axis extent of one role's profile: x to its last finite point, y to its peak or threshold.
+  function profileScale(profile, thresholds, role) {
+    let xmax = 0, ymax = 0;
+    (profile.x || []).forEach(x => { if (Number.isFinite(x)) xmax = Math.max(xmax, x); });
+    (profile.y || []).forEach(y => { if (Number.isFinite(y)) ymax = Math.max(ymax, y); });
+    const t = thresholds ? thresholds[role] : null;
+    if (Number.isFinite(t)) ymax = Math.max(ymax, t);
+    return {xmax, ymax};
+  }
+
+  // "P-cadherin (JM1)": marker first, role in brackets; the segment channel reads "outline".
+  function channelLabel(role, marker) {
+    const name = role === "segment" ? "outline" : role;
+    return marker ? `${marker} (${name})` : name;
+  }
+
   /*** PROVENANCE ***/
 
   // Rows whose group, key or value contain every whitespace-separated term (any case).
@@ -318,7 +359,7 @@
                colourFor, runColour, junctionKey, unitFor, wantsUm, metricValues, pickRole, unionMetrics,
                planeSize, junctionAlpha, fieldSlice, hitTest, cellAt,
                selectionFromRoute, sideValue, createLru, createLoader, pointTarget, runRows, filterRows,
-               NAN_GREY};
+               cropWindow, percentileOf, profileScale, channelLabel, NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

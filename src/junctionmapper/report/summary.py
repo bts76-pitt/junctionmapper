@@ -307,7 +307,7 @@ def provenance_rows(cfg: RunConfig, prov: dict, cells: pd.DataFrame,
             add("Thresholds", f"{role} own-Otsu deviates", _ids(t["deviating"]))
         for f, vals in sorted(t["by_field"].items()):
             own = ", ".join(fmt(x) for x in t["field_otsu"].get(f, ()))
-            add("Thresholds", f"{role} · {f}", ", ".join(fmt(x) for x in vals) + (f" (own Otsu {own})" if own else ""))
+            add("Thresholds", f"{role} in {f}", ", ".join(fmt(x) for x in vals) + (f" (own Otsu {own})" if own else ""))
 
     add("Versions", "junctionmapper", prov.get("junctionmapper_version"))
     add("Versions", "libraries", prov.get("library_versions"))

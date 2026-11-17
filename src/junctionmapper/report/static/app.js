@@ -125,6 +125,11 @@
       .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
       .map(role => ({role, markers: [...seen.get(role)]}));
   }
+  // "P-cadherin (JM1)" from the markers the runs in view give this role.
+  function roleLabel(role, runs) {
+    const r = roles(runs).find(x => x.role === role);
+    return L.channelLabel(role, r ? r.markers.join(" / ") : "");
+  }
   const methods = runs => [...new Set(runs.flatMap(r => r.methods))].sort(
     (a, b) => (a === "tcj" ? -1 : b === "tcj" ? 1 : a.localeCompare(b)));
 
@@ -262,7 +267,7 @@
         state.run, v => set({run: v}), "Runs shown below")));
     }
     box.append(control("Marker", "Measured junction channel", select(
-      roles(runs).map(x => ({value: x.role, label: `${x.role} · ${x.markers.join(" / ")}`})),
+      roles(runs).map(x => ({value: x.role, label: L.channelLabel(x.role, x.markers.join(" / "))})),
       state.role, v => set({role: v}))));
     const m = metricInfo(state.metric);
     box.append(control("Metric", m.help + (m.td ? " Depends on the marker threshold." : ""), select(
@@ -288,7 +293,7 @@
   function renderCrumbs(r) {
     const nav = document.getElementById("crumbs");
     nav.replaceChildren();
-    const label = JM.runs.length === 1 ? JM.runs[0].label : `Comparison · ${JM.runs.length} runs`;
+    const label = JM.runs.length === 1 ? JM.runs[0].label : `Comparison of ${JM.runs.length} runs`;
     if (r.view === "overview") {
       nav.append(h("span", {class: "here"}, label));
     } else if (r.view === "provenance") {
@@ -296,7 +301,7 @@
     } else {
       const run = runById(r.run);
       nav.append(h("a", {href: "#/"}, label), h("span", {class: "sep"}, "/"),
-                 h("span", {class: "here"}, `${run && JM.runs.length > 1 ? run.label + " · " : ""}${r.field}`));
+                 h("span", {class: "here"}, `${run && JM.runs.length > 1 ? run.label + " / " : ""}${r.field}`));
     }
   }
 
@@ -330,7 +335,7 @@
     const n = qc.flagged_cells || 0;
     if (!n) return h("span", {class: "badge good", tip: "No QC flags"}, icon("good"), "Clean");
     const detail = Object.entries(qc).filter(([k, v]) => k !== "flagged_cells" && v > 0)
-      .map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(" · ");
+      .map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(", ");
     return h("span", {class: "badge warning", tip: detail || `${n} flagged cells`}, icon("warning"), L.fmtShare(n, cells).replace(/^(\S+)/, "$1 flagged"));
   }
 
@@ -340,7 +345,7 @@
       h("div", {class: "thumb", "data-run": run.run, "data-field": f.field_id}),
       h("div", {class: "field-meta"},
         h("span", {class: "field-name", title: f.field_id}, f.field_id),
-        h("span", {class: "field-row"}, `${L.fmtCount(f.n_cells)} cells · ${L.fmtCount(f.n_junctions)} junctions`),
+        h("span", {class: "field-row"}, `${L.fmtCount(f.n_cells)} cells, ${L.fmtCount(f.n_junctions)} junctions`),
         qcBadge(f.qc, f.n_cells)));
   }
 
@@ -370,8 +375,8 @@
     const picked = L.metricValues(metric, cell ? "cell" : "junction", m, calibrated, state.useUm);
     const {values, index: pos} = L.finite(picked.values);
     const text = pos.map(i => (cell
-      ? `${index.fields[index.cField[i]]} · cell ${index.cId[i]}`
-      : `${index.fields[index.jField[i]]} · junction ${L.junctionKey(index.jLo[i], index.jHi[i])}`));
+      ? `Cell ${index.cId[i]} in ${index.fields[index.cField[i]]}`
+      : `Junction ${L.junctionKey(index.jLo[i], index.jHi[i])} in ${index.fields[index.jField[i]]}`));
     return {run, values, pos, text, index, unit: picked.unit};
   }
 
@@ -447,7 +452,7 @@
     const tableBox = h("div", {hidden: !state.table});
     plot.hidden = state.table;
     const dotWord = state.dot === "cell" ? "cell" : "junction";
-    const subText = () => `${state.role} · ${state.method} · one dot per ${dotWord}${unit ? " · " + unit : ""}`;
+    const subText = () => `${roleLabel(state.role, runs)}, ${state.method}, one dot per ${dotWord}${unit ? ", " + unit : ""}`;
     const sub = h("span", {class: "chart-sub"}, subText());
     const card = h("section", {class: "card chart-card"},
       h("div", {class: "chart-head"},
@@ -473,7 +478,7 @@
         const missing = runs.filter((r, i) => !all[i]).map(r => r.label);
         if (missing.length) {
           note.hidden = false;
-          note.textContent = `No ${state.role} ${state.method} values: ${missing.join(", ")}`;
+          note.textContent = `No ${roleLabel(state.role, runs)} ${state.method} values: ${missing.join(", ")}`;
         }
         tableBox.replaceChildren(statsTable(series, unit));
         if (!series.length) { Plotly.purge(plot); plot.hidden = true; return; }
@@ -856,14 +861,19 @@
     return fd.channels.map(c => {
       const l = layerFor(c.role), t = TINT[c.role] || TINT_OTHER;
       const sw = h("span", {class: "chip-dot", style: `background:rgb(${t.map(v => Math.round(v * 255)).join(",")})`});
-      const btn = toggle(c.role, l.on, () => {
+      const name = L.channelLabel(c.role, c.marker);
+      const btn = toggle(name, l.on, () => {
         l.on = !l.on;
         btn.setAttribute("aria-pressed", String(l.on));
         viewer.draw();
-      }, `${c.role} · ${c.marker}`, sw);
+      }, `Show or hide ${name}`, sw);
       const slider = h("input", {type: "range", class: "gain", min: "0.2", max: "4", step: "0.05", value: String(l.gain),
-                                 "aria-label": `${c.role} brightness`, tip: `${c.role} brightness`});
-      slider.addEventListener("input", () => { l.gain = Number(slider.value); viewer.draw(); });
+                                 "aria-label": `${name} brightness`, tip: `${name} brightness`});
+      slider.addEventListener("input", () => {
+        l.gain = Number(slider.value);
+        viewer.draw();
+        if (JM._redrawCloseup) JM._redrawCloseup();
+      });
       return h("div", {class: "layer"}, btn, slider);
     });
   }
@@ -904,8 +914,347 @@
 
   /*** FIELD VIEW: DETAIL PANEL ***/
 
+  // Profile line colours per channel role: the viewer tints, darkened for a light surface.
+  const ROLE_LINE = {
+    light: {JM1: "#1e9a3c", JM2: "#b23ab2", segment: "#898781"},
+    dark: {JM1: "#4cc764", JM2: "#d872d8", segment: "#898781"},
+  };
+  const PROFILE_ROLES = ["JM1", "JM2", "segment"];
+  const TILE_ROLES = ["segment", "nucleus"];   // after JM1, JM2 and the merge
+  let stripScope = "field";                     // position strips compare against "field" | "run"
+
+  const markerOf = (fd, role) => (fd.channels.find(c => c.role === role) || {}).marker;
+  const tintCss = t => `rgb(${t.map(v => Math.round(v * 255)).join(",")})`;
+  const withUnit = (v, unit) => `${L.fmtValue(v)}${unit && Number.isFinite(v) ? " " + unit : ""}`;
+
+  function ordinal(n) {
+    const s = n % 100 >= 11 && n % 100 <= 13 ? "th" : ({1: "st", 2: "nd", 3: "rd"}[n % 10] || "th");
+    return `${n}${s}`;
+  }
+
+  // About `count` round tick values covering [lo, hi].
+  function niceTicks(lo, hi, count) {
+    if (!(hi > lo)) return [lo];
+    const raw = (hi - lo) / count, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map(f => f * mag).find(s => s >= raw);
+    const out = [];
+    for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(Number(v.toPrecision(12)));
+    return out;
+  }
+
+  /* Close-up: one crop per channel at the junction's window, drawn from the decoded previews. */
+
+  function tileSpecs(fd) {
+    const ci = role => fd.channels.findIndex(c => c.role === role);
+    const grey = [1, 1, 1], specs = [];
+    const single = role => ({label: L.channelLabel(role, markerOf(fd, role)), dots: [TINT[role] || TINT_OTHER],
+                             parts: [{ci: ci(role), role, tint: grey}]});
+    ["JM1", "JM2"].forEach(role => { if (ci(role) >= 0) specs.push(single(role)); });
+    if (ci("JM1") >= 0 && ci("JM2") >= 0) {
+      specs.push({label: "Merge", tip: "JM1 and JM2 in their channel colours, outline off", dots: [TINT.JM1, TINT.JM2],
+                  parts: ["JM1", "JM2"].map(role => ({ci: ci(role), role, tint: TINT[role]}))});
+    }
+    TILE_ROLES.forEach(role => { if (ci(role) >= 0) specs.push(single(role)); });
+    fd.channels.forEach((c, i) => {
+      if (!["JM1", "JM2", ...TILE_ROLES].includes(c.role)) {
+        specs.push({label: L.channelLabel(c.role, c.marker), dots: [TINT_OTHER], parts: [{ci: i, role: c.role, tint: grey}]});
+      }
+    });
+    return specs;
+  }
+
+  // focus: the selected junction's polylines (band outlined, centre left clear) or a cell outline.
+  function drawTile(canvas, fd, win, spec, focus, others) {
+    const css = canvas.clientWidth || 140, dpr = window.devicePixelRatio || 1;
+    const size = Math.max(1, Math.round(css * dpr));
+    canvas.width = size; canvas.height = size;
+    const src = document.createElement("canvas");
+    src.width = win.w; src.height = win.h;
+    const sg = src.getContext("2d"), img = sg.createImageData(win.w, win.h), d = img.data;
+    const parts = spec.parts.map(p => ({plane: fd.planes[p.ci], tint: p.tint, gain: layerFor(p.role).gain}));
+    for (let y = 0; y < win.h; y++) {
+      for (let x = 0; x < win.w; x++) {
+        const i = (win.y + y) * fd.width + win.x + x, o = (y * win.w + x) * 4;
+        let r = 0, g = 0, b = 0;
+        for (const p of parts) { const v = p.plane[i] * p.gain; r += v * p.tint[0]; g += v * p.tint[1]; b += v * p.tint[2]; }
+        d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+      }
+    }
+    sg.putImageData(img, 0, 0);
+    const g = canvas.getContext("2d");
+    g.imageSmoothingEnabled = false;
+    g.drawImage(src, 0, 0, size, size);
+    // Overlay on its own layer so the band's centre can be cleared of every line, cell outlines too.
+    const k = size / win.w;
+    const ov = document.createElement("canvas");
+    ov.width = size; ov.height = size;
+    const o = ov.getContext("2d");
+    o.setTransform(k, 0, 0, k, -win.x * k, -win.y * k);
+    o.lineJoin = "round"; o.lineCap = "round";
+    o.lineWidth = dpr / k; o.strokeStyle = "rgba(255,255,255,0.4)";
+    others.forEach(p => o.stroke(p));
+    o.strokeStyle = cssVar("--accent");
+    if (focus.cell) {
+      o.lineWidth = (2 * dpr) / k; o.stroke(focus.path);
+    } else {
+      const gap = Math.max(8 * dpr, 5 * k);   // clear centre: screen px, or ~5 preview px when zoomed in
+      o.lineWidth = (gap + 3 * dpr) / k; o.stroke(focus.path);
+      o.globalCompositeOperation = "destination-out";
+      o.lineWidth = gap / k; o.stroke(focus.path);
+    }
+    g.drawImage(ov, 0, 0);
+  }
+
+  function closeupFigure(fd, sel, model) {
+    const lines = sel.junction ? (model.polylines[sel.junction] || []) : [fd.raw.cells[sel.cell] || []];
+    if (!lines.length || !lines[0].length) return null;
+    const win = L.cropWindow(lines, fd.width, fd.height);
+    const cells = sel.junction ? sel.junction.split("-") : [sel.cell];
+    const focus = sel.junction ? {path: fd.junctionPath[state.method][sel.junction]}
+                               : {cell: true, path: fd.cellPath[sel.cell]};
+    const others = sel.junction ? cells.map(id => fd.cellPath[id]).filter(Boolean) : [];
+    const tiles = tileSpecs(fd).map(spec => {
+      const canvas = h("canvas", {class: "tile-img", "aria-hidden": "true"});
+      return {spec, canvas, el: h("figure", {class: "tile-fig"}, canvas,
+        h("figcaption", {tip: spec.tip}, spec.dots.map(t => h("span", {class: "chip-dot", style: `background:${tintCss(t)}`})),
+          h("span", {class: "tile-cap"}, spec.label)))};
+    });
+    const el = h("section", {class: "detail-sec"},
+      h("h4", {class: "detail-sec-head"}, h("span", {tip: "The selected junction's band is outlined; both cells' outlines faint. Brightness follows the channel sliders."}, "Close-up")),
+      h("div", {class: "tiles-grid", role: "img",
+                "aria-label": `Close-up of ${sel.junction ? "junction " + jLabel(sel.junction) : "cell " + sel.cell} in each channel`},
+        tiles.map(t => t.el)));
+    return {el, draw() { tiles.forEach(t => drawTile(t.canvas, fd, win, t.spec, focus, others)); }};
+  }
+
+  /* Intensity along the junction: inline SVG, raw intensity units. */
+
+  // One panel per channel, stacked on a shared x axis, each with its own y axis: the channels'
+  // raw intensities differ by an order of magnitude, so a shared y would flatten one of them.
+  function profileFigure(fd, key) {
+    const prof = fd.raw.profiles && fd.raw.profiles[state.method] && fd.raw.profiles[state.method][key];
+    if (!prof) return null;
+    const roles = PROFILE_ROLES.filter(r => prof[r] && prof[r].x && prof[r].x.length);
+    if (!roles.length) return null;
+    const thresholds = fd.raw.thresholds || {};
+    const unit = fd.raw.profile_unit || "px";
+    const colours = ROLE_LINE[theme() === "dark" ? "dark" : "light"];
+    const label = r => L.channelLabel(r, markerOf(fd, r));
+    let xmax = 0;
+    const panels = roles.map(r => {
+      const sc = L.profileScale(prof[r], thresholds, r);
+      xmax = Math.max(xmax, sc.xmax);
+      // Round ticks from 0; the top tick sits on or above the peak, so the line stays in its panel.
+      const ticks = niceTicks(0, sc.ymax > 0 ? sc.ymax : 1, r === "segment" ? 2 : 3);
+      const step = ticks.length > 1 ? ticks[1] - ticks[0] : (sc.ymax || 1);
+      while (ticks[ticks.length - 1] < sc.ymax) ticks.push(Number((ticks[ticks.length - 1] + step).toPrecision(12)));
+      return {role: r, ticks, ymax: ticks[ticks.length - 1] || 1, height: r === "segment" ? 52 : 88};
+    });
+    const plot = h("div", {class: "profile-plot"});
+    const readout = h("div", {class: "viewer-readout profile-readout", hidden: true});
+    const wrap = h("div", {class: "profile-wrap"}, plot, readout);
+    const hasT = roles.some(r => Number.isFinite(thresholds[r]));
+    const el = h("section", {class: "detail-sec"},
+      h("div", {class: "detail-sec-head"},
+        h("h4", null, h("span", {tip: "Mean marker intensity across the band, corner to corner along the junction, in raw intensity units. Each channel has its own y axis."},
+          "Intensity along the junction")),
+        hasT ? h("span", {class: "legend-item detail-sec-sub", tip: "The applied marker threshold for this field"},
+          h("span", {class: "key-line dashed"}), "threshold") : null),
+      wrap);
+    const NS = "http://www.w3.org/2000/svg";
+    const s = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+    const text = (attrs, str) => { const t = s("text", attrs); t.textContent = str; return t; };
+
+    function draw() {
+      const W = Math.max(160, plot.clientWidth || 300), m = {l: 40, r: 8, t: 18, b: 22}, gap = 34;
+      let y0 = 0;
+      panels.forEach((p, i) => { p.top = y0 + m.t; y0 = p.top + p.height + (i < panels.length - 1 ? gap - m.t : 0); });
+      const H = y0 + m.b;
+      const X = x => m.l + (xmax > 0 ? (x / xmax) * (W - m.l - m.r) : 0);
+      const Y = (p, y) => p.top + (1 - y / p.ymax) * p.height;
+      const svg = s("svg", {width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: "profile-svg", role: "img",
+                            "aria-label": `Intensity along junction ${jLabel(key)}: ${roles.map(label).join(", ")}`});
+      const muted = cssVar("--muted"), ink2 = cssVar("--ink-2"), grid = cssVar("--grid"), axis = cssVar("--axis");
+      // The "threshold" label goes where the fewest profile points would sit under it: right, left
+      // or middle of the line, above it or below.
+      const LABEL_W = 54, LABEL_H = 12;
+      function thresholdLabelAt(p, t) {
+        const yt = Y(p, t), pr = prof[p.role];
+        const pts = pr.x.map((x, i) => [X(x), Number.isFinite(pr.y[i]) ? Y(p, pr.y[i]) : null]).filter(q => q[1] !== null);
+        const xs = [W - m.r - LABEL_W, m.l + 2, (m.l + W - m.r - LABEL_W) / 2];
+        const ys = [yt - LABEL_H - 2, yt + 2].filter(y => y >= p.top - 2 && y + LABEL_H <= p.top + p.height + 2);
+        let best = null;
+        ys.forEach(y => xs.forEach(x => {
+          const n = pts.filter(([px, py]) => px >= x - 2 && px <= x + LABEL_W + 2 && py >= y - 2 && py <= y + LABEL_H + 2).length;
+          if (!best || n < best.n) best = {n, x, y};
+        }));
+        if (!best) best = {x: W - m.r - LABEL_W, y: yt - LABEL_H - 2};
+        return {x: best.x, y: best.y + LABEL_H - 2, fill: muted, class: "tick halo"};
+      }
+      panels.forEach(p => {
+        // Panel name: a line key in the series colour, the text in a text colour.
+        svg.append(s("line", {x1: m.l, x2: m.l + 14, y1: p.top - 9, y2: p.top - 9, stroke: colours[p.role],
+                              "stroke-width": p.role === "segment" ? 1 : 2}));
+        svg.append(text({x: m.l + 20, y: p.top - 5, fill: ink2, class: "panel-label"}, label(p.role)));
+        p.ticks.forEach(t => {
+          svg.append(s("line", {x1: m.l, x2: W - m.r, y1: Y(p, t), y2: Y(p, t), stroke: t ? grid : axis, "stroke-width": 1}));
+          svg.append(text({x: m.l - 6, y: Y(p, t) + 4, "text-anchor": "end", fill: muted, class: "tick"}, L.fmtValue(t)));
+        });
+        const t = thresholds[p.role];
+        if (Number.isFinite(t)) {
+          svg.append(s("line", {x1: m.l, x2: W - m.r, y1: Y(p, t), y2: Y(p, t), stroke: colours[p.role], "stroke-width": 1,
+                                "stroke-dasharray": "4 3"}));
+          svg.append(text(thresholdLabelAt(p, t), "threshold"));
+        }
+        const pr = prof[p.role];
+        let dpath = "", pen = false;
+        pr.x.forEach((x, i) => {
+          const y = pr.y[i];
+          if (!Number.isFinite(y) || !Number.isFinite(x)) { pen = false; return; }   // null breaks the line
+          dpath += `${pen ? "L" : "M"}${X(x).toFixed(1)},${Y(p, y).toFixed(1)}`;
+          pen = true;
+        });
+        svg.append(s("path", {d: dpath, fill: "none", stroke: colours[p.role], "stroke-width": p.role === "segment" ? 1.25 : 2,
+                              "stroke-linejoin": "round", "stroke-linecap": "round"}));
+      });
+      const last = panels[panels.length - 1], base = last.top + last.height;
+      const xt = niceTicks(0, xmax, 4);
+      xt.forEach((t, i) => svg.append(text({x: X(t), y: base + 15, "text-anchor": i === 0 ? "start" : "middle", fill: muted, class: "tick"},
+        i === xt.length - 1 ? `${L.fmtValue(t)} ${unit}` : L.fmtValue(t))));
+      const cross = s("line", {y1: panels[0].top, y2: base, stroke: muted, "stroke-width": 1, visibility: "hidden"});
+      const dots = panels.map(p => s("circle", {r: 4, fill: colours[p.role], stroke: cssVar("--surface"), "stroke-width": 2, visibility: "hidden"}));
+      svg.append(cross, ...dots);
+      const hit = s("rect", {x: m.l, y: 0, width: Math.max(1, W - m.l - m.r), height: H, fill: "transparent"});
+      svg.append(hit);
+      const nearest = (xs, x) => {
+        let best = 0, bd = Infinity;
+        xs.forEach((v, i) => { const dd = Math.abs(v - x); if (dd < bd) { bd = dd; best = i; } });
+        return best;
+      };
+      hit.addEventListener("pointermove", e => {
+        const r = svg.getBoundingClientRect();
+        const x = Math.max(0, Math.min(xmax, ((e.clientX - r.left - m.l) / (W - m.l - m.r)) * xmax));
+        const at = panels.map(p => { const i = nearest(prof[p.role].x, x); return {p, x: prof[p.role].x[i], y: prof[p.role].y[i]}; });
+        const sx = X(at[0].x);
+        cross.setAttribute("x1", sx); cross.setAttribute("x2", sx); cross.setAttribute("visibility", "visible");
+        at.forEach((a, i) => {
+          const ok = Number.isFinite(a.y);
+          dots[i].setAttribute("visibility", ok ? "visible" : "hidden");
+          if (ok) { dots[i].setAttribute("cx", X(a.x)); dots[i].setAttribute("cy", Y(a.p, a.y)); }
+        });
+        readout.replaceChildren(h("span", null, `${L.fmtValue(at[0].x)} ${unit} along`),
+          ...at.map(a => h("span", {class: "readout-row"},
+            h("span", {class: "key-line", style: `background:${colours[a.p.role]}`}),
+            h("b", null, L.fmtValue(Number.isFinite(a.y) ? a.y : NaN)), label(a.p.role))));
+        readout.hidden = false;
+        // Beside the crosshair where it fits, else under the chart, so it never hides the line read.
+        const rw = readout.offsetWidth;
+        const side = sx + 12 + rw <= W ? sx + 12 : sx - 12 - rw >= 0 ? sx - 12 - rw : null;
+        readout.style.left = `${side !== null ? side : Math.max(0, Math.min(W - rw, sx - rw / 2))}px`;
+        readout.style.top = `${side !== null ? 4 : H + 4}px`;
+      });
+      hit.addEventListener("pointerleave", () => {
+        readout.hidden = true;
+        cross.setAttribute("visibility", "hidden");
+        dots.forEach(d => d.setAttribute("visibility", "hidden"));
+      });
+      plot.replaceChildren(svg);
+    }
+    return {el, draw};
+  }
+
+  /* Where it sits: one strip per metric, every junction (or cell) of the field or run as faint dots. */
+
+  function positionFigure(run, fd, model, sel, pos, kind, token, box) {
+    const isJ = kind === "junction";
+    const cells = isJ ? sel.junction.split("-") : [sel.cell];
+    const sub = () => (stripScope === "run" ? `percentile in the run` : `percentile in this field`);
+    const subEl = h("span", {class: "detail-sec-sub"}, sub());
+    const rows = run.metrics.map(m => {
+      const strip = h("canvas", {class: "strip", "aria-hidden": "true"});
+      const pct = h("span", {class: "pct"}, "…");
+      const row = h("div", {class: m.key === state.metric ? "pos-row is-current" : "pos-row", tabindex: "0", tip: m.label},
+        h("button", {type: "button", class: "metric-link", tip: `${m.label}. ${m.help}`, onclick: () => set({metric: m.key})}, m.label),
+        strip, pct);
+      return {m, row, strip, pct, data: null};
+    });
+    function drawStrip(r) {
+      const c = r.strip, dpr = window.devicePixelRatio || 1;
+      const W = c.clientWidth || 120, H = c.clientHeight || 20;
+      c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+      const g = c.getContext("2d");
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, W, H);
+      g.fillStyle = cssVar("--grid");
+      g.fillRect(0, H / 2 - 0.5, W, 1);
+      if (!r.data) return;
+      const vals = stripScope === "run" ? r.data.run : r.data.field;
+      const fin = L.finite(vals).values;
+      if (!fin.length) return;
+      let lo = Infinity, hi = -Infinity;
+      fin.forEach(v => { lo = Math.min(lo, v); hi = Math.max(hi, v); });
+      const pad = 5, X = v => pad + (hi > lo ? ((v - lo) / (hi - lo)) * (W - 2 * pad) : (W - 2 * pad) / 2);
+      g.fillStyle = cssVar("--muted");
+      g.globalAlpha = fin.length > 400 ? 0.12 : 0.35;
+      fin.forEach((v, i) => {
+        g.beginPath();
+        g.arc(X(v), H / 2 + (((i * 0.6180339887) % 1) - 0.5) * (H - 8), 2, 0, 2 * Math.PI);
+        g.fill();
+      });
+      g.globalAlpha = 1;
+      if (Number.isFinite(r.data.value)) {
+        const x = X(r.data.value);
+        g.fillStyle = cssVar("--accent");
+        g.fillRect(x - 1, 1, 2, H - 2);
+        g.beginPath(); g.arc(x, H / 2, 4, 0, 2 * Math.PI);
+        g.lineWidth = 2; g.strokeStyle = cssVar("--surface"); g.stroke(); g.fill();
+      }
+    }
+    function fill(r) {
+      const vals = stripScope === "run" ? r.data.run : r.data.field;
+      const p = L.percentileOf(vals, r.data.value);
+      r.pct.textContent = p === null ? "–" : ordinal(p);
+      drawStrip(r);
+    }
+    const toggle = segmented([{value: "field", label: "Field", tip: `Compare with every ${isJ ? "junction" : "cell"} in this field`},
+                              {value: "run", label: "Run", tip: `Compare with every ${isJ ? "junction" : "cell"} in the run`}],
+      stripScope, v => {
+        stripScope = v;
+        toggle.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.textContent.toLowerCase() === v)));
+        subEl.textContent = sub();
+        rows.forEach(r => { if (r.data) fill(r); });
+      }, "Compare with");
+    const el = h("section", {class: "detail-sec"},
+      h("div", {class: "detail-sec-head"},
+        h("h4", null, h("span", {tip: `Faint dots: every ${isJ ? "junction" : "cell"} of the field or run. Accent: this one. Hover a row for its values.`}, "Where it sits")),
+        subEl, toggle),
+      h("div", {class: "pos-rows"}, rows.map(r => r.row)));
+    rows.forEach(r => {
+      loadMetric(run.run, state.method, state.role, r.m.key).then(v => {
+        if (token !== box._token) return;
+        const picked = L.metricValues(v, kind, r.m, run.calibrated, state.useUm);
+        const arr = picked.values || [];
+        const idx = isJ ? model.slice.junctions : model.slice.cells;
+        const value = pos ? arr[pos.i] : NaN;
+        r.data = {run: arr, field: idx.map(x => arr[x.i]), value};
+        const lines = isJ
+          ? cells.map(id => `Cell ${id}: ${withUnit(L.sideValue(fd.raw.sides, state.method, sel.junction, state.role, id, r.m.key, picked.um), picked.unit)}`)
+            .concat(`Mean: ${withUnit(value, picked.unit)}`)
+          : [`Median over its junctions: ${withUnit(value, picked.unit)}`];
+        r.row.dataset.tip = `${r.m.label}\n${lines.join("\n")}`;
+        fill(r);
+      }, () => {
+        if (token !== box._token) return;
+        r.pct.textContent = "–";
+      });
+    });
+    return {el, draw() { rows.forEach(r => drawStrip(r)); }};
+  }
+
   function detailPanel(run, f, fd, model, sel, box) {
     const token = (box._token = (box._token || 0) + 1);
+    if (box._ro) { box._ro.disconnect(); box._ro = null; }
+    JM._redrawCloseup = null;
     if (!sel.junction && !sel.cell) {
       box.replaceChildren(h("p", {class: "detail-empty"},
         state.dot === "cell" ? "Click a cell in the image or chart." : "Click a junction in the image or chart."));
@@ -915,51 +1264,26 @@
     const cells = isJ ? sel.junction.split("-") : [sel.cell];
     const pos = isJ ? model.slice.junctions.find(j => j.key === sel.junction)
                     : model.slice.cells.find(c => String(c.cell_id) === sel.cell);
-    const um = m => L.wantsUm(m, run.calibrated, state.useUm);
-    // Junction: one column per cell side (from the field asset) and the junction mean.
-    const sides = isJ && fd.raw.sides ? cells : [];
     const flagTags = id => (fd.raw.flags[id] || []).map(n => h("span", {class: "flag-tag", tip: "QC flag"}, pretty(n)));
+    const nJ = isJ ? 0 : (model.byCell.get(sel.cell) || []).length;
     const head = h("div", {class: "detail-head"},
       h("h3", null, isJ ? `Junction ${jLabel(sel.junction)}` : `Cell ${sel.cell}`),
-      h("span", {class: "detail-sub"}, `${state.role} · ${state.method}`
-        + (isJ ? "" : ` · ${L.fmtCount((model.byCell.get(sel.cell) || []).length)} junctions`)));
+      h("span", {class: "detail-sub"}, `${L.channelLabel(state.role, markerOf(fd, state.role))}, ${state.method}`
+        + (isJ ? "" : `, ${nJ} junction${nJ === 1 ? "" : "s"}`)));
     const flagsBox = isJ
       ? h("div", {class: "detail-cells"}, cells.map(id => h("div", {class: "detail-cell"},
           h("span", {class: "detail-cell-id"}, `Cell ${id}`), flagTags(id))))
       : h("div", {class: "detail-cell detail-cells"}, flagTags(sel.cell));
-    const valueHead = isJ ? "Mean" : "Median";
-    const table = h("table", {class: "data-table detail-table"},
-      h("thead", null, h("tr", null,
-        h("th", {scope: "col"}, ""),
-        sides.map(id => h("th", {scope: "col", tip: `Cell ${id}'s side of the junction`}, `Cell ${id}`)),
-        h("th", {scope: "col", tip: isJ ? "Junction value: mean of its two cell sides" : "Cell value: median over its junctions"}, valueHead),
-        h("th", {scope: "col"}, ""))),
-      h("tbody", null, run.metrics.map(m => h("tr", {class: m.key === state.metric ? "is-current" : null},
-        h("th", {scope: "row"}, h("button", {type: "button", class: "metric-link", tip: m.help,
-                                              onclick: () => set({metric: m.key})}, m.label)),
-        sides.map(id => h("td", null, L.fmtValue(
-          L.sideValue(fd.raw.sides, state.method, sel.junction, state.role, id, m.key, um(m))))),
-        h("td", {"data-metric": m.key}, "…"),
-        h("td", {class: "unit", "data-unit": m.key}, L.unitFor(m, run.calibrated, state.useUm))))));
-    box.replaceChildren(head, flagsBox, table);
-    if (!pos) {
-      table.querySelectorAll("td[data-metric]").forEach(td => { td.textContent = "–"; });
-      return;
-    }
-    const kind = isJ ? "junction" : "cell";
-    run.metrics.forEach(m => {
-      loadMetric(run.run, state.method, state.role, m.key).then(v => {
-        if (token !== box._token) return;
-        const picked = L.metricValues(v, kind, m, run.calibrated, state.useUm);
-        const td = table.querySelector(`td[data-metric="${m.key}"]`);
-        if (td) td.textContent = L.fmtValue(picked.values[pos.i]);
-        const ut = table.querySelector(`td[data-unit="${m.key}"]`);
-        if (ut) ut.textContent = picked.unit;
-      }, () => {
-        const td = table.querySelector(`td[data-metric="${m.key}"]`);
-        if (td) td.textContent = "–";
-      });
-    });
+    const figs = [closeupFigure(fd, sel, model), isJ ? profileFigure(fd, sel.junction) : null,
+                  positionFigure(run, fd, model, sel, pos, isJ ? "junction" : "cell", token, box)].filter(Boolean);
+    box.replaceChildren(head, flagsBox, ...figs.map(x => x.el));
+    const drawAll = () => figs.forEach(x => x.draw());
+    drawAll();
+    JM._redrawCloseup = figs[0] && figs[0].el.querySelector(".tiles-grid") ? () => figs[0].draw() : null;
+    let lastW = box.clientWidth;
+    box._ro = new ResizeObserver(() => { if (box.clientWidth !== lastW) { lastW = box.clientWidth; drawAll(); } });
+    box._ro.observe(box);
+    JM._cleanup.push(() => { if (box._ro) box._ro.disconnect(); });
   }
 
   /*** FIELD VIEW: LINKED CHART ***/
@@ -1054,8 +1378,8 @@
     root.append(h("div", {class: "field-head"},
       h("a", {class: "back", href: "#/"}, "← Overview"),
       h("h1", null, f.field_id), qcBadge(f.qc, f.n_cells),
-      h("span", {class: "field-sub"}, `${L.fmtCount(f.n_cells)} cells · ${L.fmtCount(f.n_junctions)} junctions`
-        + (JM.runs.length > 1 ? ` · ${run.label}` : ""))));
+      h("span", {class: "field-sub"}, `${L.fmtCount(f.n_cells)} cells, ${L.fmtCount(f.n_junctions)} junctions`
+        + (JM.runs.length > 1 ? ` in ${run.label}` : ""))));
     const body = h("div", {class: "field-layout"}, h("div", {class: "card viewer-card is-loading"}, h("div", {class: "viewer"})));
     root.append(body);
 
@@ -1106,7 +1430,7 @@
         viewer.el,
         h("div", {class: "viewer-foot"},
           empty ? h("span", {class: "empty-note"}, NO_JUNCTIONS)
-            : model.missing ? h("span", {class: "empty-note"}, `No ${state.role} ${state.method} values in this run`)
+            : model.missing ? h("span", {class: "empty-note"}, `No ${roleLabel(state.role, [run])} ${state.method} values in this run`)
               : colourBar(model)));
       body.replaceChildren(card);
       if (!empty) {
@@ -1116,7 +1440,7 @@
             h("div", {class: "chart-head"},
               h("h2", {class: "chart-title", tip: m.help}, m.label),
               h("span", {class: "chart-sub", tip: "Lasso or box-select to highlight in the image; double-click to clear"},
-                `${state.role} · ${state.method} · per ${state.dot}`)),
+                `${roleLabel(state.role, [run])}, ${state.method}, per ${state.dot}`)),
             plot)));
         chart = fieldChart(run, model, sel, plot, hooks);
         JM._fieldPlot = plot;
@@ -1188,7 +1512,7 @@
         h("div", {class: "help-col"},
           h("h2", null, "Terms"),
           h("dl", {class: "help-list"},
-            Object.keys(METHOD_NAMES).map(k => item(`${k} · ${METHOD_NAMES[k]}`, METHOD_HELP[k])),
+            Object.keys(METHOD_NAMES).map(k => item(`${k} (${METHOD_NAMES[k]})`, METHOD_HELP[k])),
             item("Junction value", "Mean of its two cell sides."),
             item("Cell value", "Median over its junctions."),
             item("threshold", "Metric depends on the marker threshold."),
