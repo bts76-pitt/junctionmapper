@@ -16,7 +16,9 @@ from PIL import Image
 from scipy import ndimage
 from skimage.measure import find_contours
 
+from junctionmapper.config import Role
 from junctionmapper.io.reader import Field
+from junctionmapper.measure import interface as mi
 from junctionmapper.pipeline import FieldResult
 from junctionmapper.report.summary import PARAMETERS
 from junctionmapper.segment.cellpose import Segmentation
@@ -152,8 +154,87 @@ def junction_sides(result: FieldResult) -> dict:
     return out
 
 
+def junction_profile(path_rc: np.ndarray, image: np.ndarray, band: np.ndarray, radius: int,
+                     px_um: float | None, max_points: int = 200) -> dict:
+    """Marker brightness along a junction: ``{"x": [...], "y": [... | None]}``.
+
+    ``y[i]`` is the mean of ``image`` over the ``band`` pixels inside the ``(2*radius+1)`` square
+    window centred on path pixel ``i`` (the window is cut at the image border); None where the
+    window holds no band pixel. ``x`` is the path length so far, a diagonal step counting
+    sqrt(2), in micrometres when ``px_um`` is given, else in pixels. A path longer than
+    ``max_points`` is resampled by linear interpolation, ends kept.
+    """
+    path = np.asarray(path_rc, dtype=int)
+    img = np.nan_to_num(np.asarray(image, dtype=np.float64))
+    b = np.asarray(band, dtype=bool)
+    size = 2 * int(radius) + 1
+    num = ndimage.uniform_filter(np.where(b, img, 0.0), size=size, mode="constant")
+    den = ndimage.uniform_filter(b.astype(np.float64), size=size, mode="constant")
+    r, c = path[:, 0], path[:, 1]
+    d = den[r, c]
+    y = np.where(d > 1e-9, num[r, c] / np.where(d > 1e-9, d, 1.0), np.nan)
+    step = np.hypot(*np.diff(path, axis=0).T) if len(path) > 1 else np.zeros(0)
+    x = np.concatenate([[0.0], np.cumsum(step)])
+    if len(path) == 1:
+        x = np.array([0.0, 0.0])
+        y = np.array([y[0], y[0]])
+    if px_um:
+        x = x * float(px_um)
+    if len(x) > max_points:
+        xs = np.linspace(x[0], x[-1], max_points)
+        ok = np.isfinite(y)
+        if ok.any():
+            ys = np.interp(xs, x[ok], y[ok])
+            nearest = np.abs(xs[:, None] - x[None, :]).argmin(axis=1) if len(x) * max_points < 4e6 \
+                else np.clip(np.searchsorted(x, xs), 0, len(x) - 1)
+            ys[~ok[nearest]] = np.nan
+        else:
+            ys = np.full(max_points, np.nan)
+        x, y = xs, ys
+    return {"x": [round(float(v), 4) for v in x],
+            "y": [None if not np.isfinite(v) else round(float(v), 4) for v in y]}
+
+
+def junction_profiles(field: Field, result: FieldResult) -> dict:
+    """``{method: {"<lo>-<hi>": {role: profile}}}``, along the lower-id cell's walk of each junction.
+
+    Roles are every plane the field has among JM1, JM2 and segment.
+    """
+    out: dict = {}
+    itf = result.interfaces
+    if not len(itf):
+        return out
+    roles = [r for r in (Role.JM1, Role.JM2, Role.SEGMENT) if r in field.planes]
+    cycles = dict(zip(result.cells["cell_id"].astype(int), result.cells["dilation_cycles"]))
+    px = field.pixel_size_um if field.pixel_size_um and np.isfinite(field.pixel_size_um) else None
+    rows = itf.drop_duplicates("interface_id")
+    best: dict = {}
+    for iid, pair, method, cid in zip(rows.interface_id, rows.pair_id, rows.corner_method,
+                                      rows.cell_id):
+        path = result.paths.get(iid)
+        if path is None:
+            continue
+        key = (str(method), str(pair).split("|")[-1])
+        lo = int(key[1].split("-")[0])
+        if int(cid) != lo:
+            continue
+        if key not in best or len(path) > len(best[key][1]):
+            best[key] = (int(cid), path)
+    for (method, key), (cid, path) in best.items():
+        cyc = cycles.get(cid)
+        if cyc is None or not np.isfinite(cyc):
+            continue
+        cyc = int(cyc)
+        for role in roles:
+            plane = field.planes[role]
+            band = mi.dilated_band(path, plane.shape, cyc)
+            out.setdefault(method, {}).setdefault(key, {})[role.value] = junction_profile(
+                path, plane, band, cyc, px)
+    return out
+
+
 def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run: str,
-                      out_dir: Path) -> Path:
+                      out_dir: Path, thresholds: dict[str, float] | None = None) -> Path:
     labels = seg.cells
     h, w = labels.shape
     scale = preview_scale((h, w))
@@ -175,6 +256,9 @@ def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run:
         "channels": channels, "cells": cell_outlines(labels, scale),
         "junctions": junction_polylines(result, scale), "sides": junction_sides(result),
         "flags": flags,
+        "profiles": junction_profiles(field, result),
+        "thresholds": {str(k): _num(v) for k, v in (thresholds or {}).items()},
+        "profile_unit": "µm" if field.pixel_size_um and np.isfinite(field.pixel_size_um) else "px",
     }
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

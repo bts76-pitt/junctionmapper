@@ -10,7 +10,9 @@ from PIL import Image
 
 from junctionmapper.io.reader import Field
 from junctionmapper.pipeline import measure_field
-from junctionmapper.report.assets import (cell_outlines, junction_polylines, preview,
+from junctionmapper.config import Role
+from junctionmapper.measure import interface as mi
+from junctionmapper.report.assets import (cell_outlines, junction_polylines, junction_profile, preview,
                                           preview_scale, simplify, to_preview,
                                           write_field_asset)
 from junctionmapper.segment.cellpose import Segmentation
@@ -133,3 +135,78 @@ def test_field_asset_sides_serialise_nan_as_null(tmp_path, setup):
     d = _load(p, "Field")
     got = d["sides"][row.corner_method][row.pair_id.split("|")[-1]][row.role][str(int(row.cell_id))]
     assert got[PARAMETERS[0]["key"]][0] is None
+
+
+def test_profile_of_a_uniform_band_is_flat_at_the_image_value():
+    img = np.full((20, 20), 7.0)
+    path = np.array([[10, c] for c in range(3, 15)])
+    band = mi.dilated_band(path, img.shape, 2)
+    p = junction_profile(path, img, band, 2, None)
+    assert p["y"] == pytest.approx([7.0] * len(p["y"])) and p["x"][0] == 0
+    assert p["x"][-1] == pytest.approx(11)
+
+
+def test_profile_x_is_in_micrometres_when_calibrated():
+    path = np.array([[5, c] for c in range(10)])
+    img = np.ones((12, 12))
+    p = junction_profile(path, img, mi.dilated_band(path, img.shape, 1), 1, 0.5)
+    assert p["x"][-1] == pytest.approx(4.5)
+
+
+def test_profile_is_resampled_to_at_most_200_points_keeping_the_ends():
+    path = np.array([[1, c] for c in range(600)])
+    img = np.tile(np.arange(600.0), (3, 1))
+    p = junction_profile(path, img, mi.dilated_band(path, img.shape, 0), 0, None)
+    assert len(p["x"]) == 200 and p["y"][0] == 0 and p["y"][-1] == 599
+
+
+def test_a_two_pixel_junction_still_has_a_profile():
+    path = np.array([[4, 4], [4, 5]])
+    img = np.ones((9, 9))
+    assert len(junction_profile(path, img, mi.dilated_band(path, img.shape, 2), 2, None)["y"]) >= 2
+
+
+def test_a_one_pixel_junction_has_two_equal_points():
+    path = np.array([[4, 4]])
+    img = np.full((9, 9), 3.0)
+    assert junction_profile(path, img, mi.dilated_band(path, img.shape, 1), 1, None) == \
+        {"x": [0.0, 0.0], "y": [3.0, 3.0]}
+
+
+def test_profile_sees_a_gap_in_the_marker(tmp_path, setup):
+    f, seg, cfg = setup
+    probe = measure_field(f, seg, cfg)
+    iid = next(i for i in probe.paths if i.startswith("f1|tcj|1@"))
+    path = probe.paths[iid]
+    n = len(path)
+    planes = dict(f.planes)
+    jm1 = planes[Role.JM1].copy()
+    jm1[:] = 100.0
+    for r, c in path[n // 3: 2 * n // 3 + 1]:
+        jm1[max(r - 3, 0):r + 4, max(c - 3, 0):c + 4] = 0.0
+    planes[Role.JM1] = jm1
+    f2 = dataclasses.replace(f, planes=planes)
+    res = measure_field(f2, seg, cfg)
+    key = str(res.interfaces[res.interfaces.interface_id == iid].pair_id.iloc[0]).split("|")[-1]
+    d = _load(write_field_asset(f2, seg, res, "r1", tmp_path), "Field")
+    y = d["profiles"]["tcj"][key]["JM1"]["y"]
+    k = len(y)
+    mid = np.mean(y[k * 2 // 5: k * 3 // 5])
+    ends = np.mean(y[: k // 5] + y[-(k // 5):])
+    assert mid <= 0.1 * ends
+
+
+def test_field_asset_carries_profiles_thresholds_and_unit(tmp_path, setup):
+    f, seg, cfg = setup
+    d = _load(write_field_asset(f, seg, measure_field(f, seg, cfg), "r1", tmp_path,
+                                thresholds={"JM1": 12.5}), "Field")
+    key = next(iter(d["junctions"]["tcj"]))
+    assert set(d["profiles"]["tcj"][key]) >= {"JM1"} and d["thresholds"] == {"JM1": 12.5}
+    assert d["profile_unit"] in ("µm", "px")
+
+
+def test_a_nan_threshold_becomes_null(tmp_path, setup):
+    f, seg, cfg = setup
+    d = _load(write_field_asset(f, seg, measure_field(f, seg, cfg), "r1", tmp_path,
+                                thresholds={"JM1": float("nan")}), "Field")
+    assert d["thresholds"] == {"JM1": None}

@@ -642,11 +642,11 @@ def _refuse_out_in_labels(out: Path, labels: Path, what: str) -> None:
 
 
 def _write_asset(field: Field, seg: Segmentation, result: FieldResult, out_dir: Path,
-                 missing: dict[str, str]) -> None:
+                 missing: dict[str, str], thresholds: dict[str, float] | None = None) -> None:
     """Write one field's report asset. A failure here loses that field's image in the report,
     never its measurements: it is recorded in ``missing`` and the run goes on."""
     try:
-        write_field_asset(field, seg, result, SOURCE_RUN, out_dir)
+        write_field_asset(field, seg, result, SOURCE_RUN, out_dir, thresholds)
     except Exception as exc:  # noqa: BLE001 - any report-side failure must not cost the tables
         reason = f"{type(exc).__name__}: {_oneline(exc)}"
         missing[field.field_id] = reason
@@ -816,7 +816,7 @@ def run(
         result = measure_field(field, seg, cfg, run_thresholds=run_t)
         thresholds = {r.value: t for r, t in resolve_thresholds(field, cfg, run_t).items()}
         # The planes and labels exist only here; the report's previews and geometry come from them.
-        _write_asset(field, seg, result, staging / "fields", assets_missing)
+        _write_asset(field, seg, result, staging / "fields", assets_missing, thresholds)
         result.paths = {}           # only the asset needs the walks; do not hold them for every field
         return result, seg.params_used, thresholds
 

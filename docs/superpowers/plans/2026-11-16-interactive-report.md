@@ -69,7 +69,12 @@ JM.registerField({
               "dp":  {"<lo>-<hi>": [[[x,y],...], ...]}},
   sides: {"<method>": {"<lo>-<hi>": {"<role>": {"<cell_id>": {"<metric key>": [px, um|null], ...}}}}},
                                                             // each cell side's values; NaN -> null
-  flags: {"<cell_id>": ["isolated", "corner_methods_disagree", ...]}   // only true flags
+  flags: {"<cell_id>": ["isolated", "corner_methods_disagree", ...]},  // only true flags
+  profiles: {"<method>": {"<lo>-<hi>": {"<role>": {x: [...], y: [... | null]}}}},
+                                                            // marker brightness corner to corner along the lower-id cell's walk;
+                                                            // role = JM1|JM2|segment (planes present); <=200 points; x in profile_unit
+  thresholds: {"JM1": 12.5, "JM2": null},                   // resolved threshold per role (JM1/JM2 only); NaN -> null
+  profile_unit: "µm" | "px"                                 // unit of profiles x
 });
 ```
 
