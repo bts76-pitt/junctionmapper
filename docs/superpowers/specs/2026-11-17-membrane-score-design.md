@@ -63,19 +63,25 @@ drawing cell outlines.
    cell region.
 2. Ridge response: a multi-scale line filter (Sato or equivalent) at scales covering
    `line_width_um`.
-3. Contrast = mean intensity on the patch's strongest-ridge pixels (top `ridge_fraction` of
-   ridge response within this patch's cell region) / mean on the rest of the patch's cell region.
+3. Contrast = (mean intensity on the patch's strongest-ridge pixels (top `ridge_fraction` of
+   ridge response within this patch's cell region) - `background`) / (mean on the rest of the
+   patch's cell region - `background`), with `background` the field floor of step 7. The same
+   subtraction applies to the baseline, so the score is invariant to an additive offset as well
+   as to gain. Contrast is null when the background-subtracted rest mean is <= 0.
    The cut is per patch, so a dim patch in a bright field is scored on its own terms.
 4. Baseline = steps 2 and 3 re-run, filter included, on a structureless copy of the patch
    (its cell-region pixels shuffled once, seeded). Reusing the original ridge mask on shuffled
    values would give about 1 always and normalise nothing.
 5. `score` = contrast / baseline. 1 = no line structure.
-6. `membrane_like` = `score >= cutoff`.
+6. `membrane_like` = `score >= cutoff`; null where `score` is null.
 7. Too dim: the patch's signal is not clearly above the field's floor; the patch gets no score
    (`too_dim = true`, `score` null).
    - `background` = the field's 1st percentile of that channel (no cell-free pixels needed;
      confluent fields are normal).
-   - `noise` = robust spread (MAD) of the field's high-pass residual.
+   - `noise` = robust spread (MAD) of the field's high-pass residual, over the pixels above
+     `background` (the smoothing also uses only those), so a large exact-constant floor
+     (zeroed or clipped pixels) does not make it 0. If it is still 0, the robust spread of the
+     cell-region pixels; 0 only when there is no signal above the floor.
    - too dim when (patch cell-region mean - background) < 3 x noise.
    - Scale-invariant and stain-independent; a channel at quantisation level (e.g. 0 to 2 on
      8-bit) fails it.

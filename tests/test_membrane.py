@@ -14,7 +14,8 @@ from scipy import ndimage as ndi
 
 from junctionmapper.config import MembraneScoreConfig, Role
 from junctionmapper.io.reader import Field
-from junctionmapper.measure.membrane import cell_region, floor_and_noise, score_field
+from junctionmapper.measure.membrane import (_filter_geometry, cell_region, floor_and_noise,
+                                             score_field)
 
 N = 400          # field side, px
 CELL = 50        # cell pitch, px
@@ -102,7 +103,7 @@ def test_thin_lines_are_membrane_like():
 
 def test_uniform_noise_scores_near_one():
     s = score_field(field_with(jm1=noise_on_floor()), MembraneScoreConfig())[0]
-    assert s.score.between(0.8, 1.3).all() and not s.membrane_like.any()
+    assert s.score.between(0.95, 1.05).all() and not s.membrane_like.any()     # measured 0.999 to 1.001
 
 
 def test_uniform_noise_with_no_floor_is_too_dim():
@@ -114,18 +115,44 @@ def test_uniform_noise_with_no_floor_is_too_dim():
 
 def test_filled_cells_are_not_membrane_like():
     s = score_field(field_with(jm1=filled()), MembraneScoreConfig())[0]
-    assert (s.score < 1.5).all()
+    assert (s.score < 1.1).all()                                            # measured 1.009 to 1.015
 
 
 def test_a_blank_channel_is_too_dim_not_diffuse():
+    # membrane_like is null, not False, where there is no score: a mean over the column
+    # must not read a blank channel as 0% membrane-like (diffuse).
     s = score_field(field_with(jm1=sparse_ones()), MembraneScoreConfig())[0]
-    assert s.too_dim.all() and s.score.isna().all() and not s.membrane_like.any()
+    assert s.too_dim.all() and s.score.isna().all() and s.membrane_like.isna().all()
+    assert str(s.membrane_like.dtype) == "boolean"
+
+
+def test_bright_lines_on_a_mostly_exact_zero_field_are_scored():
+    # 62% of the field (every column left of 248) is exactly 0, so the whole-field MAD of
+    # the high-pass residual is 0. The lines are bright: they must be scored, not too dim.
+    img = lines()
+    img[:, :248] = 0.0
+    p, _ = score_field(field_with(jm1=img), MembraneScoreConfig())
+    right, left = p[p.x0_px == 200], p[p.x0_px == 0]
+    assert (p.noise > 0).all()
+    assert not right.too_dim.any() and right.membrane_like.all()
+    assert left.too_dim.all()                     # all floor: genuinely no signal
 
 
 def test_score_is_invariant_to_intensity_scale():
     a = score_field(field_with(jm1=lines()), MembraneScoreConfig())[0]
     b = score_field(field_with(jm1=lines() * 10), MembraneScoreConfig())[0]
     assert np.allclose(a.score, b.score, rtol=1e-6) and (a.too_dim == b.too_dim).all()
+
+
+@pytest.mark.parametrize("offset", [100.0, 1000.0])
+@pytest.mark.parametrize("gain", [1.0, 5.0])
+def test_score_is_invariant_to_an_additive_offset(offset, gain):
+    # contrast subtracts the field floor from both means, so a camera offset or a uniform
+    # background does not pull the score toward 1. Float32 input loses a little precision
+    # under the offset: measured worst case 4e-7 relative, so 1e-5 leaves margin.
+    a = score_field(field_with(jm1=lines() * gain), MembraneScoreConfig())[0]
+    b = score_field(field_with(jm1=lines() * gain + offset), MembraneScoreConfig())[0]
+    assert np.allclose(a.score, b.score, rtol=1e-5) and (a.too_dim == b.too_dim).all()
 
 
 def test_same_input_gives_identical_scores():
@@ -156,7 +183,7 @@ def test_coarse_pixels_clamp_the_filter_scale():
     assert np.isfinite(p.loc[~p.too_dim, "score"]).all()
 
 
-@pytest.mark.parametrize("jm1, lo, hi", [(lines, 1.5, np.inf), (noise_on_floor, 0.8, 1.3)])
+@pytest.mark.parametrize("jm1, lo, hi", [(lines, 1.5, np.inf), (noise_on_floor, 0.95, 1.05)])
 def test_the_downsampled_filter_path_scores_like_the_native_one(jm1, lo, hi):
     # At 0.075 um the smallest sigma is 2 px, so the filter runs on a 2x-downsampled plane.
     # The baseline must be shuffled before downsampling, or lone bright pixels at the
@@ -175,7 +202,7 @@ def test_an_edge_patch_narrower_than_a_filter_block_is_left_unscored():
     f.planes = {r: p[:, :287].copy() for r, p in f.planes.items()}
     p, _ = score_field(f, MembraneScoreConfig())
     edge = p[p.x0_px == 286]
-    assert len(edge) == 2 and edge.score.isna().all() and not edge.membrane_like.any()
+    assert len(edge) == 2 and edge.score.isna().all() and edge.membrane_like.isna().all()
     assert np.isfinite(p.loc[(p.x0_px == 0) & (p.y0_px == 0), "score"]).all()
 
 
@@ -191,7 +218,7 @@ def test_a_thin_edge_sliver_is_not_scored_and_does_not_dilute_the_fraction():
     p, f = score_field(_widened(404), MembraneScoreConfig())
     sliver = p[p.x0_px == 400]
     assert len(sliver) == 2 and (sliver.region_fraction == 1).all()
-    assert sliver.score.isna().all() and not sliver.too_dim.any() and not sliver.membrane_like.any()
+    assert sliver.score.isna().all() and not sliver.too_dim.any() and sliver.membrane_like.isna().all()
     row = f.set_index("role").loc["JM1"]
     assert row.n_patches == 6 and row.n_scored == 4
     assert row.membrane_like_fraction == pytest.approx(1.0)
@@ -220,7 +247,7 @@ def test_a_constant_channel_is_too_dim_without_warnings(value):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         p, _ = score_field(field_with(jm1=np.full((400, 400), value)), MembraneScoreConfig())
-    assert p.too_dim.all() and (~p.membrane_like).all()
+    assert p.too_dim.all() and p.membrane_like.isna().all()
 
 
 def test_nan_pixels_are_ignored():
@@ -246,6 +273,14 @@ def test_floor_and_noise_reads_percentile_and_robust_noise():
     background, noise_sd = floor_and_noise(noise())
     assert background == pytest.approx(50 - 2.33 * 2, abs=0.3)
     assert noise_sd == pytest.approx(2.0, rel=0.1)       # high-pass keeps ~97% of white noise
+
+
+@pytest.mark.parametrize("px", [0.0749, 0.075, 0.1, 0.2, 0.325, 1.0])
+def test_filter_sigmas_stay_above_one_pixel(px):
+    # skimage 0.26 hessian_matrix truncates its kernels at 8 sigma only when every sigma
+    # is > 1, else at 100 sigma: about 10x slower. Exactly 1.0 must never reach the filter.
+    factor, sigmas = _filter_geometry(px, MembraneScoreConfig().line_width_um)
+    assert factor >= 1 and sigmas and min(sigmas) > 1.0
 
 
 def test_floor_and_noise_of_a_constant_plane_is_zero_noise():

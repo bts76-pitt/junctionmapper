@@ -4,13 +4,14 @@ No segmentation is used. The field is cut into square patches; within each patch
 region (nuclei grown outward, see ``cell_region``) a multi-scale line filter ranks pixels
 by how ridge-like they are, and
 
-    contrast = mean intensity on the top ``ridge_fraction`` of ridge pixels
-               / mean intensity on the rest of the region
+    contrast = (mean intensity on the top ``ridge_fraction`` of ridge pixels - floor)
+               / (mean intensity on the rest of the region - floor)
     baseline = the same, filter included, on one seeded shuffle of the region's pixels
     score    = contrast / baseline        (1 = no line structure)
 
 Dividing by the shuffled baseline removes what any texture would give by chance (noise
 alone puts the brightest pixels on the "ridge"), so a score means the same for any stain.
+Subtracting the field's floor makes it independent of an additive offset as well as of gain.
 
 A patch whose signal is not clearly above the field's floor is ``too_dim`` and gets no
 score: a blank channel reads as too dim, never as diffuse.
@@ -41,6 +42,9 @@ MIN_REGION_FRACTION = 0.5        # a patch is scored when at least this much is 
 MIN_SIDE_FRACTION = 0.5          # a clipped edge patch is scored only when both its sides are
                                  # at least this fraction of a full side
 MIN_SIGMA_PX = 1.0               # filter scales never go below one pixel
+FILTER_MIN_SIGMA_PX = 1.01       # floor on the sigmas passed to sato: skimage 0.26
+                                 # hessian_matrix truncates kernels at 8 sigma only when every
+                                 # sigma is > 1, else at 100 sigma (about 10x slower)
 
 
 def cell_region(nucleus: np.ndarray, px_um: float, region_um: float) -> np.ndarray:
@@ -64,16 +68,28 @@ def cell_region(nucleus: np.ndarray, px_um: float, region_um: float) -> np.ndarr
     return ndi.distance_transform_edt(~nuclei) * px_um <= region_um
 
 
-def floor_and_noise(plane: np.ndarray) -> tuple[float, float]:
+def _mad_sd(x: np.ndarray) -> float:
+    """1.4826 x MAD: a robust SD, 0 for an empty or mostly constant sample."""
+    if not x.size:
+        return 0.0
+    return MAD_TO_SD * float(np.median(np.abs(x - np.median(x))))
+
+
+def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tuple[float, float]:
     """The field's floor and noise for one channel, in the channel's own units.
 
         background   1st percentile of the finite pixels
-        noise        1.4826 x MAD of the high-pass residual (plane minus its Gaussian
-                     smoothing at 2 px) over finite pixels; a robust noise SD, 0 for a
-                     constant or quantisation-level plane
+        noise        1.4826 x MAD of the high-pass residual over the finite pixels above
+                     the floor. The residual is the plane minus its Gaussian smoothing at
+                     2 px, the smoothing taken over above-floor pixels only, so a large
+                     exact-constant floor (zeroed or clipped pixels) neither zeroes the
+                     MAD nor puts its edges into it. If that is 0, the robust spread of
+                     the finite ``region`` pixels (all finite pixels without a region).
+                     0 for a constant or quantisation-level plane
 
-    Both scale with the plane, so the too-dim test built on them is scale-invariant. NaN
-    pixels are ignored; an all-NaN plane gives ``(nan, 0.0)``.
+    Both scale with the plane and shift-cancel under an offset, so the too-dim test built
+    on them is scale- and offset-invariant. NaN pixels are ignored; an all-NaN plane gives
+    ``(nan, 0.0)``.
     """
     plane = np.asarray(plane, np.float64)
     finite = np.isfinite(plane)
@@ -81,9 +97,16 @@ def floor_and_noise(plane: np.ndarray) -> tuple[float, float]:
         return math.nan, 0.0
     vals = plane[finite]
     background = float(np.percentile(vals, BACKGROUND_PERCENTILE))
-    filled = np.where(finite, plane, np.median(vals))
-    residual = (filled - ndi.gaussian_filter(filled, NOISE_HIGHPASS_SIGMA_PX))[finite]
-    noise = MAD_TO_SD * float(np.median(np.abs(residual - np.median(residual))))
+    above = finite & (plane > background)
+    if above.any():
+        weight = ndi.gaussian_filter(above.astype(np.float64), NOISE_HIGHPASS_SIGMA_PX)
+        total = ndi.gaussian_filter(np.where(above, plane, 0.0), NOISE_HIGHPASS_SIGMA_PX)
+        noise = _mad_sd(plane[above] - total[above] / weight[above])
+    else:
+        noise = 0.0
+    if noise == 0.0:
+        use = finite if region is None or not (region & finite).any() else region & finite
+        noise = _mad_sd(plane[use])
     return background, noise
 
 
@@ -93,11 +116,11 @@ def _filter_geometry(px_um: float, line_width_um: tuple[float, float]) -> tuple[
     A line of width w is matched by sigma w / 2. The factor is the largest integer that keeps
     the smallest sigma at least 1 px after downsampling (cost: about 4x fewer pixels at 2),
     so the choice depends on pixel size only, never on image size. Sigmas are clamped to
-    1 px and spaced at most 1 px apart.
+    ``FILTER_MIN_SIGMA_PX`` (just over 1 px, see there) and spaced at most 1 px apart.
     """
     lo, hi = (max(w / px_um / 2, MIN_SIGMA_PX) for w in line_width_um)
     factor = max(1, int(lo // MIN_SIGMA_PX))
-    lo, hi = max(lo / factor, MIN_SIGMA_PX), max(hi / factor, MIN_SIGMA_PX)
+    lo, hi = max(lo / factor, FILTER_MIN_SIGMA_PX), max(hi / factor, FILTER_MIN_SIGMA_PX)
     n = max(1, math.ceil(hi - lo) + 1) if hi > lo else 1
     return factor, [float(s) for s in np.linspace(lo, hi, n)]
 
@@ -122,18 +145,21 @@ def _ridge(img: np.ndarray, sigmas: list[float]) -> np.ndarray:
     return sato(img, sigmas=sigmas, black_ridges=False)
 
 
-def _contrast(values: np.ndarray, response: np.ndarray, ridge_fraction: float) -> float:
-    """Mean of ``values`` on the top ``ridge_fraction`` of ``response`` / mean on the rest.
+def _contrast(values: np.ndarray, response: np.ndarray, ridge_fraction: float,
+              background: float) -> float:
+    """(Mean of ``values`` on the top ``ridge_fraction`` of ``response`` - ``background``)
+    / (mean on the rest - ``background``).
 
     Ties are broken by position (stable sort), so the cut does not move under a change of
-    intensity scale. NaN when either side is empty or the rest has no positive mean.
+    intensity scale. NaN when either side is empty or the rest is not above the floor.
     """
     n = values.size
     k = max(1, round(ridge_fraction * n))
     if n - k < 1:
         return math.nan
     order = np.argsort(-response, kind="stable")
-    ridge, rest = values[order[:k]].mean(), values[order[k:]].mean()
+    ridge = values[order[:k]].mean() - background
+    rest = values[order[k:]].mean() - background
     return float(ridge / rest) if rest > 0 else math.nan
 
 
@@ -141,7 +167,7 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
                 size: int, factor: int, sigmas: list[float]) -> list[dict]:
     plane = np.asarray(field.planes[role], np.float64)
     finite = np.isfinite(plane)
-    background, noise = floor_and_noise(plane)
+    background, noise = floor_and_noise(plane, region)
     median = float(np.median(plane[finite])) if finite.any() else 0.0
     small = _block_mean(plane, factor)
     small = np.where(np.isfinite(small), small, median)              # filter needs no NaN
@@ -173,7 +199,8 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
             if scored and not too_dim and use.sum() > 1:
                 if response is None:
                     response = _ridge(small, sigmas)
-                contrast = _contrast(small[sy, sx][use], response[sy, sx][use], cfg.ridge_fraction)
+                contrast = _contrast(small[sy, sx][use], response[sy, sx][use], cfg.ridge_fraction,
+                                     background)
                 # Shuffle in native pixels, then downsample as the original was: shuffling
                 # after downsampling makes lone bright pixels that the 1 px filter scale
                 # reads as ridges, inflating the baseline.
@@ -184,7 +211,7 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
                 shuffled = _block_mean(shuffled, factor)
                 shuffled = np.where(np.isfinite(shuffled), shuffled, median)
                 baseline = _contrast(shuffled[use], _ridge(shuffled, sigmas)[use],
-                                     cfg.ridge_fraction)
+                                     cfg.ridge_fraction, background)
                 if np.isfinite(contrast) and np.isfinite(baseline) and baseline > 0:
                     score = contrast / baseline
             rows.append(dict(
@@ -193,7 +220,7 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
                 region_fraction=region_fraction, mean_intensity=mean,
                 background=background, noise=noise, too_dim=too_dim,
                 contrast=contrast, baseline=baseline, score=score,
-                membrane_like=bool(np.isfinite(score) and score >= cfg.cutoff),
+                membrane_like=bool(score >= cfg.cutoff) if np.isfinite(score) else None,
                 _region_px=int(reg.sum())))     # weight for the field row; make_frame drops it
     return rows
 
@@ -221,7 +248,7 @@ def score_field(field: Field, cfg: MembraneScoreConfig) -> tuple[pd.DataFrame, p
     clipped. A patch is scored when at least half of it is cell region, both its sides are
     at least half a full side, it is not too dim, and it spans at least one filter block
     (true at half a side; kept as a guard). Otherwise ``contrast``, ``baseline`` and
-    ``score`` are NaN and ``membrane_like`` is False. ``too_dim`` is only ever True for a
+    ``score`` are NaN and ``membrane_like`` is null. ``too_dim`` is only ever True for a
     patch that passes the region and side tests.
     """
     px = field.pixel_size_um

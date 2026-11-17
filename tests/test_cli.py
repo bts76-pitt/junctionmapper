@@ -1515,10 +1515,18 @@ def test_run_no_membrane_score_writes_empty_tables(env, monkeypatch):
 
 
 def test_run_with_labels_still_scores_membranes(env, monkeypatch):
+    # The score uses no labels: a fresh run and a --labels re-run give identical patches.
+    stub_segment(monkeypatch, env["seg"])
+    fresh = env["tmp"] / "fresh"
+    r = invoke("run", "--config", env["cfg"], "--input", env["tif"], "--out", fresh)
+    assert r.exit_code == 0, r.output
     forbid_cellpose(monkeypatch)
     r = run_ok(env)
     assert r.exit_code == 0, r.output
-    assert len(pd.read_parquet(env["out"] / "membrane_fields.parquet")) > 0
+    a = pd.read_parquet(fresh / "membrane_patches.parquet")
+    b = pd.read_parquet(env["out"] / "membrane_patches.parquet")
+    assert len(a) > 0
+    pd.testing.assert_frame_equal(a, b)
 
 
 def test_a_field_with_no_cells_still_gets_membrane_rows(env, monkeypatch):

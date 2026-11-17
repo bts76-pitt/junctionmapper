@@ -197,7 +197,8 @@ _BOOL = ["threshold_deviates_from_run", "low_contact_fraction", "closed_loop", "
          "border_touching", "isolated", "degenerate", "corner_methods_disagree",
          "all_contacts_filtered", "dp_low_contact", "dp_missed_tcj_contact",
          "closed_loop_interface", "multinucleate", "anucleate", "measured", "orphan",
-         "too_dim", "membrane_like"]
+         "too_dim"]
+_NULLABLE_BOOL = ["membrane_like"]     # null where there is no score: never read as False
 _INT = ["start_idx", "end_idx", "dilation_cycles", "interface_area_px", "marker_area_px",
         "area_px", "n_neighbours", "n_interfaces_dp", "n_interfaces_tcj", "n_nuclei", "tcj_min_run",
         "neighbour_radius_px", "neighbour_nucleus_id", "rank_from_nucleus",
@@ -215,6 +216,8 @@ def make_frame(name: str, rows: list[dict]) -> pd.DataFrame:
             df[c] = df[c].astype("object")
         elif c in _BOOL:
             df[c] = df[c].astype("bool")
+        elif c in _NULLABLE_BOOL:
+            df[c] = df[c].astype("boolean")
         elif c in _NULLABLE_INT or c in _INT:
             df[c] = df[c].astype("Int64")
         else:
