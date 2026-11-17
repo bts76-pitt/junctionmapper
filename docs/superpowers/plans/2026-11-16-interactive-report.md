@@ -65,6 +65,8 @@ JM.registerField({
   cells: {"<cell_id>": [[x,y], ...]},                       // outer contour, closed
   junctions: {"tcj": {"<lo>-<hi>": [[[x,y],...], ...]},     // list of polylines per junction
               "dp":  {"<lo>-<hi>": [[[x,y],...], ...]}},
+  sides: {"<method>": {"<lo>-<hi>": {"<role>": {"<cell_id>": {"<metric key>": [px, um|null], ...}}}}},
+                                                            // each cell side's values; NaN -> null
   flags: {"<cell_id>": ["isolated", "corner_methods_disagree", ...]}   // only true flags
 });
 ```

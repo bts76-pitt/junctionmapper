@@ -153,6 +153,51 @@
     return null;
   }
 
+  // The field view's selection on (re)entry: the route's ?j= / ?c= wins; a plain link selects
+  // nothing. A brush is never in the route, so it survives only a re-render of the same field.
+  function selectionFromRoute(route, prev) {
+    const junction = route.junction || null, cell = route.cell || null;
+    return {junction, cell, brush: prev && !junction && !cell ? prev.brush : null,
+            dot: prev ? prev.dot : null};
+  }
+
+  // sides: the field asset's {method: {key: {role: {cell: {metric: [px, um|null]}}}}}.
+  function sideValue(sides, method, key, role, cell, metric, useUm) {
+    const v = sides && sides[method] && sides[method][key] && sides[method][key][role]
+      && sides[method][key][role][cell] && sides[method][key][role][cell][metric];
+    if (!v) return NaN;
+    const x = useUm && v[1] !== null && v[1] !== undefined ? v[1] : v[0];
+    return x === null || x === undefined ? NaN : x;
+  }
+
+  /*** CACHE ***/
+
+  // Map with a size cap: get() and set() mark a key most recent; past the cap the least recent
+  // entry goes (onEvict(key, value)). The entry just set is never the one evicted.
+  function createLru(cap, onEvict) {
+    const m = new Map();
+    return {
+      get(k) {
+        if (!m.has(k)) return undefined;
+        const v = m.get(k);
+        m.delete(k); m.set(k, v);
+        return v;
+      },
+      set(k, v) {
+        m.delete(k); m.set(k, v);
+        while (m.size > Math.max(1, cap)) {
+          const old = m.keys().next().value;
+          const ov = m.get(old);
+          m.delete(old);
+          if (onEvict) onEvict(old, ov);
+        }
+      },
+      delete: k => m.delete(k),
+      keys: () => m.keys(),
+      get size() { return m.size; },
+    };
+  }
+
   /*** SCRIPT LOADER ***/
 
   // Data files are <script>s that call JM.register*(payload). The run id inside a copied file is
@@ -189,12 +234,17 @@
       return true;
     }
 
-    return {load, receive};
+    // Drop a finished file from the cache (memory); an in-flight request is left alone.
+    function forget(src) {
+      if (!inflight || inflight.src !== src) cache.delete(src);
+    }
+
+    return {load, receive, forget};
   }
 
   const api = {decodeF32, decodeU32, finite, quantileRange, summaryStats, fmtCount, fmtShare, fmtValue,
                colourFor, runColour, junctionKey, unitFor, fieldSlice, hitTest, cellAt,
-               createLoader, NAN_GREY};
+               selectionFromRoute, sideValue, createLru, createLoader, NAN_GREY};
   root.JMLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

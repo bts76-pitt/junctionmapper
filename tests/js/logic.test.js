@@ -148,3 +148,57 @@ test("fieldSlice picks only that field's rows", () => {
   assert.deepEqual(L.fieldSlice(idx, 0).cells, [{i: 0, cell_id: 2}]);
   assert.deepEqual(L.fieldSlice(idx, 5), {junctions: [], cells: []});
 });
+
+test("selectionFromRoute: the route's junction or cell wins over the remembered selection", () => {
+  const prev = {junction: "2-4", cell: null, brush: ["1-2"], dot: "junction"};
+  assert.deepEqual(L.selectionFromRoute({junction: "7-9", cell: null}, prev),
+    {junction: "7-9", cell: null, brush: null, dot: "junction"});
+  assert.deepEqual(L.selectionFromRoute({junction: null, cell: "5"}, prev),
+    {junction: null, cell: "5", brush: null, dot: "junction"});
+});
+test("selectionFromRoute: a plain link opens with nothing selected", () => {
+  assert.deepEqual(L.selectionFromRoute({junction: null, cell: null}, null),
+    {junction: null, cell: null, brush: null, dot: null});
+});
+test("selectionFromRoute: a re-render of the same field keeps its brush", () => {
+  const prev = {junction: null, cell: null, brush: ["1-2", "3-4"], dot: "junction"};
+  assert.deepEqual(L.selectionFromRoute({junction: null, cell: null}, prev).brush, ["1-2", "3-4"]);
+});
+
+test("createLru evicts the least recently used past its cap, never the newest", () => {
+  const gone = [];
+  const c = L.createLru(2, k => gone.push(k));
+  c.set("a", 1); c.set("b", 2);
+  assert.equal(c.get("a"), 1);          // a is now most recent
+  c.set("c", 3);
+  assert.deepEqual(gone, ["b"]);
+  assert.equal(c.get("b"), undefined);
+  assert.deepEqual([...c.keys()], ["a", "c"]);
+  c.delete("a");
+  assert.deepEqual([...c.keys()], ["c"]);
+});
+test("createLru with cap 1 keeps only the newest", () => {
+  const c = L.createLru(1);
+  c.set("a", 1); c.set("b", 2);
+  assert.deepEqual([...c.keys()], ["b"]);
+});
+
+test("sideValue reads one cell side, px or µm, null as NaN", () => {
+  const sides = {tcj: {"2-4": {JM1: {"2": {area: [10, 0.4], ratio: [0.5, null]}, "4": {area: [null, null]}}}}};
+  assert.equal(L.sideValue(sides, "tcj", "2-4", "JM1", "2", "area", false), 10);
+  assert.equal(L.sideValue(sides, "tcj", "2-4", "JM1", "2", "area", true), 0.4);
+  assert.equal(L.sideValue(sides, "tcj", "2-4", "JM1", "2", "ratio", true), 0.5);   // no µm: px
+  assert.ok(Number.isNaN(L.sideValue(sides, "tcj", "2-4", "JM1", "4", "area", false)));
+  assert.ok(Number.isNaN(L.sideValue(sides, "dp", "2-4", "JM1", "2", "area", false)));
+  assert.ok(Number.isNaN(L.sideValue(undefined, "tcj", "2-4", "JM1", "2", "area", false)));
+});
+
+test("loader.forget drops a cached file so the next load re-requests it", async () => {
+  let n = 0;
+  const ld = L.createLoader((src, onload) => { n++; ld.receive("Field", {src}); onload(); });
+  await ld.load("a.js"); await ld.load("a.js");
+  assert.equal(n, 1);
+  ld.forget("a.js");
+  await ld.load("a.js");
+  assert.equal(n, 2);
+});

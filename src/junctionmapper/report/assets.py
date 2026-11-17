@@ -18,6 +18,7 @@ from skimage.measure import find_contours
 
 from junctionmapper.io.reader import Field
 from junctionmapper.pipeline import FieldResult
+from junctionmapper.report.build import PARAMETERS
 from junctionmapper.segment.cellpose import Segmentation
 
 
@@ -113,6 +114,35 @@ def junction_polylines(result: FieldResult, scale: float, tol: float = 1.0
     return out
 
 
+def _num(v) -> float | None:
+    v = float(v)
+    return None if not np.isfinite(v) else v
+
+
+def junction_sides(result: FieldResult) -> dict:
+    """``{method: {"<lo>-<hi>": {role: {cell_id: {metric: [px, um|None]}}}}}``, one entry per cell side.
+
+    A side is the mean of that cell's rows for the pair (NaN-skipping); NaN becomes None (JSON null).
+    """
+    out: dict = {}
+    itf = result.interfaces
+    if not len(itf):
+        return out
+    cols = [c for p in PARAMETERS for c in (p["px"], p["um"]) if c and c in itf]
+    vals = itf[["corner_method", "role", "pair_id", "cell_id"]].copy()
+    for c in cols:
+        vals[c] = itf[c].astype(float)
+    grouped = vals.groupby(["corner_method", "role", "pair_id", "cell_id"], sort=True)[cols].mean()
+    for (method, role, pair, cell), row in grouped.iterrows():
+        key = str(pair).split("|")[-1]
+        side = out.setdefault(str(method), {}).setdefault(key, {}).setdefault(str(role), {})
+        side[str(int(cell))] = {
+            p["key"]: [_num(row[p["px"]]) if p["px"] in row else None,
+                       _num(row[p["um"]]) if p["um"] and p["um"] in row else None]
+            for p in PARAMETERS}
+    return out
+
+
 def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run: str,
                       out_dir: Path) -> Path:
     labels = seg.cells
@@ -131,10 +161,11 @@ def write_field_asset(field: Field, seg: Segmentation, result: FieldResult, run:
         "run": run, "field_id": field.field_id, "width": w, "height": h, "scale": scale,
         "labels_sha256": hashlib.sha256(labels.tobytes()).hexdigest(),
         "channels": channels, "cells": cell_outlines(labels, scale),
-        "junctions": junction_polylines(result, scale), "flags": flags,
+        "junctions": junction_polylines(result, scale), "sides": junction_sides(result),
+        "flags": flags,
     }
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{field.field_id}.js"
-    path.write_text("JM.registerField(" + json.dumps(data, separators=(",", ":")) + ");\n")
+    path.write_text("JM.registerField(" + json.dumps(data, separators=(",", ":"), allow_nan=False) + ");\n")
     return path

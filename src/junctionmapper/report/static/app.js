@@ -487,7 +487,14 @@
   const layers = {};               // role -> {on, gain}
   const overlay = {junctions: true, outlines: true};
   let fieldUi = {key: null, xf: null, sel: null};
-  const fieldData = new Map();     // "run/field" -> decoded field
+  // "run/field" -> {src, promise of the decoded field}. Each holds full-size planes, a composite and
+  // paths (~15 MB), so only the last FIELD_CACHE opened stay; the loader forgets the evicted file too.
+  const FIELD_CACHE = 4;
+  const fieldData = L.createLru(FIELD_CACHE, (key, v) => {
+    loader.forget(v.src);
+    v.promise.then(fd => { if (fd.composite) fd.composite.width = 0; fd.planes = null; fd.composite = null; },
+                   () => {});
+  });
   JM._cleanup = [];
 
   const pretty = s => s.replace(/_/g, " ");
@@ -495,12 +502,13 @@
 
   function loadField(run, fieldId) {
     const key = `${run}/${fieldId}`;
-    if (fieldData.has(key)) return fieldData.get(key);
-    const p = loader.load(`runs/${run}/fields/${encodeURIComponent(fieldId)}.js`, {run})
-      .then(got => decodeField(got.payload));
-    fieldData.set(key, p);
-    p.catch(() => fieldData.delete(key));
-    return p;
+    const hit = fieldData.get(key);
+    if (hit) return hit.promise;
+    const src = `runs/${run}/fields/${encodeURIComponent(fieldId)}.js`;
+    const promise = loader.load(src, {run}).then(got => decodeField(got.payload));
+    fieldData.set(key, {src, promise});
+    promise.catch(() => { if (fieldData.get(key)) fieldData.delete(key); });
+    return promise;
   }
 
   function greyPlane(src, w, hgt) {
@@ -843,23 +851,33 @@
     const cells = isJ ? sel.junction.split("-") : [sel.cell];
     const pos = isJ ? model.slice.junctions.find(j => j.key === sel.junction)
                     : model.slice.cells.find(c => String(c.cell_id) === sel.cell);
-    const flagRow = id => h("div", {class: "detail-cell"},
-      h("span", {class: "detail-cell-id"}, `Cell ${id}`),
-      ((fd.raw.flags[id] || []).map(n => h("span", {class: "flag-tag", tip: "QC flag"}, pretty(n)))));
+    const um = m => run.calibrated && state.useUm && !!m.unit_um;
+    // Junction: one column per cell side (from the field asset) and the junction mean.
+    const sides = isJ && fd.raw.sides ? cells : [];
+    const flagTags = id => (fd.raw.flags[id] || []).map(n => h("span", {class: "flag-tag", tip: "QC flag"}, pretty(n)));
     const head = h("div", {class: "detail-head"},
-      h("h3", {tip: isJ ? "Junction value: mean of its two cell sides" : "Cell value: median over its junctions"},
-        isJ ? `Junction ${jLabel(sel.junction)}` : `Cell ${sel.cell}`),
+      h("h3", null, isJ ? `Junction ${jLabel(sel.junction)}` : `Cell ${sel.cell}`),
       h("span", {class: "detail-sub"}, `${state.role} · ${state.method}`
         + (isJ ? "" : ` · ${L.fmtCount((model.byCell.get(sel.cell) || []).length)} junctions`)));
-    const table = h("table", {class: "data-table detail-table"}, h("tbody", null,
-      run.metrics.map(m => h("tr", {class: m.key === state.metric ? "is-current" : null},
+    const flagsBox = isJ
+      ? h("div", {class: "detail-cells"}, cells.map(id => h("div", {class: "detail-cell"},
+          h("span", {class: "detail-cell-id"}, `Cell ${id}`), flagTags(id))))
+      : h("div", {class: "detail-cell detail-cells"}, flagTags(sel.cell));
+    const valueHead = isJ ? "Mean" : "Median";
+    const table = h("table", {class: "data-table detail-table"},
+      h("thead", null, h("tr", null,
+        h("th", {scope: "col"}, ""),
+        sides.map(id => h("th", {scope: "col", tip: `Cell ${id}'s side of the junction`}, `Cell ${id}`)),
+        h("th", {scope: "col", tip: isJ ? "Junction value: mean of its two cell sides" : "Cell value: median over its junctions"}, valueHead),
+        h("th", {scope: "col"}, ""))),
+      h("tbody", null, run.metrics.map(m => h("tr", {class: m.key === state.metric ? "is-current" : null},
         h("th", {scope: "row"}, h("button", {type: "button", class: "metric-link", tip: m.help,
                                               onclick: () => set({metric: m.key})}, m.label)),
+        sides.map(id => h("td", null, L.fmtValue(
+          L.sideValue(fd.raw.sides, state.method, sel.junction, state.role, id, m.key, um(m))))),
         h("td", {"data-metric": m.key}, "…"),
         h("td", {class: "unit"}, L.unitFor(m, run.calibrated, state.useUm))))));
-    const cellFlags = isJ ? cells.map(flagRow)
-      : (fd.raw.flags[sel.cell] || []).map(n => h("span", {class: "flag-tag", tip: "QC flag"}, pretty(n)));
-    box.replaceChildren(head, h("div", {class: isJ ? "detail-cells" : "detail-cell detail-cells"}, cellFlags), table);
+    box.replaceChildren(head, flagsBox, table);
     if (!pos) {
       table.querySelectorAll("td[data-metric]").forEach(td => { td.textContent = "–"; });
       return;
@@ -868,8 +886,7 @@
     run.metrics.forEach(m => {
       loadMetric(run.run, state.method, state.role, m.key).then(v => {
         if (token !== box._token) return;
-        const um = run.calibrated && state.useUm && m.unit_um && v[`${kind}_um`];
-        const arr = um || v[`${kind}_px`];
+        const arr = (um(m) && v[`${kind}_um`]) || v[`${kind}_px`];
         const td = table.querySelector(`td[data-metric="${m.key}"]`);
         if (td) td.textContent = L.fmtValue(arr[pos.i]);
       }, () => {
@@ -948,8 +965,11 @@
       return;
     }
     const key = `${run.run}/${f.field_id}`;
-    if (fieldUi.key !== key) {
-      fieldUi = {key, xf: null, sel: {junction: r.junction, cell: r.cell, brush: null}};
+    // The route's ?j= / ?c= is the selection (sync() keeps it current); a brush lives only here.
+    const sameField = fieldUi.key === key;
+    fieldUi = {key, xf: sameField ? fieldUi.xf : null,
+               sel: L.selectionFromRoute(r, sameField ? fieldUi.sel : null)};
+    if (!sameField) {
       // A link to a cell opens in cell mode.
       if (r.cell && !r.junction && state.dot !== "cell") { setTimeout(() => set({dot: "cell"})); return; }
     }
@@ -1043,6 +1063,7 @@
     const root = document.getElementById("view");
     if (JM._lastPlot && r.view !== "overview") { Plotly.purge(JM._lastPlot); JM._lastPlot = null; }
     if (JM._fieldPlot) { Plotly.purge(JM._fieldPlot); JM._fieldPlot = null; }
+    if (r.view !== "field") fieldUi = {key: null, xf: null, sel: null};
     JM._cleanup.splice(0).forEach(fn => fn());
     root.replaceChildren();
     (JM.views[r.view] || JM.views.overview)(root, r);
