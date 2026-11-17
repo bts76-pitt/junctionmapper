@@ -19,7 +19,8 @@ def test_write_tables_round_trip_two_fields(tmp_path):
         csv = pd.read_csv(tmp_path / f"{name}.csv")
         assert list(pq.columns) == cols and list(csv.columns) == cols
         assert len(pq) == len(csv) == sum(len(getattr(r, name)) for r in results)
-        assert set(pq.field_id) == {"a", "b"}
+        if len(pq):  # the membrane tables stay empty until the score is wired into measure
+            assert set(pq.field_id) == {"a", "b"}
 
 
 def test_empty_tables_keep_full_column_set(tmp_path):
@@ -51,3 +52,11 @@ def test_duplicate_field_id_raises(tmp_path):
     rs = [measure_field(*build(field_id="same")[:2], make_cfg()) for _ in range(2)]
     with pytest.raises(ConfigError):
         write_tables(rs, tmp_path)
+
+
+def test_membrane_tables_are_written_even_when_empty(tmp_path):
+    empty = FieldResult(*(make_frame(n, []) for n in SCHEMAS))
+    write_tables([empty], tmp_path)
+    for name in ("membrane_patches", "membrane_fields"):
+        assert list(pd.read_parquet(tmp_path / f"{name}.parquet").columns) == SCHEMAS[name]
+    assert make_frame("membrane_patches", []).dtypes["too_dim"] == bool

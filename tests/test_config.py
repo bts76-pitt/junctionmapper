@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from junctionmapper import config as config_mod
+from junctionmapper.errors import ConfigError
+from tests.fixtures13 import make_cfg
 from junctionmapper.config import (
     DEFAULT_NEIGHBOUR_RADIUS_PX, DEFAULT_TCJ_MIN_RUN, ChannelSpec, RunConfig, Role,
 )
@@ -281,3 +283,18 @@ def test_threshold_for_segment_role_is_refused():
             pixel_size_um=0.325,
             threshold={"segment": 5.0},
         )
+
+
+def test_membrane_score_defaults():
+    m = make_cfg().membrane_score
+    assert m.line_width_um == (0.3, 0.6) and m.patch_um == 20 and m.region_um == 6
+    assert m.ridge_fraction == 0.1 and m.cutoff == 1.5
+
+
+@pytest.mark.parametrize("bad", [
+    {"line_width_um": [0.6, 0.3]}, {"line_width_um": [0, 0.5]}, {"patch_um": 0},
+    {"region_um": -1}, {"ridge_fraction": 0}, {"ridge_fraction": 0.6}, {"cutoff": 1.0},
+    {"typo": 1}])
+def test_membrane_score_rejects_bad_values(bad):
+    with pytest.raises((ValueError, ConfigError)):
+        make_cfg(membrane_score=bad)
