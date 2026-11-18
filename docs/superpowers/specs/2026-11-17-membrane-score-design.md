@@ -74,7 +74,7 @@ drawing cell outlines.
    values would give about 1 always and normalise nothing.
 5. `score` = contrast / baseline. 1 = no line structure.
 6. `membrane_like` = `score >= cutoff`; null where `score` is null.
-7. Too dim: the patch's signal is not clearly above the field's floor; the patch gets no score
+7. Too dim: the patch's ridge pixels are not clearly above the field's floor; the patch gets no score
    (`too_dim = true`, `score` null).
    - `background` = the field's 1st percentile of that channel (no cell-free pixels needed;
      confluent fields are normal).
@@ -82,7 +82,13 @@ drawing cell outlines.
      `background` (the smoothing also uses only those), so a large exact-constant floor
      (zeroed or clipped pixels) does not make it 0. If it is still 0, the robust spread of the
      cell-region pixels; 0 only when there is no signal above the floor.
-   - too dim when (patch cell-region mean - background) < 3 x noise.
+   - too dim when (ridge-pixel mean - background) < 5 x noise. The ridge-pixel mean is the
+     mean on the top `ridge_fraction` of line-filter pixels, as in step 3.
+   - Amended after the real-data check: the first version used the patch cell-region mean at
+     3 x noise. On dim 8-bit fields thin membranes barely move the region mean (1 to 4
+     counts), so it rejected about 60% of patches, reference stains included. Pure noise
+     puts the ridge-pixel mean about 4 x noise up (2.33 from the 1st-percentile floor, plus
+     up to 1.75 for picking the top tenth), hence 5.
    - Scale-invariant and stain-independent; a channel at quantisation level (e.g. 0 to 2 on
      8-bit) fails it.
 
@@ -90,7 +96,7 @@ drawing cell outlines.
 
 - `membrane_patches.{parquet,csv}`: one row per patch and channel.
   - `field_id, role, marker, patch_row, patch_col, y0_px, x0_px, size_px, region_fraction,
-    mean_intensity, background, noise, too_dim, contrast, baseline, score, membrane_like`.
+    mean_intensity, ridge_intensity, background, noise, too_dim, contrast, baseline, score, membrane_like`.
 - `membrane_fields.{parquet,csv}`: one row per field and channel.
   - `field_id, role, marker, n_patches, n_scored, n_too_dim, median_score,
     membrane_like_fraction` (share of scored patches, weighted by region area).

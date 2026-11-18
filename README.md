@@ -412,7 +412,8 @@ Outline-free. Uses no labels, so it is identical under `--labels`.
 - `baseline`: the same contrast on one seeded shuffle of the patch's region pixels.
 - `score` = `contrast` / `baseline`. 1 means no line structure. `membrane_like` = `score` >= `cutoff`; null where there is no score.
 - `background`: the channel's 1st percentile in the field. `noise`: robust SD of the high-pass residual over pixels above `background`.
-- `too_dim`: patch mean minus `background` is under 3 x `noise`. No score, never "diffuse".
+- `ridge_intensity`: mean intensity on the top `ridge_fraction` of line-filter pixels. `mean_intensity` is the whole region's mean.
+- `too_dim`: `ridge_intensity` minus `background` is under 5 x `noise`. No score, never "diffuse".
 - Clipped edge patches under half a side are rows but unscored.
 - `membrane_fields` rolls patches up: `n_patches`, `n_scored`, `n_too_dim`, `median_score`, `membrane_like_fraction`.
 - `n_patches - n_scored - n_too_dim`: unscored for geometry (edge sliver), region (under half cell region) or no signal above `background` in the ridge/rest split.

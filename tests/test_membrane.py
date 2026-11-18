@@ -138,6 +138,28 @@ def test_bright_lines_on_a_mostly_exact_zero_field_are_scored():
     assert left.too_dim.all()                     # all floor: genuinely no signal
 
 
+def sparse_lines():
+    """Grid lines 3 px wide every 100 px, 30 on 10, noise sd 2: about 6% of pixels are
+    membrane, so the region mean sits under 3 x noise above the floor (as dim 8-bit fields
+    do) while the ridge pixels stand well clear of it."""
+    y, x = _yx()
+    on = ((y + 1) % 100 < 3) | ((x + 1) % 100 < 3)
+    return (np.where(on, 30.0, 10.0) + _noise()).astype(np.float32)
+
+
+def test_thin_lines_with_a_low_region_mean_are_scored_not_too_dim():
+    p = score_field(field_with(jm1=sparse_lines()), MembraneScoreConfig())[0]
+    assert ((p.mean_intensity - p.background) < 3 * p.noise).all()     # old test: too dim
+    assert not p.too_dim.any() and np.isfinite(p.score).all()
+    assert ((p.ridge_intensity - p.background) >= 5 * p.noise).all()
+
+
+def test_ridge_intensity_is_recorded_for_too_dim_patches_too():
+    p = score_field(field_with(jm1=noise()), MembraneScoreConfig())[0]
+    assert p.too_dim.all() and np.isfinite(p.ridge_intensity).all()
+    assert (p.ridge_intensity > p.mean_intensity).all()
+
+
 def _specks(fraction, value, floor):
     """A constant ``floor`` with ``fraction`` of pixels, at random, at one constant ``value``."""
     img = np.full(N * N, floor, np.float32)

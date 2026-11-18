@@ -170,7 +170,8 @@ NUCLEUS_DISTANCE_COLUMNS = [
 ]
 MEMBRANE_PATCH_COLUMNS = [
     "field_id", "role", "marker", "patch_row", "patch_col", "y0_px", "x0_px", "size_px",
-    "region_fraction", "mean_intensity", "background", "noise", "too_dim", "contrast",
+    "region_fraction", "mean_intensity", "ridge_intensity", "background", "noise", "too_dim",
+    "contrast",
     "baseline", "score", "membrane_like",
 ]
 MEMBRANE_FIELD_COLUMNS = [

@@ -523,3 +523,11 @@ means different things on different stains; the shuffled baseline cancels that, 
 structure for any channel.
 *Cost if wrong:* a patch with real structure only at a scale outside `line_width_um` reads as
 unstructured. Tune the config, not the code.
+
+**The too-dim test reads the ridge pixels, not the region mean.** A patch is too dim when its
+ridge-pixel mean is under 5 x noise above the field floor.
+*Why:* on dim 8-bit fields thin membranes leave the region mean 1 to 4 counts up, so a
+region-mean test rejected about 60% of patches, reference stains included. Pure noise reaches
+about 4 x noise on the ridge pixels, so 5 still calls a blank channel too dim.
+*Cost if wrong:* a faint but real stain under 5 x noise on its brightest lines reads as too
+dim. `ridge_intensity` is in the table, so the cut can be checked per stain.

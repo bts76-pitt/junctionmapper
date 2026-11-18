@@ -13,8 +13,9 @@ Dividing by the shuffled baseline removes what any texture would give by chance 
 alone puts the brightest pixels on the "ridge"), so a score means the same for any stain.
 Subtracting the field's floor makes it independent of an additive offset as well as of gain.
 
-A patch whose signal is not clearly above the field's floor is ``too_dim`` and gets no
-score: a blank channel reads as too dim, never as diffuse.
+A patch whose ridge pixels are not clearly above the field's floor is ``too_dim`` and gets
+no score: a blank channel reads as too dim, never as diffuse. The test reads the ridge
+pixels, not the whole region, because thin membranes barely move a region mean.
 
 Lengths in the config are um; they are converted with ``field.pixel_size_um``.
 """
@@ -38,7 +39,10 @@ BACKGROUND_PERCENTILE = 1.0      # field floor: confluent fields have no cell-fr
 NOISE_HIGHPASS_SIGMA_PX = 2.0    # residual = plane - gaussian(plane, this); its MAD is noise
 MAD_TO_SD = 1.4826               # MAD of a Gaussian times this = its standard deviation
 NOISE_ZERO_RTOL = 1e-9           # noise at or below this x max |pixel| is roundoff: treated as 0
-DIM_NOISE_MULTIPLE = 3.0         # too dim when (region mean - floor) < this x noise
+DIM_NOISE_MULTIPLE = 5.0         # too dim when (ridge mean - floor) < this x noise. Pure
+                                 # noise puts it ~4 sd up: 2.33 from the 1st-percentile
+                                 # floor to the mean, plus up to 1.75 for picking the
+                                 # top tenth
 MIN_REGION_FRACTION = 0.5        # a patch is scored when at least this much is cell region
 MIN_SIDE_FRACTION = 0.5          # a clipped edge patch is scored only when both its sides are
                                  # at least this fraction of a full side
@@ -151,22 +155,26 @@ def _ridge(img: np.ndarray, sigmas: list[float]) -> np.ndarray:
     return sato(img, sigmas=sigmas, black_ridges=False)
 
 
-def _contrast(values: np.ndarray, response: np.ndarray, ridge_fraction: float,
-              background: float) -> float:
-    """(Mean of ``values`` on the top ``ridge_fraction`` of ``response`` - ``background``)
-    / (mean on the rest - ``background``).
+def _ridge_split(values: np.ndarray, response: np.ndarray,
+                 ridge_fraction: float) -> tuple[float, float]:
+    """(Mean of ``values`` on the top ``ridge_fraction`` of ``response``, mean on the rest).
 
     Ties are broken by position (stable sort), so the cut does not move under a change of
-    intensity scale. NaN when either side is empty or the rest is not above the floor.
+    intensity scale. Both NaN when either side would be empty.
     """
     n = values.size
     k = max(1, round(ridge_fraction * n))
     if n - k < 1:
-        return math.nan
+        return math.nan, math.nan
     order = np.argsort(-response, kind="stable")
-    ridge = values[order[:k]].mean() - background
-    rest = values[order[k:]].mean() - background
-    return float(ridge / rest) if rest > 0 else math.nan
+    return float(values[order[:k]].mean()), float(values[order[k:]].mean())
+
+
+def _contrast(ridge: float, rest: float, background: float) -> float:
+    """(``ridge`` - ``background``) / (``rest`` - ``background``); NaN unless the rest is
+    above the floor."""
+    rest -= background
+    return float((ridge - background) / rest) if rest > 0 else math.nan
 
 
 def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScoreConfig,
@@ -193,20 +201,23 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
             mean = float(vals.mean()) if vals.size else math.nan
             scored = (region_fraction >= MIN_REGION_FRACTION
                       and min(y1 - y0, x1 - x0) >= MIN_SIDE_FRACTION * size)
-            too_dim = scored and not (
-                noise > 0 and np.isfinite(mean) and mean - background >= DIM_NOISE_MULTIPLE * noise)
-            contrast = baseline = score = math.nan
+            ridge = contrast = baseline = score = math.nan
+            too_dim = False
             # The patch in filter pixels, and the same window snapped to the block grid in
             # native pixels. An edge patch narrower than a block holds none: left unscored.
             sy, sx = slice(y0 // factor, y1 // factor), slice(x0 // factor, x1 // factor)
             ny = slice(sy.start * factor, sy.stop * factor)
             nx = slice(sx.start * factor, sx.stop * factor)
             use = small_use[sy, sx]
-            if scored and not too_dim and use.sum() > 1:
+            if scored and use.sum() > 1:
                 if response is None:
                     response = _ridge(small, sigmas)
-                contrast = _contrast(small[sy, sx][use], response[sy, sx][use], cfg.ridge_fraction,
-                                     background)
+                ridge, rest = _ridge_split(small[sy, sx][use], response[sy, sx][use],
+                                           cfg.ridge_fraction)
+                too_dim = not (noise > 0 and np.isfinite(ridge)
+                               and ridge - background >= DIM_NOISE_MULTIPLE * noise)
+            if scored and not too_dim and np.isfinite(ridge):
+                contrast = _contrast(ridge, rest, background)
                 # Shuffle in native pixels, then downsample as the original was: shuffling
                 # after downsampling makes lone bright pixels that the 1 px filter scale
                 # reads as ridges, inflating the baseline.
@@ -216,14 +227,14 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
                 shuffled[movable] = np.random.default_rng(seed).permutation(shuffled[movable])
                 shuffled = _block_mean(shuffled, factor)
                 shuffled = np.where(np.isfinite(shuffled), shuffled, median)
-                baseline = _contrast(shuffled[use], _ridge(shuffled, sigmas)[use],
-                                     cfg.ridge_fraction, background)
+                baseline = _contrast(*_ridge_split(shuffled[use], _ridge(shuffled, sigmas)[use],
+                                                   cfg.ridge_fraction), background)
                 if np.isfinite(contrast) and np.isfinite(baseline) and baseline > 0:
                     score = contrast / baseline
             rows.append(dict(
                 field_id=field.field_id, role=str(role), marker=field.markers.get(role, ""),
                 patch_row=r, patch_col=c, y0_px=y0, x0_px=x0, size_px=size,
-                region_fraction=region_fraction, mean_intensity=mean,
+                region_fraction=region_fraction, mean_intensity=mean, ridge_intensity=ridge,
                 background=background, noise=noise, too_dim=too_dim,
                 contrast=contrast, baseline=baseline, score=score,
                 membrane_like=bool(score >= cfg.cutoff) if np.isfinite(score) else None,
@@ -252,10 +263,11 @@ def score_field(field: Field, cfg: MembraneScoreConfig) -> tuple[pd.DataFrame, p
 
     Patches of ``round(patch_um / px)`` px tile the field from (0, 0); edge patches are
     clipped. A patch is scored when at least half of it is cell region, both its sides are
-    at least half a full side, it is not too dim, and it spans at least one filter block
-    (true at half a side; kept as a guard). Otherwise ``contrast``, ``baseline`` and
-    ``score`` are NaN and ``membrane_like`` is null. ``too_dim`` is only ever True for a
-    patch that passes the region and side tests.
+    at least half a full side, it spans at least two filter pixels of region (true at half
+    a side; kept as a guard), and it is not too dim. Otherwise ``contrast``, ``baseline``
+    and ``score`` are NaN and ``membrane_like`` is null. ``ridge_intensity`` (the mean on
+    the ridge pixels, which the too-dim test reads) is set for every patch that passes the
+    first three tests, too dim or not, and ``too_dim`` is only ever True for such a patch.
     """
     px = field.pixel_size_um
     region = cell_region(field.planes[Role.NUCLEUS], px, cfg.region_um)
