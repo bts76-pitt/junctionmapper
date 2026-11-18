@@ -194,6 +194,7 @@ refused.
 | `membrane_score.region_um` | 6 | Cell region: nuclei grown by this, µm. |
 | `membrane_score.ridge_fraction` | 0.1 | Share of region pixels counted as ridge. |
 | `membrane_score.cutoff` | 1.5 | `membrane_like` when `score` >= this. |
+| `membrane_score.min_ridge_intensity` | none | Raw units. Too dim when `ridge_intensity` - `background` is below this. Unset: 5 x `noise`. |
 
 ---
 
@@ -413,13 +414,14 @@ Outline-free. Uses no labels, so it is identical under `--labels`.
 - `score` = `contrast` / `baseline`. 1 means no line structure. `membrane_like` = `score` >= `cutoff`; null where there is no score.
 - `background`: the channel's 1st percentile in the field. `noise`: robust SD of the high-pass residual over pixels above `background`.
 - `ridge_intensity`: mean intensity on the top `ridge_fraction` of line-filter pixels. `mean_intensity` is the whole region's mean.
-- `too_dim`: `ridge_intensity` minus `background` is under 5 x `noise`. No score, never "diffuse".
+- `too_dim`: `ridge_intensity` minus `background` is under 5 x `noise`, or under `min_ridge_intensity` when set. Always too dim when `noise` is 0. No score, never "diffuse".
+- Set `min_ridge_intensity` for dim data: a dim stain's noise grows with its signal, so the 5 x `noise` rule cannot tell a near-blank channel from a faint real one.
 - Clipped edge patches under half a side are rows but unscored.
 - `membrane_fields` rolls patches up: `n_patches`, `n_scored`, `n_too_dim`, `median_score`, `membrane_like_fraction`.
 - `n_patches - n_scored - n_too_dim`: unscored for geometry (edge sliver), region (under half cell region) or no signal above `background` in the ridge/rest split.
 - A field with no cells still gets these rows.
 
-Configure under `membrane_score:` in the config (`line_width_um`, `patch_um`, `region_um`, `ridge_fraction`, `cutoff`).
+Configure under `membrane_score:` in the config (`line_width_um`, `patch_um`, `region_um`, `ridge_fraction`, `cutoff`, `min_ridge_intensity`).
 `run --no-membrane-score` leaves both tables empty; `run.json` records `membrane_score: on` or `off`.
 
 ---

@@ -15,7 +15,10 @@ Subtracting the field's floor makes it independent of an additive offset as well
 
 A patch whose ridge pixels are not clearly above the field's floor is ``too_dim`` and gets
 no score: a blank channel reads as too dim, never as diffuse. The test reads the ridge
-pixels, not the whole region, because thin membranes barely move a region mean.
+pixels, not the whole region, because thin membranes barely move a region mean. "Clearly
+above" is 5 x the field's noise, or ``min_ridge_intensity`` raw units when that is set: the
+noise of a dim stain grows with its own signal, so a ratio cannot tell a near-blank channel
+from a faint real one, and only the experiment knows the level that separates them.
 
 Lengths in the config are um; they are converted with ``field.pixel_size_um``.
 """
@@ -42,7 +45,8 @@ NOISE_ZERO_RTOL = 1e-9           # noise at or below this x max |pixel| is round
 DIM_NOISE_MULTIPLE = 5.0         # too dim when (ridge mean - floor) < this x noise. Pure
                                  # noise puts it ~4 sd up: 2.33 from the 1st-percentile
                                  # floor to the mean, plus up to 1.75 for picking the
-                                 # top tenth
+                                 # top tenth. Assumes ridge_fraction near 0.1: at 0.01 the
+                                 # selection term is ~2.7 and pure noise nears 5
 MIN_REGION_FRACTION = 0.5        # a patch is scored when at least this much is cell region
 MIN_SIDE_FRACTION = 0.5          # a clipped edge patch is scored only when both its sides are
                                  # at least this fraction of a full side
@@ -182,6 +186,7 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
     plane = np.asarray(field.planes[role], np.float64)
     finite = np.isfinite(plane)
     background, noise = floor_and_noise(plane, region)
+    dim_cut = DIM_NOISE_MULTIPLE * noise if cfg.min_ridge_intensity is None else cfg.min_ridge_intensity
     median = float(np.median(plane[finite])) if finite.any() else 0.0
     small = _block_mean(plane, factor)
     small = np.where(np.isfinite(small), small, median)              # filter needs no NaN
@@ -214,8 +219,9 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
                     response = _ridge(small, sigmas)
                 ridge, rest = _ridge_split(small[sy, sx][use], response[sy, sx][use],
                                            cfg.ridge_fraction)
-                too_dim = not (noise > 0 and np.isfinite(ridge)
-                               and ridge - background >= DIM_NOISE_MULTIPLE * noise)
+                # noise 0 means no signal above the floor at all (blank, or constant
+                # specks on it): too dim under either cut.
+                too_dim = not (noise > 0 and np.isfinite(ridge) and ridge - background >= dim_cut)
             if scored and not too_dim and np.isfinite(ridge):
                 contrast = _contrast(ridge, rest, background)
                 # Shuffle in native pixels, then downsample as the original was: shuffling
@@ -267,7 +273,8 @@ def score_field(field: Field, cfg: MembraneScoreConfig) -> tuple[pd.DataFrame, p
     a side; kept as a guard), and it is not too dim. Otherwise ``contrast``, ``baseline``
     and ``score`` are NaN and ``membrane_like`` is null. ``ridge_intensity`` (the mean on
     the ridge pixels, which the too-dim test reads) is set for every patch that passes the
-    first three tests, too dim or not, and ``too_dim`` is only ever True for such a patch.
+    first three tests, too dim or not, and ``too_dim`` is only ever True for such a patch: a
+    patch with no finite pixels is unscored, not too dim.
     """
     px = field.pixel_size_um
     region = cell_region(field.planes[Role.NUCLEUS], px, cfg.region_um)

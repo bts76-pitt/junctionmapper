@@ -531,3 +531,11 @@ region-mean test rejected about 60% of patches, reference stains included. Pure 
 about 4 x noise on the ridge pixels, so 5 still calls a blank channel too dim.
 *Cost if wrong:* a faint but real stain under 5 x noise on its brightest lines reads as too
 dim. `ridge_intensity` is in the table, so the cut can be checked per stain.
+
+**An absolute too-dim cut is a config value, not a default.** `min_ridge_intensity` (raw
+units) replaces 5 x noise when set; unset, the noise rule stands.
+*Why:* a dim stain's noise grows with its own signal, so near-blank and faint-but-real
+channels sit at the same signal-to-noise ratio. Only an absolute level separates them, and
+that level depends on the camera, bit depth and staining: experiment knowledge, which
+belongs in the config.
+*Cost if wrong:* a run without the setting can call a near-blank channel scored.

@@ -89,6 +89,11 @@ drawing cell outlines.
      counts), so it rejected about 60% of patches, reference stains included. Pure noise
      puts the ridge-pixel mean about 4 x noise up (2.33 from the 1st-percentile floor, plus
      up to 1.75 for picking the top tenth), hence 5.
+   - Optional `min_ridge_intensity` (raw units) replaces 5 x noise as the cut; noise 0 is
+     still too dim. Added after the second real-data run: -dox E-cadherin (expected absent)
+     had ridge signal ~2 counts at ~4.7 x noise, -dox p120 (faint, real) ~8 counts at
+     ~5.3 x noise. Noise grows with a dim stain's own signal, so no multiple separates
+     them; an absolute 5 counts does (E-cadherin 0-2% pass, p120 58-99%).
    - Scale-invariant and stain-independent; a channel at quantisation level (e.g. 0 to 2 on
      8-bit) fails it.
 
@@ -114,6 +119,7 @@ membrane_score:
   region_um: 6                # how far the cell region extends from nuclei
   ridge_fraction: 0.1
   cutoff: 1.5
+  min_ridge_intensity: null   # raw units; null = 5 x noise
 ```
 
 CLI: `--no-membrane-score` on `run`.

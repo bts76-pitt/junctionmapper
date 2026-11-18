@@ -160,6 +160,33 @@ def test_ridge_intensity_is_recorded_for_too_dim_patches_too():
     assert (p.ridge_intensity > p.mean_intensity).all()
 
 
+def test_an_absolute_ridge_cut_replaces_the_noise_multiple():
+    # sparse_lines: ridge pixels ~6.5-7 x noise (~13-15 counts) above the floor. A cut
+    # above that calls every patch too dim; one below scores them, noise rule or not.
+    cfg = MembraneScoreConfig
+    base = score_field(field_with(jm1=sparse_lines()), cfg())[0]
+    sig = base.ridge_intensity - base.background
+    high = score_field(field_with(jm1=sparse_lines()), cfg(min_ridge_intensity=float(sig.max()) + 1))[0]
+    low = score_field(field_with(jm1=sparse_lines()), cfg(min_ridge_intensity=float(sig.min()) - 1))[0]
+    assert high.too_dim.all() and high.score.isna().all()
+    assert not low.too_dim.any() and np.allclose(low.score, base.score)
+
+
+def test_the_absolute_cut_overrides_the_noise_multiple_both_ways():
+    # pure noise: ridge ~3.3 x noise, too dim under 5 x noise; a cut of 1 count scores it.
+    p = score_field(field_with(jm1=noise()), MembraneScoreConfig(min_ridge_intensity=1.0))[0]
+    assert not p.too_dim.any() and np.isfinite(p.score).all()
+
+
+@pytest.mark.parametrize("fraction, value, floor", [(0.02, 50.0, 0.0), (0.02, 255.0, 3.0)])
+def test_constant_specks_stay_too_dim_under_an_absolute_cut(fraction, value, floor):
+    # Hot pixels lift the ridge mean far over any small cut, but there is no noise: no
+    # signal above the floor, so the channel is still blank.
+    cfg = MembraneScoreConfig(min_ridge_intensity=1.0)
+    s = score_field(field_with(jm1=_specks(fraction, value, floor)), cfg)[0]
+    assert s.too_dim.all() and s.score.isna().all()
+
+
 def _specks(fraction, value, floor):
     """A constant ``floor`` with ``fraction`` of pixels, at random, at one constant ``value``."""
     img = np.full(N * N, floor, np.float32)

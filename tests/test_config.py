@@ -288,13 +288,13 @@ def test_threshold_for_segment_role_is_refused():
 def test_membrane_score_defaults():
     m = make_cfg().membrane_score
     assert m.line_width_um == (0.3, 0.6) and m.patch_um == 20 and m.region_um == 6
-    assert m.ridge_fraction == 0.1 and m.cutoff == 1.5
+    assert m.ridge_fraction == 0.1 and m.cutoff == 1.5 and m.min_ridge_intensity is None
 
 
 @pytest.mark.parametrize("bad", [
     {"line_width_um": [0.6, 0.3]}, {"line_width_um": [0, 0.5]}, {"patch_um": 0},
     {"region_um": -1}, {"ridge_fraction": 0}, {"ridge_fraction": 0.6}, {"cutoff": 1.0},
-    {"typo": 1}])
+    {"min_ridge_intensity": -1}, {"min_ridge_intensity": float("nan")}, {"typo": 1}])
 def test_membrane_score_rejects_bad_values(bad):
     with pytest.raises((ValueError, ConfigError)):
         make_cfg(membrane_score=bad)
