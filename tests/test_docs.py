@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-README = (ROOT / "README.md").read_text(encoding="utf-8")
+# The user docs: the README plus the reference and differences pages it links to.
+README = "\n\n".join((ROOT / f).read_text(encoding="utf-8")
+                     for f in ("README.md", "docs/reference.md", "docs/vs-original.md"))
 VALIDATION = (ROOT / "tests" / "validation" / "README.md").read_text(encoding="utf-8")
 
 
