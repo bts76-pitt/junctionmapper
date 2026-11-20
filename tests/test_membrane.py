@@ -108,8 +108,8 @@ def test_uniform_noise_scores_near_one():
 
 
 def test_uniform_noise_with_no_floor_is_too_dim():
-    # mean - 1st percentile is 2.33 sd for pure noise, below 3 x noise: nothing stands
-    # out from the field's floor, so it must read as too dim, not as diffuse.
+    # Pure noise puts about 4 x noise on the ridge pixels above the 1st percentile, under
+    # the 5 x noise cut: nothing stands out from the floor, so too dim, not diffuse.
     s = score_field(field_with(jm1=noise()), CALL)[0]
     assert s.too_dim.all() and s.score.isna().all()
 

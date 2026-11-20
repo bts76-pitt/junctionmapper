@@ -1,5 +1,7 @@
 # Membrane Score Implementation Plan
 
+> **Status (2026-11-20): implemented.** Later changes: `cutoff` defaults to none (`acd072f`), so `membrane_like` is null unless set. Too-dim reads the ridge pixels, and `min_ridge_intensity` was added. Where this plan says `cutoff: 1.5` or "False when too dim", the code and README win.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `run` writes an outline-free, per-patch "membrane-like" score for every stain channel, plus a per-field summary.

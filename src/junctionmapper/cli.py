@@ -774,7 +774,7 @@ def run(
     overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
                                           "files in OUT/labels (default: refuse)."),
     membrane_score: bool = typer.Option(True, "--membrane-score/--no-membrane-score",
-                                        help="Score each junction channel for membrane-like line "
+                                        help="Score each non-nucleus channel for membrane-like line "
                                         "structure (membrane_patches, membrane_fields)."),
 ) -> None:
     """Segment (or load labels), measure, write the seven tables and report/index.html to OUT.

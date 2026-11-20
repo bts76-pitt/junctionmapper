@@ -1,6 +1,6 @@
 # Membrane score: design
 
-Date: 2026-11-17. Status: draft after builder check, awaiting user approval. Builds on the run pipeline
+Date: 2026-11-17. Status: implemented on `feat/membrane-score`. Amended 2026-11-18: `cutoff` has no default. A line filter to stop dots scoring as lines was tried and not adopted; see `2026-11-18-membrane-line-filter-design.md`. Builds on the run pipeline
 (`cli.py run`, `pipeline.py`, `tables.py`).
 
 ## Intent

@@ -261,7 +261,7 @@ concatenate.
 | `nuclei` | nucleus | `nucleus_id`, `cell_id`, `orphan` |
 | `nuclei_distances` | *ordered* nucleus pair | `nucleus_id`, `neighbour_nucleus_id`, `rank_from_nucleus` |
 | `flags` | cell | `border_touching`, `isolated`, `degenerate`, ... |
-| `membrane_patches` | scored patch × channel | `role`, `patch_row`, `patch_col`, `score`, `membrane_like` |
+| `membrane_patches` | patch × channel | `role`, `patch_row`, `patch_col`, `score`, `membrane_like` |
 | `membrane_fields` | field × channel | `role`, `n_scored`, `median_score`, `membrane_like_fraction` |
 
 Lengths come in `_px` and `_um`; areas in `_px` and `_um2`.
@@ -408,12 +408,15 @@ Outline-free. Uses no labels, so it is identical under `--labels`.
 
 - Every channel except `nucleus` is scored, `segment` included.
 - Region: nuclei (Otsu on the raw nucleus plane) grown by `region_um`.
+- `region_um` must reach the cell borders. Otherwise the membranes fall outside the region and patches read as too dim; check `region_fraction`.
 - Patches: squares of `patch_um`. One row per patch per channel in `membrane_patches`.
 - `contrast`: mean intensity on the top `ridge_fraction` of line-filter pixels, over the mean on the rest; both minus the field floor (`background`), so an offset does not change it.
 - `baseline`: the same contrast on one seeded shuffle of the patch's region pixels.
 - `score` = `contrast` / `baseline`. 1 means no line structure. `membrane_like` = `score` >= `cutoff`; null where there is no score or no `cutoff`.
 - Set `cutoff` from the experiment's own controls; it depends on optics, pixel size, cell density and signal-to-noise.
-- `background`: the channel's 1st percentile in the field. `noise`: robust SD of the high-pass residual over pixels above `background`.
+- Scores compare only at one pixel size. Membranes about 1 px wide can score near 1.
+- Punctate or clustered-dot signal can score above 1, as lines do. A score is line-likeness, not proof of membrane.
+- `background`: the channel's 1st percentile in the field. `noise`: robust SD of the high-pass residual over pixels above `background`; if that is 0, the robust spread of the region pixels.
 - `ridge_intensity`: mean intensity on the top `ridge_fraction` of line-filter pixels. `mean_intensity` is the whole region's mean.
 - `too_dim`: `ridge_intensity` minus `background` is under 5 x `noise`, or under `min_ridge_intensity` when set. Always too dim when `noise` is 0. No score, never "diffuse".
 - Set `min_ridge_intensity` for dim data: a dim stain's noise grows with its signal, so the 5 x `noise` rule cannot tell a near-blank channel from a faint real one.

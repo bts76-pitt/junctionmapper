@@ -539,3 +539,11 @@ channels sit at the same signal-to-noise ratio. Only an absolute level separates
 that level depends on the camera, bit depth and staining: experiment knowledge, which
 belongs in the config.
 *Cost if wrong:* a run without the setting can call a near-blank channel scored.
+
+**The membrane score makes no membrane-like call by default.** `cutoff` defaults to none;
+`membrane_like` is null and `membrane_like_fraction` NaN unless the config sets it.
+*Why:* on real data a 1.5 cutoff called nearly every scored patch membrane-like, for every
+stain. The useful cut depends on optics, pixel size, cell density and signal-to-noise:
+experiment knowledge, set from the experiment's own controls.
+*Cost if wrong:* a run without the setting has no yes/no call; `score` and `median_score` are
+still there.
