@@ -47,7 +47,8 @@ class MembraneScoreConfig(BaseModel):
     patch_um: float = 20.0                            # side of one scored patch
     region_um: float = 6.0                            # nucleus mask growth defining the cell region
     ridge_fraction: float = 0.1                       # fraction of region pixels counted as ridge
-    cutoff: float = 1.5                               # membrane_like when contrast/baseline >= cutoff
+    cutoff: float | None = None                       # membrane_like when contrast/baseline >= cutoff;
+                                                      # None: no call. Set from the experiment's controls
     min_ridge_intensity: float | None = None          # raw units; too dim when ridge mean - floor is
                                                       # below it. None: 5 x the field's noise instead
 
@@ -83,8 +84,8 @@ class MembraneScoreConfig(BaseModel):
     @field_validator("cutoff")
     @classmethod
     def _check_cutoff(cls, v):
-        if not math.isfinite(v) or v <= 1:
-            raise ConfigError(f"cutoff must be a finite number > 1, got {v!r}")
+        if v is not None and (not math.isfinite(v) or v <= 1):
+            raise ConfigError(f"cutoff must be null or a finite number > 1, got {v!r}")
         return v
 
     @field_validator("min_ridge_intensity")

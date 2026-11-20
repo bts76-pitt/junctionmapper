@@ -193,7 +193,7 @@ refused.
 | `membrane_score.patch_um` | 20 | Side of one scored patch, µm. |
 | `membrane_score.region_um` | 6 | Cell region: nuclei grown by this, µm. |
 | `membrane_score.ridge_fraction` | 0.1 | Share of region pixels counted as ridge. |
-| `membrane_score.cutoff` | 1.5 | `membrane_like` when `score` >= this. |
+| `membrane_score.cutoff` | none | `membrane_like` when `score` >= this. Unset: no call, `membrane_like` null. |
 | `membrane_score.min_ridge_intensity` | none | Raw units. Too dim when `ridge_intensity` - `background` is below this. Unset: 5 x `noise`. |
 
 ---
@@ -411,7 +411,8 @@ Outline-free. Uses no labels, so it is identical under `--labels`.
 - Patches: squares of `patch_um`. One row per patch per channel in `membrane_patches`.
 - `contrast`: mean intensity on the top `ridge_fraction` of line-filter pixels, over the mean on the rest; both minus the field floor (`background`), so an offset does not change it.
 - `baseline`: the same contrast on one seeded shuffle of the patch's region pixels.
-- `score` = `contrast` / `baseline`. 1 means no line structure. `membrane_like` = `score` >= `cutoff`; null where there is no score.
+- `score` = `contrast` / `baseline`. 1 means no line structure. `membrane_like` = `score` >= `cutoff`; null where there is no score or no `cutoff`.
+- Set `cutoff` from the experiment's own controls; it depends on optics, pixel size, cell density and signal-to-noise.
 - `background`: the channel's 1st percentile in the field. `noise`: robust SD of the high-pass residual over pixels above `background`.
 - `ridge_intensity`: mean intensity on the top `ridge_fraction` of line-filter pixels. `mean_intensity` is the whole region's mean.
 - `too_dim`: `ridge_intensity` minus `background` is under 5 x `noise`, or under `min_ridge_intensity` when set. Always too dim when `noise` is 0. No score, never "diffuse".

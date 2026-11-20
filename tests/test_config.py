@@ -288,7 +288,7 @@ def test_threshold_for_segment_role_is_refused():
 def test_membrane_score_defaults():
     m = make_cfg().membrane_score
     assert m.line_width_um == (0.3, 0.6) and m.patch_um == 20 and m.region_um == 6
-    assert m.ridge_fraction == 0.1 and m.cutoff == 1.5 and m.min_ridge_intensity is None
+    assert m.ridge_fraction == 0.1 and m.cutoff is None and m.min_ridge_intensity is None
 
 
 @pytest.mark.parametrize("bad", [

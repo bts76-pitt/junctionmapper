@@ -243,7 +243,8 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
                 region_fraction=region_fraction, mean_intensity=mean, ridge_intensity=ridge,
                 background=background, noise=noise, too_dim=too_dim,
                 contrast=contrast, baseline=baseline, score=score,
-                membrane_like=bool(score >= cfg.cutoff) if np.isfinite(score) else None,
+                membrane_like=(bool(score >= cfg.cutoff)
+                               if cfg.cutoff is not None and np.isfinite(score) else None),
                 _region_px=int(reg.sum())))     # weight for the field row; make_frame drops it
     return rows
 
@@ -251,12 +252,14 @@ def _patch_rows(field: Field, role: Role, region: np.ndarray, cfg: MembraneScore
 def _field_row(field: Field, role: Role, rows: list[dict]) -> dict:
     """One channel's summary. ``n_scored`` counts patches that got a score.
 
-    ``membrane_like_fraction`` is the share of scored cell-region pixels that lie in
+    ``membrane_like_fraction`` is the share of called cell-region pixels that lie in
     membrane-like patches, so a clipped edge patch weighs by the region it actually holds.
+    NaN when no patch has a call (no cutoff set, or nothing scored).
     """
     scored = [x for x in rows if np.isfinite(x["score"])]
-    weight = sum(x["_region_px"] for x in scored)
-    like = sum(x["_region_px"] for x in scored if x["membrane_like"])
+    called = [x for x in scored if x["membrane_like"] is not None]
+    weight = sum(x["_region_px"] for x in called)
+    like = sum(x["_region_px"] for x in called if x["membrane_like"])
     return dict(
         field_id=field.field_id, role=str(role), marker=field.markers.get(role, ""),
         n_patches=len(rows), n_scored=len(scored), n_too_dim=sum(x["too_dim"] for x in rows),

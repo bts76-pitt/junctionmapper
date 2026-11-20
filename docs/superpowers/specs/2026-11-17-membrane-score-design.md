@@ -73,7 +73,7 @@ drawing cell outlines.
    (its cell-region pixels shuffled once, seeded). Reusing the original ridge mask on shuffled
    values would give about 1 always and normalise nothing.
 5. `score` = contrast / baseline. 1 = no line structure.
-6. `membrane_like` = `score >= cutoff`; null where `score` is null.
+6. Optional call: `membrane_like` = `score >= cutoff`; null where `score` is null or `cutoff` is unset.
 7. Too dim: the patch's ridge pixels are not clearly above the field's floor; the patch gets no score
    (`too_dim = true`, `score` null).
    - `background` = the field's 1st percentile of that channel (no cell-free pixels needed;
@@ -118,7 +118,7 @@ membrane_score:
   patch_um: 20                # about one cell across
   region_um: 6                # how far the cell region extends from nuclei
   ridge_fraction: 0.1
-  cutoff: 1.5
+  cutoff: null                # no membrane_like call; set per experiment
   min_ridge_intensity: null   # raw units; null = 5 x noise
 ```
 
@@ -138,7 +138,7 @@ CLI: `--no-membrane-score` on `run`.
 
 ## My calls (user may override)
 
-- Defaults above. `cutoff` 1.5 is provisional, to be checked on real data (below).
+- Defaults above. `cutoff` has no default (amended 2026-11-18): set it per experiment from its controls.
 - Region from Otsu nuclei on the raw plane, never from label files.
 - Baseline re-runs the filter on one seeded shuffle per patch.
 - Too-dim test from field 1st percentile and high-pass noise (above).

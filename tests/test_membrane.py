@@ -20,6 +20,7 @@ from junctionmapper.measure.membrane import (_filter_geometry, cell_region, floo
 N = 400          # field side, px
 CELL = 50        # cell pitch, px
 LINE = 5         # border line width, px
+CALL = MembraneScoreConfig(cutoff=1.5)     # the default makes no membrane_like call
 
 
 def _yx():
@@ -95,33 +96,33 @@ def small_field() -> Field:
 # --- the score -----------------------------------------------------------------------
 
 def test_thin_lines_are_membrane_like():
-    patches, fields = score_field(field_with(jm1=lines()), MembraneScoreConfig())
+    patches, fields = score_field(field_with(jm1=lines()), CALL)
     s = patches[patches.role == "JM1"]
     assert len(s) == 4 and not s.too_dim.any() and (s.score >= 1.5).all() and s.membrane_like.all()
     assert fields.set_index("role").loc["JM1", "membrane_like_fraction"] == pytest.approx(1.0)
 
 
 def test_uniform_noise_scores_near_one():
-    s = score_field(field_with(jm1=noise_on_floor()), MembraneScoreConfig())[0]
+    s = score_field(field_with(jm1=noise_on_floor()), CALL)[0]
     assert s.score.between(0.95, 1.05).all() and not s.membrane_like.any()     # measured 0.999 to 1.001
 
 
 def test_uniform_noise_with_no_floor_is_too_dim():
     # mean - 1st percentile is 2.33 sd for pure noise, below 3 x noise: nothing stands
     # out from the field's floor, so it must read as too dim, not as diffuse.
-    s = score_field(field_with(jm1=noise()), MembraneScoreConfig())[0]
+    s = score_field(field_with(jm1=noise()), CALL)[0]
     assert s.too_dim.all() and s.score.isna().all()
 
 
 def test_filled_cells_are_not_membrane_like():
-    s = score_field(field_with(jm1=filled()), MembraneScoreConfig())[0]
+    s = score_field(field_with(jm1=filled()), CALL)[0]
     assert (s.score < 1.1).all()                                            # measured 1.009 to 1.015
 
 
 def test_a_blank_channel_is_too_dim_not_diffuse():
     # membrane_like is null, not False, where there is no score: a mean over the column
     # must not read a blank channel as 0% membrane-like (diffuse).
-    s = score_field(field_with(jm1=sparse_ones()), MembraneScoreConfig())[0]
+    s = score_field(field_with(jm1=sparse_ones()), CALL)[0]
     assert s.too_dim.all() and s.score.isna().all() and s.membrane_like.isna().all()
     assert str(s.membrane_like.dtype) == "boolean"
 
@@ -131,7 +132,7 @@ def test_bright_lines_on_a_mostly_exact_zero_field_are_scored():
     # the high-pass residual is 0. The lines are bright: they must be scored, not too dim.
     img = lines()
     img[:, :248] = 0.0
-    p, _ = score_field(field_with(jm1=img), MembraneScoreConfig())
+    p, _ = score_field(field_with(jm1=img), CALL)
     right, left = p[p.x0_px == 200], p[p.x0_px == 0]
     assert (p.noise > 0).all()
     assert not right.too_dim.any() and right.membrane_like.all()
@@ -148,14 +149,14 @@ def sparse_lines():
 
 
 def test_thin_lines_with_a_low_region_mean_are_scored_not_too_dim():
-    p = score_field(field_with(jm1=sparse_lines()), MembraneScoreConfig())[0]
+    p = score_field(field_with(jm1=sparse_lines()), CALL)[0]
     assert ((p.mean_intensity - p.background) < 3 * p.noise).all()     # old test: too dim
     assert not p.too_dim.any() and np.isfinite(p.score).all()
     assert ((p.ridge_intensity - p.background) >= 5 * p.noise).all()
 
 
 def test_ridge_intensity_is_recorded_for_too_dim_patches_too():
-    p = score_field(field_with(jm1=noise()), MembraneScoreConfig())[0]
+    p = score_field(field_with(jm1=noise()), CALL)[0]
     assert p.too_dim.all() and np.isfinite(p.ridge_intensity).all()
     assert (p.ridge_intensity > p.mean_intensity).all()
 
@@ -200,13 +201,13 @@ def test_constant_specks_on_a_constant_floor_are_too_dim(fraction, value, floor)
     # Isolated pixels of one value (hot or saturated specks) leave a high-pass residual of
     # floating-point roundoff, not exactly 0: that must still count as no noise, so the
     # region-spread fallback (0 here) decides and the channel reads as blank.
-    s = score_field(field_with(jm1=_specks(fraction, value, floor)), MembraneScoreConfig())[0]
+    s = score_field(field_with(jm1=_specks(fraction, value, floor)), CALL)[0]
     assert s.too_dim.all() and s.score.isna().all() and s.membrane_like.isna().all()
 
 
 def test_score_is_invariant_to_intensity_scale():
-    a = score_field(field_with(jm1=lines()), MembraneScoreConfig())[0]
-    b = score_field(field_with(jm1=lines() * 10), MembraneScoreConfig())[0]
+    a = score_field(field_with(jm1=lines()), CALL)[0]
+    b = score_field(field_with(jm1=lines() * 10), CALL)[0]
     assert np.allclose(a.score, b.score, rtol=1e-6) and (a.too_dim == b.too_dim).all()
 
 
@@ -216,28 +217,28 @@ def test_score_is_invariant_to_an_additive_offset(offset, gain):
     # contrast subtracts the field floor from both means, so a camera offset or a uniform
     # background does not pull the score toward 1. Float32 input loses a little precision
     # under the offset: measured worst case 4e-7 relative, so 1e-5 leaves margin.
-    a = score_field(field_with(jm1=lines() * gain), MembraneScoreConfig())[0]
-    b = score_field(field_with(jm1=lines() * gain + offset), MembraneScoreConfig())[0]
+    a = score_field(field_with(jm1=lines() * gain), CALL)[0]
+    b = score_field(field_with(jm1=lines() * gain + offset), CALL)[0]
     assert np.allclose(a.score, b.score, rtol=1e-5) and (a.too_dim == b.too_dim).all()
 
 
 def test_same_input_gives_identical_scores():
-    a, b = (score_field(field_with(jm1=lines()), MembraneScoreConfig())[0] for _ in range(2))
+    a, b = (score_field(field_with(jm1=lines()), CALL)[0] for _ in range(2))
     pd.testing.assert_frame_equal(a, b)
 
 
 def test_nucleus_channel_is_never_scored_and_every_other_role_is():
-    s = score_field(field_with(jm1=lines(), jm2=noise(), segment=lines()), MembraneScoreConfig())[0]
+    s = score_field(field_with(jm1=lines(), jm2=noise(), segment=lines()), CALL)[0]
     assert set(s.role) == {"JM1", "JM2", "segment"}
 
 
 def test_a_blank_nucleus_plane_leaves_every_patch_unscored():
-    p, f = score_field(field_with(jm1=lines(), nucleus=np.zeros((400, 400))), MembraneScoreConfig())
+    p, f = score_field(field_with(jm1=lines(), nucleus=np.zeros((400, 400))), CALL)
     assert (p.region_fraction == 0).all() and p.score.isna().all() and (f.n_scored == 0).all()
 
 
 def test_a_field_smaller_than_a_patch_does_not_crash():
-    p, f = score_field(small_field(), MembraneScoreConfig())
+    p, f = score_field(small_field(), CALL)
     assert len(f) >= 1 and (f.n_patches <= 1).all()
 
 
@@ -255,7 +256,7 @@ def test_the_downsampled_filter_path_scores_like_the_native_one(jm1, lo, hi):
     # The baseline must be shuffled before downsampling, or lone bright pixels at the
     # 1 px scale inflate it and thin lines fall below the cutoff. Patches are 267 px, so
     # only the top-left one is full; the 133 px edge patches are under half a side.
-    p, _ = score_field(field_with(jm1=jm1(), px=0.075), MembraneScoreConfig())
+    p, _ = score_field(field_with(jm1=jm1(), px=0.075), CALL)
     full = p[(p.y0_px == 0) & (p.x0_px == 0)]
     assert not p.too_dim.any() and full.score.between(lo, hi).all()
     assert p.loc[(p.y0_px > 0) | (p.x0_px > 0), "score"].isna().all()
@@ -266,7 +267,7 @@ def test_an_edge_patch_narrower_than_a_filter_block_is_left_unscored():
     # column of patches 1 px wide, which holds no whole block to filter.
     f = field_with(jm1=lines(), px=0.07)
     f.planes = {r: p[:, :287].copy() for r, p in f.planes.items()}
-    p, _ = score_field(f, MembraneScoreConfig())
+    p, _ = score_field(f, CALL)
     edge = p[p.x0_px == 286]
     assert len(edge) == 2 and edge.score.isna().all() and edge.membrane_like.isna().all()
     assert np.isfinite(p.loc[(p.x0_px == 0) & (p.y0_px == 0), "score"]).all()
@@ -281,7 +282,7 @@ def _widened(width):
 
 def test_a_thin_edge_sliver_is_not_scored_and_does_not_dilute_the_fraction():
     # 404 px: the last patch column is 4 px wide, under half a 200 px patch side.
-    p, f = score_field(_widened(404), MembraneScoreConfig())
+    p, f = score_field(_widened(404), CALL)
     sliver = p[p.x0_px == 400]
     assert len(sliver) == 2 and (sliver.region_fraction == 1).all()
     assert sliver.score.isna().all() and not sliver.too_dim.any() and sliver.membrane_like.isna().all()
@@ -292,7 +293,7 @@ def test_a_thin_edge_sliver_is_not_scored_and_does_not_dilute_the_fraction():
 
 def test_a_clipped_patch_of_at_least_half_a_side_is_scored():
     # 500 px: the last patch column is 100 px wide, exactly half a side.
-    p, _ = score_field(_widened(500), MembraneScoreConfig())
+    p, _ = score_field(_widened(500), CALL)
     edge = p[p.x0_px == 400]
     assert len(edge) == 2 and np.isfinite(edge.score).all() and edge.membrane_like.all()
 
@@ -303,7 +304,7 @@ def test_the_fraction_is_weighted_by_region_pixels_not_region_fraction():
     # 2 x 20000 / 200000 = 0.2, where counting patches by region_fraction would give 1/3.
     f = _widened(500)
     f.planes[Role.JM1][:, :400] = noise_on_floor()[:, :400]
-    p, fields = score_field(f, MembraneScoreConfig())
+    p, fields = score_field(f, CALL)
     assert p.loc[p.x0_px == 400, "membrane_like"].all() and not p.loc[p.x0_px < 400, "membrane_like"].any()
     assert fields.set_index("role").loc["JM1", "membrane_like_fraction"] == pytest.approx(0.2)
 
@@ -312,13 +313,13 @@ def test_the_fraction_is_weighted_by_region_pixels_not_region_fraction():
 def test_a_constant_channel_is_too_dim_without_warnings(value):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        p, _ = score_field(field_with(jm1=np.full((400, 400), value)), MembraneScoreConfig())
+        p, _ = score_field(field_with(jm1=np.full((400, 400), value)), CALL)
     assert p.too_dim.all() and p.membrane_like.isna().all()
 
 
 def test_nan_pixels_are_ignored():
     img = lines(); img[::7, ::7] = np.nan
-    p, _ = score_field(field_with(jm1=img), MembraneScoreConfig())
+    p, _ = score_field(field_with(jm1=img), CALL)
     assert np.isfinite(p.score).all() and p.membrane_like.all()
 
 
@@ -351,3 +352,9 @@ def test_filter_sigmas_stay_above_one_pixel(px):
 
 def test_floor_and_noise_of_a_constant_plane_is_zero_noise():
     assert floor_and_noise(np.full((50, 50), 7.0, np.float32)) == (7.0, 0.0)
+
+
+def test_no_cutoff_makes_no_membrane_like_call():
+    p, f = score_field(field_with(jm1=lines()), MembraneScoreConfig())
+    assert np.isfinite(p.score).all() and p.membrane_like.isna().all()
+    assert str(p.membrane_like.dtype) == "boolean" and f.membrane_like_fraction.isna().all()
