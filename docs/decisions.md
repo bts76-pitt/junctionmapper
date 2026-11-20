@@ -547,3 +547,12 @@ stain. The useful cut depends on optics, pixel size, cell density and signal-to-
 experiment knowledge, set from the experiment's own controls.
 *Cost if wrong:* a run without the setting has no yes/no call; `score` and `median_score` are
 still there.
+
+**Membrane-score noise comes from neighbouring-pixel differences.** `noise` is the MAD of
+row and column neighbour differences over above-floor pixels, divided by sqrt(2).
+*Why:* the earlier high-pass residual kept thin lines. In dense fields its MAD measured
+the stain, not the camera: 3 um cells at 0.325 um/px read 90% too dim, and brighter
+lines raised the cut with them.
+*Cost if wrong:* noise correlated between neighbouring pixels (heavy denoising, binning
+after interpolation) reads low, so the too-dim cut is lenient. `min_ridge_intensity`
+overrides it.

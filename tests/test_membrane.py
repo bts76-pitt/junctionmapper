@@ -128,8 +128,8 @@ def test_a_blank_channel_is_too_dim_not_diffuse():
 
 
 def test_bright_lines_on_a_mostly_exact_zero_field_are_scored():
-    # 62% of the field (every column left of 248) is exactly 0, so the whole-field MAD of
-    # the high-pass residual is 0. The lines are bright: they must be scored, not too dim.
+    # 62% of the field (every column left of 248) is exactly 0, so a whole-field MAD of
+    # neighbour differences would be 0. The lines are bright: they must be scored, not too dim.
     img = lines()
     img[:, :248] = 0.0
     p, _ = score_field(field_with(jm1=img), CALL)
@@ -198,9 +198,9 @@ def _specks(fraction, value, floor):
 @pytest.mark.parametrize("fraction, value, floor", [(0.02, 50.0, 0.0), (0.02, 255.0, 3.0),
                                                     (0.30, 50.0, 0.0)])
 def test_constant_specks_on_a_constant_floor_are_too_dim(fraction, value, floor):
-    # Isolated pixels of one value (hot or saturated specks) leave a high-pass residual of
-    # floating-point roundoff, not exactly 0: that must still count as no noise, so the
-    # region-spread fallback (0 here) decides and the channel reads as blank.
+    # Isolated pixels of one value (hot or saturated specks) have no above-floor neighbour,
+    # so they give no differences and no noise: the region-spread fallback (0 here)
+    # decides and the channel reads as blank.
     s = score_field(field_with(jm1=_specks(fraction, value, floor)), CALL)[0]
     assert s.too_dim.all() and s.score.isna().all() and s.membrane_like.isna().all()
 
@@ -339,7 +339,7 @@ def test_cell_region_of_a_blank_nucleus_plane_is_empty():
 def test_floor_and_noise_reads_percentile_and_robust_noise():
     background, noise_sd = floor_and_noise(noise())
     assert background == pytest.approx(50 - 2.33 * 2, abs=0.3)
-    assert noise_sd == pytest.approx(2.0, rel=0.1)       # high-pass keeps ~97% of white noise
+    assert noise_sd == pytest.approx(2.0, rel=0.1)       # neighbour differences of white noise / sqrt(2)
 
 
 @pytest.mark.parametrize("px", [0.0749, 0.075, 0.1, 0.2, 0.325, 1.0])
@@ -358,3 +358,32 @@ def test_no_cutoff_makes_no_membrane_like_call():
     p, f = score_field(field_with(jm1=lines()), MembraneScoreConfig())
     assert np.isfinite(p.score).all() and p.membrane_like.isna().all()
     assert str(p.membrane_like.dtype) == "boolean" and f.membrane_like_fraction.isna().all()
+
+
+def _dense_lines(height, pitch=9, width=2, seed=0):
+    """Dense cells (pitch 9 px, about 3 um at 0.325 um/px): 2 px lines ``height`` on 10,
+    blurred by a 0.6 px PSF, then camera noise sd 2 added after the blur, as in real data."""
+    y, x = _yx()
+    sig = ndi.gaussian_filter(np.where((y % pitch < width) | (x % pitch < width), height, 10.0), 0.6)
+    return (sig + np.random.default_rng(seed).normal(0, 2, (N, N))).astype(np.float32)
+
+
+@pytest.mark.parametrize("height", [30, 300, 3000])
+def test_dense_line_structure_does_not_count_as_noise(height):
+    # The old high-pass residual kept thin lines, so in dense fields its MAD measured the
+    # lines (up to ~200x the true sd at height 3000). Noise must stay near the camera sd of
+    # 2; at 9 px pitch line edges are a large share of pixel pairs, so the brightest grid
+    # nudges it up (measured 2.8, 4.9, 9.4), still under 1% of the line height.
+    assert floor_and_noise(_dense_lines(height))[1] < max(6.0, 0.01 * height)
+
+
+def test_too_dim_does_not_change_when_dense_lines_get_brighter():
+    cfg = MembraneScoreConfig(region_um=20)
+    a, b = (score_field(field_with(jm1=_dense_lines(h), px=0.325), cfg)[0] for h in (30, 300))
+    assert not a.too_dim.any() and not b.too_dim.any()
+
+
+def test_dense_faint_lines_are_not_too_dim():
+    cfg = MembraneScoreConfig(region_um=20)     # 50 px nuclei grown to cover the field
+    p = score_field(field_with(jm1=_dense_lines(30), px=0.325), cfg)[0]
+    assert not p.too_dim.any()

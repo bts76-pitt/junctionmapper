@@ -39,7 +39,6 @@ from junctionmapper.tables import make_frame
 # --- CONSTANTS ---------------------------------------------------------------------------
 NUCLEUS_SMOOTH_SIGMA_PX = 2.0    # Gaussian smoothing of the nucleus plane before Otsu
 BACKGROUND_PERCENTILE = 1.0      # field floor: confluent fields have no cell-free pixels
-NOISE_HIGHPASS_SIGMA_PX = 2.0    # residual = plane - gaussian(plane, this); its MAD is noise
 MAD_TO_SD = 1.4826               # MAD of a Gaussian times this = its standard deviation
 NOISE_ZERO_RTOL = 1e-9           # noise at or below this x max |pixel| is roundoff: treated as 0
 DIM_NOISE_MULTIPLE = 5.0         # too dim when (ridge mean - floor) < this x noise. Pure
@@ -88,11 +87,13 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
     """The field's floor and noise for one channel, in the channel's own units.
 
         background   1st percentile of the finite pixels
-        noise        1.4826 x MAD of the high-pass residual over the finite pixels above
-                     the floor. The residual is the plane minus its Gaussian smoothing at
-                     2 px, the smoothing taken over above-floor pixels only, so a large
-                     exact-constant floor (zeroed or clipped pixels) neither zeroes the
-                     MAD nor puts its edges into it. If that is 0, the robust spread of
+        noise        1.4826 x MAD of the differences between neighbouring pixels (along
+                     rows and columns, both pixels finite and above the floor), over
+                     sqrt(2). Pixel noise is uncorrelated, but optical signal is smooth
+                     at one pixel, so lines enter only at their edges, a minority of
+                     pairs that the MAD ignores. A high-pass residual instead kept
+                     whole lines and, in dense fields, measured them, not the noise.
+                     If that is 0, the robust spread of
                      the finite ``region`` pixels (all finite pixels without a region).
                      A residual MAD at roundoff level (<= 1e-9 x max |pixel|) counts as 0.
                      0 for a constant or quantisation-level plane
@@ -108,14 +109,10 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
     vals = plane[finite]
     background = float(np.percentile(vals, BACKGROUND_PERCENTILE))
     above = finite & (plane > background)
-    if above.any():
-        weight = ndi.gaussian_filter(above.astype(np.float64), NOISE_HIGHPASS_SIGMA_PX)
-        total = ndi.gaussian_filter(np.where(above, plane, 0.0), NOISE_HIGHPASS_SIGMA_PX)
-        noise = _mad_sd(plane[above] - total[above] / weight[above])
-    else:
-        noise = 0.0
-    # Isolated pixels of one value (hot or saturated specks) leave a residual of roundoff
-    # (~1e-14), not exactly 0; it must not pass for noise.
+    pairs = above[:, 1:] & above[:, :-1], above[1:] & above[:-1]
+    diffs = np.concatenate([np.diff(plane, axis=1)[pairs[0]], np.diff(plane, axis=0)[pairs[1]]])
+    noise = _mad_sd(diffs) / math.sqrt(2)
+    # A noise at roundoff level relative to the plane is no noise.
     if noise <= NOISE_ZERO_RTOL * float(np.max(np.abs(vals))):
         noise = 0.0
     if noise == 0.0:
