@@ -10,7 +10,7 @@ exactly what to change and what it would affect.
 Entries are grouped by consequence: decisions that move published numbers come first, then
 output schema, provenance, validation against the Java, the QC report, and finally
 conventions that affect no measurement. Divergences from the Java's observable behaviour
-are listed separately in `README.md`; this file is about choices, not differences.
+are listed separately in `docs/vs-original.md`; this file is about choices, not differences.
 
 ---
 
