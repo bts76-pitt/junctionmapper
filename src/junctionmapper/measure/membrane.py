@@ -39,7 +39,8 @@ from junctionmapper.tables import make_frame
 # --- CONSTANTS ---------------------------------------------------------------------------
 NUCLEUS_SMOOTH_SIGMA_PX = 2.0    # Gaussian smoothing of the nucleus plane before Otsu
 BACKGROUND_PERCENTILE = 1.0      # field floor: confluent fields have no cell-free pixels
-DITHER_SEED = 0                  # fixed: the dither for integer planes is deterministic
+DITHER_SEED = 0                  # fixed: the quantisation dither is deterministic
+LATTICE_TOL = 1e-3               # differences within this many steps of a whole step: quantised
 MAD_TO_SD = 1.4826               # MAD of a Gaussian times this = its standard deviation
 NOISE_ZERO_RTOL = 1e-9           # noise at or below this x max |pixel| is roundoff: treated as 0
 DIM_NOISE_MULTIPLE = 5.0         # too dim when (ridge mean - floor) < this x noise. Pure
@@ -94,12 +95,14 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
                      at one pixel, so lines enter only at their edges, a minority of
                      pairs that the MAD ignores. A high-pass residual instead kept
                      whole lines and, in dense fields, measured them, not the noise.
-                     Varying integer-valued planes get a seeded +-0.5 dither first: with noise
-                     under a count most differences tie at 0 and the MAD would be 0.
-                     Quantisation then counts as the noise it is (about 0.3 count).
+                     On quantised data (every difference a whole number of steps, the
+                     step being the smallest non-zero one) the MAD snaps to whole steps,
+                     and to 0 when noise is under a step. So the plane gets a seeded
+                     dither of +-half a step first, and quantisation counts as the noise
+                     it is, in any units (raw counts, left-shifted, normalised to 0..1).
                      If that is 0, the robust spread of
                      the finite ``region`` pixels (all finite pixels without a region).
-                     A residual MAD at roundoff level (<= 1e-9 x max |pixel|) counts as 0.
+                     A noise at roundoff level (<= 1e-9 x max |pixel|) counts as 0.
                      0 for a constant or quantisation-level plane
 
     Both scale with the plane and shift-cancel under an offset, so the too-dim test built
@@ -120,8 +123,12 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
 
     diffs = _diffs(plane)
     # Dither only a plane that varies: all-zero differences (one-value specks) stay no noise.
-    if np.any(diffs != 0) and np.array_equal(vals, np.round(vals)):
-        diffs = _diffs(plane + np.random.default_rng(DITHER_SEED).uniform(-0.5, 0.5, plane.shape))
+    roundoff = NOISE_ZERO_RTOL * float(np.max(np.abs(vals)))
+    steps = np.abs(diffs)[np.abs(diffs) > roundoff]
+    step = float(steps.min()) if steps.size else 0.0
+    if step > 0 and np.all(np.abs(diffs / step - np.round(diffs / step)) <= LATTICE_TOL):
+        jitter = np.random.default_rng(DITHER_SEED).uniform(-step / 2, step / 2, plane.shape)
+        diffs = _diffs(plane + jitter)
     noise = _mad_sd(diffs) / math.sqrt(2)
     # A noise at roundoff level relative to the plane is no noise.
     if noise <= NOISE_ZERO_RTOL * float(np.max(np.abs(vals))):

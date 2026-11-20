@@ -381,6 +381,7 @@ def test_too_dim_does_not_change_when_dense_lines_get_brighter():
     cfg = MembraneScoreConfig(region_um=20)
     a, b = (score_field(field_with(jm1=_dense_lines(h), px=0.325), cfg)[0] for h in (30, 300))
     assert not a.too_dim.any() and not b.too_dim.any()
+    assert b.noise.iloc[0] < 2.0 * a.noise.iloc[0]     # 10x the lines, under 2x the noise
 
 
 def test_dense_faint_lines_are_not_too_dim():
@@ -389,12 +390,24 @@ def test_dense_faint_lines_are_not_too_dim():
     assert not p.too_dim.any()
 
 
+def _quantised(height, sd, seed=0):
+    sig = ndi.gaussian_filter(np.where(_borders(), height, 5.0), 0.6)
+    return np.round(sig + np.random.default_rng(seed).normal(0, sd, (N, N)))
+
+
+@pytest.mark.parametrize("scale", [1.0, 16.0, 1 / 255])
 @pytest.mark.parametrize("sd", [0.3, 0.6])
-def test_quantised_low_noise_lines_are_not_too_dim(sd):
-    # 8-bit data with noise under one count: most neighbour differences are exactly 0, so
-    # a plain MAD of them is 0 and the channel would read blank. Lines 25 counts up must score.
-    y, x = _yx()
-    sig = ndi.gaussian_filter(np.where(_borders(), 30.0, 5.0), 0.6)
-    img = np.round(sig + np.random.default_rng(0).normal(0, sd, (N, N))).astype(np.uint8)
+def test_quantised_low_noise_lines_are_not_too_dim(sd, scale):
+    # Data with noise under one quantisation step: most neighbour differences are exactly 0,
+    # so a plain MAD of them is 0 and the channel would read blank. Lines 25 steps up must
+    # score at any storage scale (raw counts, 12-bit left-shifted x16, normalised to 0..1).
+    img = (_quantised(30.0, sd) * scale).astype(np.float32)
     p = score_field(field_with(jm1=img), CALL)[0]
     assert floor_and_noise(img)[1] > 0 and not p.too_dim.any()
+
+
+@pytest.mark.parametrize("scale", [1.0, 16.0, 1 / 255])
+def test_a_quantised_blank_channel_is_too_dim_at_any_scale(scale):
+    img = (_quantised(5.0, 0.6) * scale).astype(np.float32)      # offset 5, no lines
+    p = score_field(field_with(jm1=img), CALL)[0]
+    assert p.too_dim.all()

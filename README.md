@@ -408,7 +408,7 @@ Outline-free. Uses no labels, so it is identical under `--labels`.
 
 - Every channel except `nucleus` is scored, `segment` included.
 - Region: nuclei (Otsu on the raw nucleus plane) grown by `region_um`.
-- `region_um` must reach the cell borders. Otherwise the membranes fall outside the region and patches read as too dim; check `region_fraction`.
+- `region_um` must reach the cell borders. Otherwise the membranes fall outside the region and patches score near 1 or read as too dim; check `region_fraction`.
 - Patches: squares of `patch_um`. One row per patch per channel in `membrane_patches`.
 - `contrast`: mean intensity on the top `ridge_fraction` of line-filter pixels, over the mean on the rest; both minus the field floor (`background`), so an offset does not change it.
 - `baseline`: the same contrast on one seeded shuffle of the patch's region pixels.
@@ -416,7 +416,7 @@ Outline-free. Uses no labels, so it is identical under `--labels`.
 - Set `cutoff` from the experiment's own controls; it depends on optics, pixel size, cell density and signal-to-noise.
 - Scores compare only at one pixel size. Membranes about 1 px wide can score near 1.
 - Punctate or clustered-dot signal can score above 1, as lines do. A score is line-likeness, not proof of membrane.
-- `background`: the channel's 1st percentile in the field. `noise`: robust SD of neighbouring-pixel differences over pixels above `background`, divided by sqrt(2) (integer data dithered by +-0.5 first); if that is 0, the robust spread of the region pixels.
+- `background`: the channel's 1st percentile in the field. `noise`: robust SD of neighbouring-pixel differences over pixels above `background`, divided by sqrt(2) (quantised data dithered by +-half a step first); if that is 0, the robust spread of the region pixels.
 - `ridge_intensity`: mean intensity on the top `ridge_fraction` of line-filter pixels. `mean_intensity` is the whole region's mean.
 - `too_dim`: `ridge_intensity` minus `background` is under 5 x `noise`, or under `min_ridge_intensity` when set. Always too dim when `noise` is 0. No score, never "diffuse".
 - Set `min_ridge_intensity` for dim data: a dim stain's noise grows with its signal, so the 5 x `noise` rule cannot tell a near-blank channel from a faint real one.
