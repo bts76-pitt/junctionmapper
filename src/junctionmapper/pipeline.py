@@ -94,6 +94,8 @@ class FieldResult:
     nuclei: pd.DataFrame
     flags: pd.DataFrame
     nuclei_distances: pd.DataFrame
+    membrane_patches: pd.DataFrame = dc_field(default_factory=lambda: make_frame("membrane_patches", []))
+    membrane_fields: pd.DataFrame = dc_field(default_factory=lambda: make_frame("membrane_fields", []))
     # interface_id -> (N, 2) int (row, col) walk of that interface; one per interface, not per role
     paths: dict = dc_field(default_factory=dict)
 
