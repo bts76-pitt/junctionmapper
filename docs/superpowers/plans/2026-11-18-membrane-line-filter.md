@@ -1,5 +1,12 @@
 # Membrane Line Filter Implementation Plan
 
+> **Status (2026-11-20): line filter NOT adopted; Sato kept. Optional cutoff adopted (`acd072f`).**
+> - Synthetic: scattered dots scored 2.46-2.77 (goal 0.85-1.2; Sato 2.10-2.22). No `dot_spacing_um` in 0.7-3.0 brought them below 1.76.
+> - Real data (job 12251446, 79 fields): SUM44 -dox alpha-catenin 3.21 (goal <= 1.3; Sato 2.22); +dox gap 0.29 (goal >= 0.3). p120 gaps and references passed.
+> - Every marker's median rose 1.2-2x; lines and dots did not separate.
+> - Likely cause: a blurred dot's flank reads as a ring-shaped ridge at every scale, and dot clusters form short lines.
+> - Record: branch `exp/hessian-line-filter` at `d62d218` (unmerged).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The membrane score counts continuous and beaded lines as lines and scattered dots as no structure; `cutoff` becomes optional.
