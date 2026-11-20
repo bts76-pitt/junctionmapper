@@ -1,8 +1,7 @@
 # Reference
 
-Settings, inputs, outputs and every column. Start with the [README](../README.md).
+Settings, inputs, outputs and columns. For setup and running, see the [README](../README.md).
 
-**Contents**
 [All settings](#all-settings) |
 [Inputs](#inputs) |
 [Segmentation options](#segmentation-options) |
@@ -11,248 +10,217 @@ Settings, inputs, outputs and every column. Start with the [README](../README.md
 [Intensity thresholds](#intensity-thresholds) |
 [Nuclei distances](#nuclei_distances-table) |
 [Membrane score](#membrane-score) |
-[The report](#the-report)
-
----
+[Report](#report)
 
 ## All settings
 
-| Key | Default | What it does |
+| Key | Default | Meaning |
 |---|---|---|
-| `channels` | — | Which image channel holds each role, and which protein. |
-| `pixel_size_um` | — | Pixel size, used only if the image has none. |
+| `channels` | | Image channel, role and protein for each channel used. |
+| `pixel_size_um` | | Pixel size, used if the image has none. |
 | `dilation_px` | 2 | Band half-width around each interface, in dilation steps. |
-| `dilation_um` | — | Band width in µm instead. |
-| `epsilon_px` | 2.0 | Corner sensitivity for the `dp` method. |
-| `tcj_min_run` | 3 | Shortest contact kept by the `tcj` method, in pixels. |
-| `neighbour_radius_px` | 2 | Window for deciding which neighbour each outline pixel touches. |
-| `threshold` | — | Fixed intensity cutoff per role. Replaces the automatic one. |
+| `dilation_um` | | Band width in µm. |
+| `epsilon_px` | 2.0 | Corner tolerance for the `dp` method. |
+| `tcj_min_run` | 3 | Shortest contact the `tcj` method keeps, in pixels. |
+| `neighbour_radius_px` | 2 | Window used to decide which neighbour each outline pixel touches. |
+| `threshold` | | Fixed intensity threshold per role. |
 | `num_intra_cells` | 5 | Nearest nuclei recorded per nucleus. |
-| `all_pairs` | false | Record every nucleus pair, not just the nearest. |
+| `all_pairs` | false | Record every pair of nuclei instead of the nearest ones. |
 
-Membrane score settings, under `membrane_score:`:
+Membrane score settings go under `membrane_score:`.
 
-| Key | Default | What it does |
+| Key | Default | Meaning |
 |---|---|---|
-| `line_width_um` | [0.3, 0.6] | Membrane widths the line filter looks for, µm. |
-| `patch_um` | 20 | Side of one scored square, µm. |
-| `region_um` | 6 | How far the cell region reaches out from nuclei, µm. |
-| `ridge_fraction` | 0.1 | Share of pixels treated as "on a line". |
-| `cutoff` | none | Score at or above which a square is called membrane-like. None: no call. |
-| `min_ridge_intensity` | none | Too-dim cutoff in raw intensity units. None: 5 × noise. |
-
----
+| `line_width_um` | [0.3, 0.6] | Range of membrane widths the line filter looks for, µm. |
+| `patch_um` | 20 | Side of each scored square, µm. |
+| `region_um` | 6 | Distance the cell region extends from the nuclei, µm. |
+| `ridge_fraction` | 0.1 | Fraction of pixels counted as line pixels. |
+| `cutoff` | | Score at or above which a square counts as membrane-like. Unset by default. |
+| `min_ridge_intensity` | | Too-dim threshold in raw intensity units. If unset, 5 × noise is used. |
 
 ## Inputs
 
-- One image, or a folder of them, read in sorted order.
-- `.tif`/`.tiff` files and OME-Zarr stores, mixed or not.
-- An OME-Zarr store is a *directory* whose name ends `.zarr`. It is taken as one input in its own right, not searched inside.
-- Vendor formats (`.czi`, `.nd2`, `.lif`, ...) are refused by name, up front.
-- Each scene × time point × Z slice is one **field**.
+`-i` takes one image or a folder. A folder is read in sorted order and can contain `.tif`/`.tiff`
+files, OME-Zarr stores, or both. An OME-Zarr store is a *directory* whose name ends `.zarr`, and
+it is taken as one input in its own right rather than searched for files.
 
----
+Vendor formats (`.czi`, `.nd2`, `.lif` and so on) aren't supported and are rejected at the start
+of the run.
+
+Each scene, time point and Z slice is treated as a separate field.
 
 ## Segmentation options
 
-**`snap`** moves cell–cell edges onto the membrane ridge of the `segment` channel, then smooths them.
-- A boundary moves at most `--erode-px` (default 8).
-- Smoothing (`--smooth-px`, default 20) stops it chasing specks of a dotted stain.
-- Edges facing background, nuclei and cell ids do not change.
+`snap` moves cell–cell edges onto the membrane in the `segment` channel and then smooths them.
+Edges move by at most `--erode-px` (default 8). The smoothing (`--smooth-px`, default 20) keeps
+edges from following individual specks in a dotted stain. Edges that face background or nuclei
+are left alone, and cell ids don't change. In a test on 12 cell lines and 120 fields, boundary
+length changed by 3% at most and median membrane signal on the boundaries went up by about 33%.
 
-(Tested on 12 lines, 120 fields: boundary length changed by at most 3%. Membrane signal on boundaries rose in every line, median about +33%.)
+`--with-nucleus` also passes the nucleus channel to Cellpose. Fewer nuclei get cut through, but
+outlines can move off the membrane, and in our test data the membrane-only outlines followed the
+junctions more closely. Interfaces that cut through a nucleus are flagged `splits_nucleus`. Some
+of these are genuine, because a neighbour's membrane can overlie a nucleus in a single optical
+section.
 
-**`--with-nucleus`** gives Cellpose the nucleus channel too.
-- It cuts through fewer nuclei.
-- Outlines can leave the membrane. On our test data, membrane-only outlines followed junctions better.
-- Interfaces that cut a nucleus are flagged `splits_nucleus`. Some are real: in one optical section a neighbour's membrane can lie over a nucleus.
+The `segment` channel isn't measured as a marker, but its mean intensity in each band is reported
+as `segment_band_mean_intensity`. It reads high, because the outlines were drawn on that signal.
 
-**The `segment` channel is never measured as a marker.** Its brightness in each band is still reported, as `segment_band_mean_intensity`.
-- It reads high, because the outline was drawn on that signal.
-
-**`run` will not overwrite label files** unless you pass `--overwrite-labels`. They may be hand-corrected.
-
----
+`run` won't overwrite existing label files unless you pass `--overwrite-labels`.
 
 ## Measurements
 
-Each interface is widened into a **band**. The band is measured for each marker.
+Each interface is widened into a band, and each marker is measured in that band.
 
-| Column | What it is |
+| Column | Definition |
 |---|---|
 | `interface_contour` | Length along the interface. |
 | `straight_line_length` | Distance between its two corners. |
-| `linearity_index` | straight-line ÷ contour. 1 = perfectly straight. |
+| `linearity_index` | straight-line length ÷ contour. 1 is perfectly straight. |
 | `interface_area` | Area of the band. |
-| `marker_area` | Band area above the threshold. |
-| `marker_intensity` | Sum of above-threshold intensity in the band. |
+| `marker_area` | Area of the band above the threshold. |
+| `marker_intensity` | Sum of the above-threshold intensities in the band. |
 | `interface_occupancy_pct` | 100 × marker area ÷ interface area. |
-| `fragmented_contour` | Length of marker-positive stretches; gaps break it. |
-| `junction_contour` | Length through marker-positive pixels; gaps bridged. |
-| `junction_straight_line` | First to last marker-positive pixel. |
+| `fragmented_contour` | Total length of marker-positive stretches. Gaps break it. |
+| `junction_contour` | Length through the marker-positive pixels, with gaps bridged. |
+| `junction_straight_line` | Distance from the first to the last marker-positive pixel. |
 | `coverage_index` | fragmented contour ÷ interface contour. |
 | `intensity_per_*` | marker intensity ÷ interface area. |
 | `cluster_density_per_*` | marker intensity ÷ marker area. |
 
-- Lengths come in `_px` and `_um`. Areas in `_px` and `_um2`.
-- All tables carry `field_id`, so tables from many runs stack.
-
----
+Lengths are given in `_px` and `_um`, areas in `_px` and `_um2`. Every table has a `field_id`
+column, so tables from different runs can be concatenated.
 
 ## `interfaces` table
 
-**A row is one cell's side of one junction, for one marker.** It is not a junction.
+Each row is one cell's side of one junction, for one marker. A junction between two measured cells
+is measured from both sides, and both rows are kept.
 
-A junction between two measured cells is seen from both sides. Both sides are kept: each is a real measurement.
+The number of rows per junction depends on the corner method:
 
-How many rows a junction gives depends on the corner method:
-
-| Method | Rows per junction | Why |
+| Method | Rows per junction | Reason |
 |---|---|---|
-| `tcj` | 2 (1 if the neighbour is not measured) | Cuts where the neighbour changes. |
-| `dp` | often 2–5 per side, sometimes 10+ | Corners ignore neighbours, so one contact is split wherever a corner falls. |
+| `tcj` | 2, or 1 if the neighbour isn't measured | It splits the outline where the neighbour changes. |
+| `dp` | often 2–5 per side, sometimes 10+ | Its corners don't depend on neighbours, so one contact can be split at several corners. |
 
-**So count junctions with `pair_id`, never by counting rows** or by assuming a factor of two.
+Count junctions with `pair_id`, never by counting rows or dividing by two.
 
 | Column | Identifies |
 |---|---|
-| `pair_id` | The cell pair. Groups both sides. |
-| `interface_id` | One cell side. Shared by its JM1 and JM2 rows. |
+| `pair_id` | The pair of cells. Both sides of a junction share it. |
+| `interface_id` | One side. Its JM1 and JM2 rows share it. |
 
-Pooling rows without grouping by `pair_id` over-weights some junctions. The report plots one dot per junction or per cell, never per row.
+If you pool rows without grouping by `pair_id`, junctions split into many rows get extra weight.
+The report plots one point per junction or per cell.
 
-How far to trust a row:
+These columns help judge a row:
 
 | Column | Meaning |
 |---|---|
-| `contact_fraction` | Share of the interface that actually touches the neighbour. 1.0 for `tcj`; can be much lower for `dp`. |
-| `low_contact_fraction` | `contact_fraction` < 0.8. The band partly measures free edge. |
-| `closed_loop` | The interface is a whole outline. Its `linearity_index` is near 0 for geometric reasons. |
-
----
+| `contact_fraction` | Fraction of the interface touching the neighbour. Always 1.0 for `tcj`; can be much lower for `dp`. |
+| `low_contact_fraction` | `contact_fraction` below 0.8. Part of the band is measuring free edge. |
+| `closed_loop` | The interface is the whole outline. `linearity_index` is close to 0 for these. |
 
 ## Intensity thresholds
 
-Four measurements use an intensity threshold, one per marker for the whole run.
+Four of the measurements use one intensity threshold per marker, shared by the whole run. Unless
+`threshold` is set in the config, it's chosen like this:
 
-How it is chosen, unless you set `threshold`:
-1. Pick up to five fields, spread across the run.
-2. Run Otsu on each.
-3. Take the **median**. One saturated or empty field cannot drag it.
-
-Three columns record it:
+1. Up to five fields are picked, spread evenly across the run.
+2. Otsu's method is run on each.
+3. The median of those values is used, so one saturated or blank field has little effect.
 
 | Column | Meaning |
 |---|---|
-| `threshold` | The value used. |
-| `threshold_field_otsu` | What this field alone would have given. |
-| `threshold_deviates_from_run` | The two differ by more than 10% (and more than one grey level). |
+| `threshold` | The threshold used. |
+| `threshold_field_otsu` | The Otsu threshold for this field on its own. |
+| `threshold_deviates_from_run` | The two differ by more than 10% and by more than one grey level. |
 
-The deviation flag is informational, not an error.
-- On a low-valued image the one-grey-level floor dominates, so the flag sets on the outer fields of an ordinary *default* run. That is expected.
+The deviation flag is informational. On a low-valued image the one-grey-level minimum dominates,
+so the flag sets on the outer fields of an ordinary *default* run; this is expected.
 
-Edge cases:
-- Unreadable files are skipped and others tried, up to ten. The report notes it.
-- Blank images contribute nothing. If all are blank, the threshold is 0 and the report says so.
-- The report warns *threshold varied* only when fields used thresholds more than one grey level apart.
-
----
+If a file can't be read during calibration, another one is tried, up to ten in all, and the report
+notes it. Blank images are ignored; if every image is blank the threshold is 0 and the report says
+so. The report shows a "threshold varied" warning only when fields used thresholds more than one
+grey level apart.
 
 ## `nuclei_distances` table
 
-One row per *ordered* pair: `nucleus_id`, `neighbour_nucleus_id`, `rank_from_nucleus`, `distance_px`, `distance_um`.
-
-- `rank_from_nucleus` is 1 for that nucleus's nearest neighbour.
-- With `all_pairs: true`, each pair appears twice, once from each end, each with its own rank.
+Columns: `nucleus_id`, `neighbour_nucleus_id`, `rank_from_nucleus`, `distance_px`, `distance_um`.
+Each row is an ordered pair. `rank_from_nucleus` is 1 for the nearest neighbour of `nucleus_id`.
+With `all_pairs: true` every pair appears twice, once from each end, with each end's own rank.
 
 ```python
 df[df.rank_from_nucleus == 1]                  # nearest-neighbour distances
-df[df.nucleus_id < df.neighbour_nucleus_id]    # one copy of each pair
+df[df.nucleus_id < df.neighbour_nucleus_id]    # each pair once
 ```
-
----
 
 ## Membrane score
 
-Answers one question per channel: **does the stain sit in thin lines, or is it spread out?**
+The membrane score measures, for each channel, how much of the signal lies in thin lines. It
+doesn't use the cell outlines, so `--labels` doesn't affect it. All channels except `nucleus` are
+scored. `run --no-membrane-score` turns it off.
 
-- It uses no cell outlines, so it does not change with `--labels`.
-- Every channel except `nucleus` is scored.
-- `run --no-membrane-score` turns it off.
+How it's computed:
 
-### How it works
+1. The cell region is the nuclei grown outward by `region_um`.
+2. The image is divided into squares with sides of `patch_um`.
+3. In each square, a line filter selects the most line-like pixels (the top `ridge_fraction`).
+4. contrast = mean intensity of those pixels ÷ mean intensity of the rest, both measured above the image's background level.
+5. baseline = the same contrast after the square's pixels are shuffled, which removes any line structure.
+6. score = contrast ÷ baseline.
 
-1. The **cell region** is the nuclei, grown outward by `region_um`.
-2. The image is cut into squares of `patch_um`.
-3. In each square, a line filter picks the brightest-looking line pixels (the top `ridge_fraction`).
-4. **contrast** = brightness on those line pixels ÷ brightness on the rest (both above the image floor).
-5. **baseline** = the same contrast after shuffling the square's pixels, which destroys any lines.
-6. **score** = contrast ÷ baseline.
+A score near 1 means no line structure, and higher scores mean more line-like signal. Squares
+that are too dim, or have too little cell region, get no score. `membrane_like` is true when the
+score is at least `cutoff`, and empty when `cutoff` isn't set. A good cutoff depends on the
+microscope, pixel size, cell density and signal strength, so set it from your own controls.
 
-### Reading the score
+Limitations:
 
-| Score | Meaning |
-|---|---|
-| about 1 | No line structure. |
-| well above 1 | Line-like. |
-| blank | Not scored (too dim, or not enough cell region). |
+- Dotted staining can also score well above 1.
+- Scores are only comparable between images with the same pixel size. Membranes about 1 px wide can score close to 1.
+- `region_um` has to reach the cell borders. If it doesn't, squares score near 1 or come out too dim; `region_fraction` shows how much of each square is cell region.
 
-- `membrane_like` is true when `score` ≥ `cutoff`. With no `cutoff` set, it is blank.
-- Set `cutoff` from your own controls. It depends on the microscope, pixel size, cell density and signal.
+A square is too dim when its line pixels are less than 5 × `noise` above `background`. It gets no
+score. For dim data, set `min_ridge_intensity` (in raw units) instead, because the 5 × noise rule
+can't distinguish a nearly blank channel from a faint real stain.
 
-### Known limits
+`background` is the channel's 1st percentile in the image. `noise` is a robust estimate of pixel
+noise: the median absolute deviation of differences between neighbouring pixels, divided by √2,
+using only pixels above `background`. Quantised images first get a small seeded dither of up to
+half a quantisation step. If the estimate is 0, the spread of the cell-region pixels is used.
 
-- **Dots score like lines.** A dotted stain can score well above 1. A high score means line-like, not proof of membrane.
-- **Compare scores only at one pixel size.** Membranes about 1 px wide can score near 1.
-- **`region_um` must reach the cell borders.** If it doesn't, squares score near 1 or read as too dim. Check `region_fraction`.
-
-### Too dim
-
-A square is **too dim** when its line pixels are less than 5 × `noise` above the floor. It then gets no score; it is never called "diffuse".
-
-- **For dim data, set `min_ridge_intensity`** (raw units). It replaces the 5 × noise rule. That rule cannot tell a near-blank channel from a faint real one.
-- `background` = the channel's 1st percentile in the image.
-- `noise` = how much neighbouring pixels differ, as a robust standard deviation.
-
-(Detail: noise is the MAD of neighbour-pixel differences ÷ √2, over pixels above the floor. Quantised data get a ± half-step dither first. If that gives 0, it falls back to the spread of the region's pixels.)
-
-### Columns
-
-`membrane_patches`, one row per square per channel:
+`membrane_patches` has one row per square per channel:
 
 | Column | Meaning |
 |---|---|
-| `score`, `contrast`, `baseline` | As above. Blank when not scored. |
-| `membrane_like` | `score` ≥ `cutoff`; blank if no score or no cutoff. |
-| `too_dim` | True if too dim to score. |
-| `ridge_intensity` | Mean on the line pixels. |
-| `mean_intensity` | Mean over the whole cell region in the square. |
-| `background`, `noise` | The image floor and noise. |
-| `region_fraction` | Share of the square that is cell region. |
+| `score`, `contrast`, `baseline` | As above. Empty when the square isn't scored. |
+| `membrane_like` | `score` ≥ `cutoff`. Empty with no score or no cutoff. |
+| `too_dim` | The square was too dim to score. |
+| `ridge_intensity` | Mean intensity of the line pixels. |
+| `mean_intensity` | Mean intensity of the cell region in the square. |
+| `background`, `noise` | The image's background level and noise. |
+| `region_fraction` | Fraction of the square that is cell region. |
 
-`membrane_fields`, one row per image per channel: `n_patches`, `n_scored`, `n_too_dim`, `median_score`, `membrane_like_fraction`.
+`membrane_fields` has one row per image per channel, with `n_patches`, `n_scored`, `n_too_dim`,
+`median_score` and `membrane_like_fraction`. Squares that are neither scored nor too dim were
+skipped because they were thin slivers at the image edge, had less than half cell region, or had
+no signal above background. Images with no cells still get rows.
 
-- Squares neither scored nor too dim were skipped for geometry (edge slivers), too little cell region, or no signal.
-- An image with no cells still gets rows.
+## Report
 
----
+`out/report/index.html` is a single page per run and works offline. It has:
 
-## The report
+- an overview with totals, a plot for each measurement and a card for each image
+- an image view with junctions coloured by a chosen measurement; clicking a junction or cell shows its values
+- run-level warnings
+- provenance: inputs, model, settings, thresholds, software versions and code hash
+- definitions of each measurement, under `?`
 
-`OUT/report/index.html`: one page per run, works offline.
+Open it by double-clicking `index.html`. On the cluster, copy the whole `report/` folder to your
+computer or open it through OnDemand's file browser. The page loads the `runs/` folder next to
+it, so keep them together.
 
-- **Overview:** totals, one plot per measurement, a card per image.
-- **Field view:** the image with junctions coloured by a measurement. Click a junction or cell for its values.
-- **Warnings:** one chip per run-level problem.
-- **Provenance:** inputs, model, settings, thresholds, versions, code hash.
-- **Help (`?`):** each measurement's definition.
-
-To open it:
-- Double-click `index.html`. Nothing is downloaded.
-- On the cluster, copy the whole `report/` folder to your computer, or use OnDemand's file browser.
-- Keep the folder together: `index.html` loads `runs/` beside it.
-
-`junctionmapper report OUT_A OUT_B -o compare` puts several runs on one page.
-- It re-measures nothing.
-- Labels default to the folder names (`--label` to set them).
-- It warns if a run's labels changed since it was measured.
+`junctionmapper report OUT_A OUT_B -o compare` combines several runs in one report without
+re-measuring anything. Each run is labelled with its folder name unless you pass `--label`. It
+warns if a run's labels have changed since it was measured.
