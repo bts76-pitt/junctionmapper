@@ -1,6 +1,6 @@
 """Tidy table schemas and writers.
 
-Five tables per run. Each is keyed by ``field_id`` (plus ``cell_id`` or
+Seven tables per run. Each is keyed by ``field_id`` (plus ``cell_id`` or
 ``nucleus_id``), so tables from several fields concatenate cleanly. The schemas
 live here so an empty table still carries its full column set.
 
@@ -168,6 +168,16 @@ NUCLEUS_DISTANCE_COLUMNS = [
     "field_id", "nucleus_id", "neighbour_nucleus_id", "rank_from_nucleus",
     "distance_px", "distance_um",
 ]
+MEMBRANE_PATCH_COLUMNS = [
+    "field_id", "role", "marker", "patch_row", "patch_col", "y0_px", "x0_px", "size_px",
+    "region_fraction", "mean_intensity", "ridge_intensity", "background", "noise", "too_dim",
+    "contrast",
+    "baseline", "score", "membrane_like",
+]
+MEMBRANE_FIELD_COLUMNS = [
+    "field_id", "role", "marker", "n_patches", "n_scored", "n_too_dim",
+    "median_score", "membrane_like_fraction",
+]
 FLAG_COLUMNS = [
     "field_id", "cell_id", "border_touching", "isolated", "degenerate",
     "corner_methods_disagree", "n_corners_dp", "n_corners_tcj", "all_contacts_filtered",
@@ -180,16 +190,21 @@ SCHEMAS = {
     "nuclei": NUCLEUS_COLUMNS,
     "flags": FLAG_COLUMNS,
     "nuclei_distances": NUCLEUS_DISTANCE_COLUMNS,
+    "membrane_patches": MEMBRANE_PATCH_COLUMNS,
+    "membrane_fields": MEMBRANE_FIELD_COLUMNS,
 }
 _NULLABLE_INT = ["neighbour_id", "n_corners_dp", "n_corners_tcj", "cell_id"]
 _BOOL = ["threshold_deviates_from_run", "low_contact_fraction", "closed_loop", "splits_nucleus",
          "border_touching", "isolated", "degenerate", "corner_methods_disagree",
          "all_contacts_filtered", "dp_low_contact", "dp_missed_tcj_contact",
-         "closed_loop_interface", "multinucleate", "anucleate", "measured", "orphan"]
+         "closed_loop_interface", "multinucleate", "anucleate", "measured", "orphan",
+         "too_dim"]
+_NULLABLE_BOOL = ["membrane_like"]     # null where there is no score: never read as False
 _INT = ["start_idx", "end_idx", "dilation_cycles", "interface_area_px", "marker_area_px",
         "area_px", "n_neighbours", "n_interfaces_dp", "n_interfaces_tcj", "n_nuclei", "tcj_min_run",
         "neighbour_radius_px", "neighbour_nucleus_id", "rank_from_nucleus",
-        "nucleus_id", "centroid_row", "centroid_col", "n_intra_distances"]
+        "nucleus_id", "centroid_row", "centroid_col", "n_intra_distances",
+        "patch_row", "patch_col", "y0_px", "x0_px", "size_px", "n_patches", "n_scored", "n_too_dim"]
 _STR = ["field_id", "corner_method", "role", "marker", "pair_id", "interface_id"]
 
 
@@ -202,6 +217,8 @@ def make_frame(name: str, rows: list[dict]) -> pd.DataFrame:
             df[c] = df[c].astype("object")
         elif c in _BOOL:
             df[c] = df[c].astype("bool")
+        elif c in _NULLABLE_BOOL:
+            df[c] = df[c].astype("boolean")
         elif c in _NULLABLE_INT or c in _INT:
             df[c] = df[c].astype("Int64")
         else:

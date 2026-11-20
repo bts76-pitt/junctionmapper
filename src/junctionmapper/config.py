@@ -39,6 +39,63 @@ class ChannelSpec(BaseModel):
     marker: str
 
 
+class MembraneScoreConfig(BaseModel):
+    """Outline-free membrane score parameters. Lengths are in um, converted per field."""
+    model_config = ConfigDict(extra="forbid")
+
+    line_width_um: tuple[float, float] = (0.3, 0.6)   # ridge filter scale range, lo <= hi
+    patch_um: float = 20.0                            # side of one scored patch
+    region_um: float = 6.0                            # nucleus mask growth defining the cell region
+    ridge_fraction: float = 0.1                       # fraction of region pixels counted as ridge
+    cutoff: float | None = None                       # membrane_like when contrast/baseline >= cutoff;
+                                                      # None: no call. Set from the experiment's controls
+    min_ridge_intensity: float | None = None          # raw units; too dim when ridge mean - floor is
+                                                      # below it. None: 5 x the field's noise instead
+
+    @field_validator("line_width_um")
+    @classmethod
+    def _check_line_width(cls, v):
+        lo, hi = v
+        if not (math.isfinite(lo) and math.isfinite(hi) and 0 < lo <= hi):
+            raise ConfigError(f"line_width_um must satisfy 0 < lo <= hi, got {v!r}")
+        return v
+
+    @field_validator("patch_um")
+    @classmethod
+    def _check_patch(cls, v):
+        if not math.isfinite(v) or v <= 0:
+            raise ConfigError(f"patch_um must be a finite number > 0, got {v!r}")
+        return v
+
+    @field_validator("region_um")
+    @classmethod
+    def _check_region(cls, v):
+        if not math.isfinite(v) or v < 0:
+            raise ConfigError(f"region_um must be a finite number >= 0, got {v!r}")
+        return v
+
+    @field_validator("ridge_fraction")
+    @classmethod
+    def _check_ridge_fraction(cls, v):
+        if not math.isfinite(v) or not 0 < v <= 0.5:
+            raise ConfigError(f"ridge_fraction must be in (0, 0.5], got {v!r}")
+        return v
+
+    @field_validator("cutoff")
+    @classmethod
+    def _check_cutoff(cls, v):
+        if v is not None and (not math.isfinite(v) or v <= 1):
+            raise ConfigError(f"cutoff must be null or a finite number > 1, got {v!r}")
+        return v
+
+    @field_validator("min_ridge_intensity")
+    @classmethod
+    def _check_min_ridge(cls, v):
+        if v is not None and (not math.isfinite(v) or v < 0):
+            raise ConfigError(f"min_ridge_intensity must be a finite number >= 0, got {v!r}")
+        return v
+
+
 class RunConfig(BaseModel):
     # A misspelled key is a mistake, not a comment: silently dropping it would mean running at
     # a default the operator believes they changed.
@@ -55,6 +112,7 @@ class RunConfig(BaseModel):
     epsilon_px: float = 2.0                                 # Douglas-Peucker tolerance
     tcj_min_run: int = DEFAULT_TCJ_MIN_RUN                  # shortest TCJ contact run kept
     neighbour_radius_px: int = DEFAULT_NEIGHBOUR_RADIUS_PX  # neighbour-assignment window
+    membrane_score: MembraneScoreConfig = MembraneScoreConfig()
 
     @field_validator("epsilon_px", mode="before")
     @classmethod

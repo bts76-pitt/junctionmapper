@@ -166,10 +166,12 @@ def junction_profile(path_rc: np.ndarray, image: np.ndarray, band: np.ndarray, r
     ``max_points`` is resampled by linear interpolation, ends kept.
     """
     path = np.asarray(path_rc, dtype=int)
-    img = np.nan_to_num(np.asarray(image, dtype=np.float64))
-    b = np.asarray(band, dtype=bool)
+    img = np.asarray(image, dtype=np.float64)
+    # A NaN or inf pixel is no sample: left out of both the sum and the count.
+    b = np.asarray(band, dtype=bool) & np.isfinite(img)
+    img = np.where(b, img, 0.0)
     size = 2 * int(radius) + 1
-    num = ndimage.uniform_filter(np.where(b, img, 0.0), size=size, mode="constant")
+    num = ndimage.uniform_filter(img, size=size, mode="constant")
     den = ndimage.uniform_filter(b.astype(np.float64), size=size, mode="constant")
     r, c = path[:, 0], path[:, 1]
     d = den[r, c]

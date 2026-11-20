@@ -234,6 +234,8 @@
 
   // Square crop around every point of polylines ({key: [[[x, y], ...], ...]} or [[[x, y], ...], ...]):
   // the bbox padded by margin x its longer side, at least min, clamped inside width x height.
+  // A junction longer than the image's short side keeps a square window that size: it stays
+  // inside the long side and is centred on the short one (the part off the image draws black).
   function cropWindow(polylines, width, height, margin = 0.4, min = 48) {
     const lines = Array.isArray(polylines) ? polylines : Object.values(polylines).flat();
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -242,8 +244,11 @@
     }));
     if (!Number.isFinite(x0)) { x0 = x1 = width / 2; y0 = y1 = height / 2; }
     const span = Math.max(x1 - x0, y1 - y0);
-    const side = Math.max(1, Math.min(Math.round(Math.max(min, span * (1 + 2 * margin))), width, height));
-    const clamp = (c, lim) => Math.max(0, Math.min(lim - side, Math.round(c - side / 2)));
+    const padded = span * (1 + 2 * margin);
+    const cap = Math.max(Math.min(width, height), Math.min(Math.round(padded), Math.max(width, height)));
+    const side = Math.max(1, Math.min(Math.round(Math.max(min, padded)), cap));
+    const clamp = (c, lim) => side > lim ? Math.round((lim - side) / 2)
+                                         : Math.max(0, Math.min(lim - side, Math.round(c - side / 2)));
     return {x: clamp((x0 + x1) / 2, width), y: clamp((y0 + y1) / 2, height), w: side, h: side};
   }
 
@@ -255,14 +260,15 @@
     return n ? Math.round((100 * below) / n) : null;
   }
 
-  // Axis extent of one role's profile: x to its last finite point, y to its peak or threshold.
+  // Axis extent of one role's profile: x to its last finite point, y from 0 (or the lowest
+  // negative value or threshold) to its peak or threshold.
   function profileScale(profile, thresholds, role) {
-    let xmax = 0, ymax = 0;
+    let xmax = 0, ymin = 0, ymax = 0;
     (profile.x || []).forEach(x => { if (Number.isFinite(x)) xmax = Math.max(xmax, x); });
-    (profile.y || []).forEach(y => { if (Number.isFinite(y)) ymax = Math.max(ymax, y); });
+    (profile.y || []).forEach(y => { if (Number.isFinite(y)) { ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); } });
     const t = thresholds ? thresholds[role] : null;
-    if (Number.isFinite(t)) ymax = Math.max(ymax, t);
-    return {xmax, ymax};
+    if (Number.isFinite(t)) { ymin = Math.min(ymin, t); ymax = Math.max(ymax, t); }
+    return {xmax, ymin, ymax};
   }
 
   // The channels the close-up's Merge tile composites: JM1, JM2 and outline (segment), in that

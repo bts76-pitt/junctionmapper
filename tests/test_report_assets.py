@@ -146,6 +146,16 @@ def test_profile_of_a_uniform_band_is_flat_at_the_image_value():
     assert p["x"][-1] == pytest.approx(11)
 
 
+def test_profile_ignores_nan_and_inf_pixels_inside_the_band():
+    img = np.full((20, 20), 7.0)
+    img[10, 6] = np.nan
+    img[9, 12] = np.inf
+    path = np.array([[10, c] for c in range(3, 15)])
+    band = mi.dilated_band(path, img.shape, 2)
+    p = junction_profile(path, img, band, 2, None)
+    assert p["y"] == pytest.approx([7.0] * len(p["y"]))
+
+
 def test_profile_x_is_in_micrometres_when_calibrated():
     path = np.array([[5, c] for c in range(10)])
     img = np.ones((12, 12))

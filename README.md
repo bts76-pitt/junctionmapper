@@ -10,13 +10,13 @@ corner. This version keeps the published parameter definitions and automates the
 rest. The method is the original authors'.
 
 **Contents**
-[What it does](#what-it-does) ·
-[Workflow](#workflow) ·
-[Quick start](#quick-start) ·
-[Configuration](#configuration) ·
-[Before you run](#before-you-run) ·
-[Outputs](#outputs) ·
-[Differences from the original](#differences-from-the-original) ·
+[What it does](#what-it-does) |
+[Workflow](#workflow) |
+[Quick start](#quick-start) |
+[Configuration](#configuration) |
+[Before you run](#before-you-run) |
+[Outputs](#outputs) |
+[Differences from the original](#differences-from-the-original) |
 [Validation](#what-the-validation-harness-shows)
 
 ---
@@ -28,7 +28,7 @@ rest. The method is the original authors'.
 3. Splits each cell boundary into **interfaces**, one stretch per neighbour.
 4. Measures the published junction parameters along each interface, for up to
    two junction markers.
-5. Writes five tidy tables and an interactive report that opens offline.
+5. Writes seven tidy tables and an interactive report that opens offline.
 
 You declare which protein fills each role (`JM1`, `JM2`, `nucleus`). Nothing is
 inferred from channel order, and the declaration is written into every output
@@ -83,7 +83,7 @@ flowchart TD
     MET --> OUT
     NUC --> OUT
     QC --> OUT
-    OUT["Five tables<br/>.parquet + .csv"] --> REP["report/index.html<br/>fields · junctions · provenance"]
+    OUT["Seven tables<br/>.parquet + .csv"] --> REP["report/index.html<br/>fields, junctions, provenance"]
 ```
 
 Two ways to run it:
@@ -189,6 +189,12 @@ refused.
 | `threshold` | — | Fixed intensity threshold per role. Overrides calibration. |
 | `num_intra_cells` | 5 | Nearest nuclei recorded per nucleus. |
 | `all_pairs` | false | Record every nucleus pair instead of the nearest few. |
+| `membrane_score.line_width_um` | [0.3, 0.6] | Membrane widths, µm, the line filter looks for. |
+| `membrane_score.patch_um` | 20 | Side of one scored patch, µm. |
+| `membrane_score.region_um` | 6 | Cell region: nuclei grown by this, µm. |
+| `membrane_score.ridge_fraction` | 0.1 | Share of region pixels counted as ridge. |
+| `membrane_score.cutoff` | none | `membrane_like` when `score` >= this. Unset: no call, `membrane_like` null. |
+| `membrane_score.min_ridge_intensity` | none | Raw units. Too dim when `ridge_intensity` - `background` is below this. Unset: 5 x `noise`. |
 
 ---
 
@@ -244,7 +250,7 @@ See [Intensity thresholds](#intensity-thresholds-one-value-per-marker-for-the-wh
 
 ## Outputs
 
-Every run writes five tables, each as `.parquet` and `.csv`, plus
+Every run writes seven tables, each as `.parquet` and `.csv`, plus
 `report/index.html`. All tables are keyed by `field_id`, so tables from many fields
 concatenate.
 
@@ -255,6 +261,8 @@ concatenate.
 | `nuclei` | nucleus | `nucleus_id`, `cell_id`, `orphan` |
 | `nuclei_distances` | *ordered* nucleus pair | `nucleus_id`, `neighbour_nucleus_id`, `rank_from_nucleus` |
 | `flags` | cell | `border_touching`, `isolated`, `degenerate`, ... |
+| `membrane_patches` | patch × channel | `role`, `patch_row`, `patch_col`, `score`, `membrane_like` |
+| `membrane_fields` | field × channel | `role`, `n_scored`, `median_score`, `membrane_like_fraction` |
 
 Lengths come in `_px` and `_um`; areas in `_px` and `_um2`.
 
@@ -393,6 +401,32 @@ With `all_pairs: true`, each pair appears twice, once from each end, each with
 the rank it has for its own nucleus. A single row could not give both ends a
 correct rank. `n_intra_distances` and `mean_intra_distance_*` in `nuclei` are a
 plain `groupby("nucleus_id")` of this table.
+
+### `membrane_patches` and `membrane_fields`: does the stain sit in thin lines?
+
+Outline-free. Uses no labels, so it is identical under `--labels`.
+
+- Every channel except `nucleus` is scored, `segment` included.
+- Region: nuclei (Otsu on the raw nucleus plane) grown by `region_um`.
+- `region_um` must reach the cell borders. Otherwise the membranes fall outside the region and patches score near 1 or read as too dim; check `region_fraction`.
+- Patches: squares of `patch_um`. One row per patch per channel in `membrane_patches`.
+- `contrast`: mean intensity on the top `ridge_fraction` of line-filter pixels, over the mean on the rest; both minus the field floor (`background`), so an offset does not change it.
+- `baseline`: the same contrast on one seeded shuffle of the patch's region pixels.
+- `score` = `contrast` / `baseline`. 1 means no line structure. `membrane_like` = `score` >= `cutoff`; null where there is no score or no `cutoff`.
+- Set `cutoff` from the experiment's own controls; it depends on optics, pixel size, cell density and signal-to-noise.
+- Scores compare only at one pixel size. Membranes about 1 px wide can score near 1.
+- Punctate or clustered-dot signal can score above 1, as lines do. A score is line-likeness, not proof of membrane.
+- `background`: the channel's 1st percentile in the field. `noise`: robust SD of neighbouring-pixel differences over pixels above `background`, divided by sqrt(2) (quantised data dithered by +-half a step first); if that is 0, the robust spread of the region pixels.
+- `ridge_intensity`: mean intensity on the top `ridge_fraction` of line-filter pixels. `mean_intensity` is the whole region's mean.
+- `too_dim`: `ridge_intensity` minus `background` is under 5 x `noise`, or under `min_ridge_intensity` when set. Always too dim when `noise` is 0. No score, never "diffuse".
+- Set `min_ridge_intensity` for dim data: a dim stain's noise grows with its signal, so the 5 x `noise` rule cannot tell a near-blank channel from a faint real one.
+- Clipped edge patches under half a side are rows but unscored.
+- `membrane_fields` rolls patches up: `n_patches`, `n_scored`, `n_too_dim`, `median_score`, `membrane_like_fraction`.
+- `n_patches - n_scored - n_too_dim`: unscored for geometry (edge sliver), region (under half cell region) or no signal above `background` in the ridge/rest split.
+- A field with no cells still gets these rows.
+
+Configure under `membrane_score:` in the config (`line_width_um`, `patch_um`, `region_um`, `ridge_fraction`, `cutoff`, `min_ridge_intensity`).
+`run --no-membrane-score` leaves both tables empty; `run.json` records `membrane_score: on` or `off`.
 
 ---
 

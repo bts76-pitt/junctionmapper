@@ -64,6 +64,7 @@ from junctionmapper.report.assets import write_field_asset
 from junctionmapper.report.summary import has_pixel_size
 from junctionmapper.report.dashboard import SOURCE_RUN, build_dashboard
 from junctionmapper.report.data import write_metric_files, write_run_json, write_thumbs
+from junctionmapper.measure.membrane import score_field
 from junctionmapper.segment.cellpose import Segmentation, SegmentationParams, segment_field
 from junctionmapper.segment.snap import ERODE_PX, SIGMA_PX, SMOOTH_PX, snap_params, snap_to_membrane
 from junctionmapper.tables import write_tables
@@ -772,8 +773,11 @@ def run(
     snap: bool = typer.Option(False, "--snap-to-membrane", help=_SNAP_HELP),
     overwrite_labels: bool = typer.Option(False, "--overwrite-labels", help="Replace existing label "
                                           "files in OUT/labels (default: refuse)."),
+    membrane_score: bool = typer.Option(True, "--membrane-score/--no-membrane-score",
+                                        help="Score each non-nucleus channel for membrane-like line "
+                                        "structure (membrane_patches, membrane_fields)."),
 ) -> None:
-    """Segment (or load labels), measure, write the five tables and report/index.html to OUT.
+    """Segment (or load labels), measure, write the seven tables and report/index.html to OUT.
 
     \b
     Exit codes: 0 every field succeeded; 1 command failed, or every field failed
@@ -806,6 +810,8 @@ def run(
     assets_missing: dict[str, str] = {}
 
     def work(field: Field) -> tuple[FieldResult, dict, dict]:
+        # Raw planes only, never the labels: scored before they are loaded or made.
+        scored = score_field(field, cfg.membrane_score) if membrane_score else None
         if labels is not None:
             seg = _load_labels(labels, field)
         else:
@@ -814,6 +820,8 @@ def run(
                 seg = _snapped(field, seg, snap_params())
             _save_labels(out / "labels", field, seg, cfg, raw)
         result = measure_field(field, seg, cfg, run_thresholds=run_t)
+        if scored is not None:
+            result.membrane_patches, result.membrane_fields = scored
         thresholds = {r.value: t for r, t in resolve_thresholds(field, cfg, run_t).items()}
         # The planes and labels exist only here; the report's previews and geometry come from them.
         _write_asset(field, seg, result, staging / "fields", assets_missing, thresholds)
@@ -841,6 +849,7 @@ def run(
         "threshold_run_roles": ", ".join(sorted(r.value for r in run_t.applied)) or "none",
         "config": cfg.model_dump_json(),
         "input": str(input),
+        "membrane_score": "on" if membrane_score else "off",
     }
     if calib_note:
         prov["threshold_calibration"] = calib_note

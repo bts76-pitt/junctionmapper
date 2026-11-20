@@ -513,3 +513,49 @@ image makes the two steps share a runtime by construction instead of by discipli
 and the image takes appreciably longer to build and to stage. Reversible by splitting the def
 again, at which point the pin duplication has to be solved properly — layering the second
 image on the first with `Bootstrap: localimage` rather than copying the list.
+
+**The membrane score uses no outlines, and divides by a structureless baseline.** It is scored on
+raw planes inside a region grown from the nucleus plane, never from labels, and each patch's
+line contrast is divided by the same contrast on a seeded shuffle of its own pixels.
+*Why:* labels would tie the score to whichever segmentation was loaded, and a hand-corrected
+outline would change it. Noise alone puts the brightest pixels on the "ridge", so a raw contrast
+means different things on different stains; the shuffled baseline cancels that, so 1 means no line
+structure for any channel.
+*Cost if wrong:* a patch with real structure only at a scale outside `line_width_um` reads as
+unstructured. Tune the config, not the code.
+
+**The too-dim test reads the ridge pixels, not the region mean.** A patch is too dim when its
+ridge-pixel mean is under 5 x noise above the field floor.
+*Why:* on dim 8-bit fields thin membranes leave the region mean 1 to 4 counts up, so a
+region-mean test rejected about 60% of patches, reference stains included. Pure noise reaches
+about 4 x noise on the ridge pixels, so 5 still calls a blank channel too dim.
+*Cost if wrong:* a faint but real stain under 5 x noise on its brightest lines reads as too
+dim. `ridge_intensity` is in the table, so the cut can be checked per stain.
+
+**An absolute too-dim cut is a config value, not a default.** `min_ridge_intensity` (raw
+units) replaces 5 x noise when set; unset, the noise rule stands.
+*Why:* a dim stain's noise grows with its own signal, so near-blank and faint-but-real
+channels sit at the same signal-to-noise ratio. Only an absolute level separates them, and
+that level depends on the camera, bit depth and staining: experiment knowledge, which
+belongs in the config.
+*Cost if wrong:* a run without the setting can call a near-blank channel scored.
+
+**The membrane score makes no membrane-like call by default.** `cutoff` defaults to none;
+`membrane_like` is null and `membrane_like_fraction` NaN unless the config sets it.
+*Why:* on real data a 1.5 cutoff called nearly every scored patch membrane-like, for every
+stain. The useful cut depends on optics, pixel size, cell density and signal-to-noise:
+experiment knowledge, set from the experiment's own controls.
+*Cost if wrong:* a run without the setting has no yes/no call; `score` and `median_score` are
+still there.
+
+**Membrane-score noise comes from neighbouring-pixel differences.** `noise` is the MAD of
+row and column neighbour differences over above-floor pixels, divided by sqrt(2). Quantised
+data (differences on a lattice of the smallest step) get a seeded +-half-step dither first;
+otherwise the MAD snaps to whole steps, and to 0 when noise is under a step.
+*Why:* the earlier high-pass residual kept thin lines. In dense fields its MAD measured
+the stain, not the camera: 3 um cells at 0.325 um/px read 90% too dim, and brighter
+lines raised the cut with them.
+*Cost if wrong:* noise correlated between neighbouring pixels (heavy denoising, binning
+after interpolation) reads low, so the too-dim cut is lenient. On 12 real fields (no
+`min_ridge_intensity`) bright reference stains lost too-dim patches; near-blank and faint
+stains gained them; median scores barely moved. `min_ridge_intensity` overrides it.
