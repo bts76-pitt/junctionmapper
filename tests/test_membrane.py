@@ -387,3 +387,14 @@ def test_dense_faint_lines_are_not_too_dim():
     cfg = MembraneScoreConfig(region_um=20)     # 50 px nuclei grown to cover the field
     p = score_field(field_with(jm1=_dense_lines(30), px=0.325), cfg)[0]
     assert not p.too_dim.any()
+
+
+@pytest.mark.parametrize("sd", [0.3, 0.6])
+def test_quantised_low_noise_lines_are_not_too_dim(sd):
+    # 8-bit data with noise under one count: most neighbour differences are exactly 0, so
+    # a plain MAD of them is 0 and the channel would read blank. Lines 25 counts up must score.
+    y, x = _yx()
+    sig = ndi.gaussian_filter(np.where(_borders(), 30.0, 5.0), 0.6)
+    img = np.round(sig + np.random.default_rng(0).normal(0, sd, (N, N))).astype(np.uint8)
+    p = score_field(field_with(jm1=img), CALL)[0]
+    assert floor_and_noise(img)[1] > 0 and not p.too_dim.any()

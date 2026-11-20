@@ -549,10 +549,12 @@ experiment knowledge, set from the experiment's own controls.
 still there.
 
 **Membrane-score noise comes from neighbouring-pixel differences.** `noise` is the MAD of
-row and column neighbour differences over above-floor pixels, divided by sqrt(2).
+row and column neighbour differences over above-floor pixels, divided by sqrt(2). A varying
+integer-valued plane gets a seeded +-0.5 dither first, or sub-count noise ties at 0.
 *Why:* the earlier high-pass residual kept thin lines. In dense fields its MAD measured
 the stain, not the camera: 3 um cells at 0.325 um/px read 90% too dim, and brighter
 lines raised the cut with them.
 *Cost if wrong:* noise correlated between neighbouring pixels (heavy denoising, binning
-after interpolation) reads low, so the too-dim cut is lenient. `min_ridge_intensity`
-overrides it.
+after interpolation) reads low, so the too-dim cut is lenient. On 12 AO0025 fields (no
+`min_ridge_intensity`) p120 and phalloidin lost too-dim patches, near-blank and faint E-cadherin
+gained them; median scores barely moved. `min_ridge_intensity` overrides it.

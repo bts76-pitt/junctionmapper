@@ -39,6 +39,7 @@ from junctionmapper.tables import make_frame
 # --- CONSTANTS ---------------------------------------------------------------------------
 NUCLEUS_SMOOTH_SIGMA_PX = 2.0    # Gaussian smoothing of the nucleus plane before Otsu
 BACKGROUND_PERCENTILE = 1.0      # field floor: confluent fields have no cell-free pixels
+DITHER_SEED = 0                  # fixed: the dither for integer planes is deterministic
 MAD_TO_SD = 1.4826               # MAD of a Gaussian times this = its standard deviation
 NOISE_ZERO_RTOL = 1e-9           # noise at or below this x max |pixel| is roundoff: treated as 0
 DIM_NOISE_MULTIPLE = 5.0         # too dim when (ridge mean - floor) < this x noise. Pure
@@ -93,6 +94,9 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
                      at one pixel, so lines enter only at their edges, a minority of
                      pairs that the MAD ignores. A high-pass residual instead kept
                      whole lines and, in dense fields, measured them, not the noise.
+                     Varying integer-valued planes get a seeded +-0.5 dither first: with noise
+                     under a count most differences tie at 0 and the MAD would be 0.
+                     Quantisation then counts as the noise it is (about 0.3 count).
                      If that is 0, the robust spread of
                      the finite ``region`` pixels (all finite pixels without a region).
                      A residual MAD at roundoff level (<= 1e-9 x max |pixel|) counts as 0.
@@ -110,7 +114,14 @@ def floor_and_noise(plane: np.ndarray, region: np.ndarray | None = None) -> tupl
     background = float(np.percentile(vals, BACKGROUND_PERCENTILE))
     above = finite & (plane > background)
     pairs = above[:, 1:] & above[:, :-1], above[1:] & above[:-1]
-    diffs = np.concatenate([np.diff(plane, axis=1)[pairs[0]], np.diff(plane, axis=0)[pairs[1]]])
+
+    def _diffs(p):
+        return np.concatenate([np.diff(p, axis=1)[pairs[0]], np.diff(p, axis=0)[pairs[1]]])
+
+    diffs = _diffs(plane)
+    # Dither only a plane that varies: all-zero differences (one-value specks) stay no noise.
+    if np.any(diffs != 0) and np.array_equal(vals, np.round(vals)):
+        diffs = _diffs(plane + np.random.default_rng(DITHER_SEED).uniform(-0.5, 0.5, plane.shape))
     noise = _mad_sd(diffs) / math.sqrt(2)
     # A noise at roundoff level relative to the plane is no noise.
     if noise <= NOISE_ZERO_RTOL * float(np.max(np.abs(vals))):
